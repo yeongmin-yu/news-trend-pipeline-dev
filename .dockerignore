@@ -1,0 +1,32 @@
+# 가상환경 & 의존성 캐시
+.venv
+.venv-airflow
+.pylibs
+.spark-pydeps
+
+# Python 캐시
+__pycache__
+*.pyc
+*.pyo
+
+# 런타임 생성 디렉토리
+tmp/
+runtime/state/
+runtime/logs/
+spark-docker/spark-events/
+
+# 빌드 산출물
+build/
+dist/
+*.egg-info/
+
+# Git
+.git
+.gitignore
+
+# 문서 & 메모
+docs/
+*.md
+
+# IDE
+.vscode/

@@ -251,3 +251,152 @@ def fetch_news_parallel(
 ### 7-5. 마이그레이션 메모
 
 기존 `news-trend-pipeline-dev/` 에 있던 런타임 state 파일(`state/last_timestamp.json`, `state/dead_letter*.jsonl` 등)은 **`runtime/state/`** 아래로 그대로 옮기면 기존 증분 수집 커서와 Dead Letter 기록을 이어서 사용할 수 있습니다. `airflow-docker/logs/` 의 과거 DAG 로그를 보존하고 싶다면 `runtime/logs/` 로 옮겨주세요.
+
+---
+
+## 8. 키워드별 증분 체크포인트 도입 및 페이지네이션 안정화
+
+[섹션 1-2 의 Naver 병렬 호출]으로 "키워드 N개 → 독립 쿼리"는 구축했지만, 체크포인트(`last_timestamp`)가 **프로바이더 단위 단일값**으로 남아 있어 실패 처리와 증분 경계가 어긋나는 문제가 쌓여 있었습니다. 본 절은 그 문제를 정리하고 수정한 기록입니다.
+
+### 8-1. 발견된 문제
+
+#### (A) 페이지 중간 실패 시에도 체크포인트가 전진해 버림
+
+`NaverNewsClient.fetch_news()` 의 페이지네이션 루프는 `requests.HTTPError` 를 잡으면 현재까지 모은 기사만 반환하고 `break` 하는 구조였습니다. 호출자인 `producer.run_once()` 는 리턴만 받으면 "정상 종료"로 간주해 `last_timestamp = run_started_at` 으로 체크포인트를 그대로 전진시켰습니다. 결과적으로 **아직 읽지 못한 뒷페이지의 기사들이 다음 실행에서 threshold 필터에 걸려 영구 유실**될 수 있었습니다. `sort=date` 환경에서도 키워드당 한 번의 수집에서 신규 기사가 `display×max_pages` 를 초과하는 상황이면 그대로 영향받습니다.
+
+#### (B) 키워드별 실패가 다른 키워드의 재수집에도 영향
+
+`fetch_news_parallel()` 은 키워드별 스레드로 독립 수집했지만, **공유 `last_timestamp`** 을 반환 시점에 일괄 갱신하는 구조였습니다. 그래서 키워드 A/B/C 중 B가 부분 실패했더라도, A/C 의 성공과 묶여 `last_timestamp` 가 전진해 **B의 누락분이 threshold 로 필터링되어 사라지는 시나리오** 가 만들어졌습니다. 한 키워드의 장애가 다른 키워드 영역까지 유실을 전파하는 설계 결함이었습니다.
+
+#### (C) HTTPError 외의 오류 처리 누락
+
+`_request_news()` 는 `timeout=30` 을 걸고 `raise_for_status()` 로 4xx/5xx 는 `HTTPError` 로 올리지만, 다음 예외는 별도 처리 없이 상위로 전파됐습니다.
+
+- `requests.Timeout` / `requests.ReadTimeout` (30초 타임아웃)
+- `requests.ConnectionError` (네트워크 단절, DNS, TLS 오류)
+- `response.json()` 파싱 실패(`ValueError`)
+
+이런 오류는 `fetch_news_parallel()` 의 `except Exception` 까지 올라가 "해당 키워드만 조용히 skip" 되지만, skip 후에도 공유 체크포인트는 전진하므로 문제 (A)(B) 와 같은 유실이 발생했습니다.
+
+#### (D) 페이지 간 호출 간격 없음
+
+단일 키워드 내 페이지 요청(최대 3회)이 즉시 연속 발사되어 429(Too Many Requests)를 유발할 수 있었습니다. 병렬 호출 시에는 키워드 수만큼 동시 페이지 공격이 누적되므로 위험도가 더 커집니다.
+
+### 8-2. 해결 방향
+
+네 가지 문제를 한 번에 풀려면 **"수집 계약"과 "상태 모델"** 을 동시에 바꿔야 합니다. 본 개편에서는 다음 두 가지를 짝으로 도입했습니다.
+
+1. **부분 성공 신호**: `fetch_news()` 의 반환 타입을 단순 `list` 에서 `(articles, ok: bool)` 튜플로 변경. 페이지 중 하나라도 실패하면 `ok=False`.
+2. **키워드별 체크포인트**: 프로바이더 단위 단일 `last_timestamp` 대신 `keyword_timestamps: dict[str, str]` 을 도입. `ok=True` 인 키워드만 체크포인트를 전진.
+
+추가로:
+
+3. **예외 분류**: 페이지 루프에서 `HTTPError`, `(Timeout, ConnectionError)`, `ValueError` 를 각각 분기해 의미 있는 로그를 남기고 모두 `ok=False` 로 정규화.
+4. **페이지 간 지연**: 요청 **직전** 에 `time.sleep(0.5)` 를 걸어 429 를 예방(첫 페이지는 대기 없음, `break` 이후 잔여 대기 없음).
+
+### 8-3. 상태 파일 포맷 변경 (구 포맷 제거)
+
+`runtime/state/producer_state.json` 의 구조는 다음과 같이 바뀝니다.
+
+변경 전:
+
+```json
+{
+  "providers": {
+    "naver": {
+      "last_timestamp": "2026-04-20T12:00:00+00:00",
+      "published_urls": ["..."]
+    }
+  }
+}
+```
+
+변경 후:
+
+```json
+{
+  "providers": {
+    "naver": {
+      "keyword_timestamps": {
+        "AI":       "2026-04-21T09:00:00+00:00",
+        "GPT":      "2026-04-21T08:30:00+00:00",
+        "LLM":      "2026-04-21T09:00:00+00:00"
+      },
+      "published_urls": ["..."]
+    }
+  }
+}
+```
+
+- `last_timestamp` 필드는 **영구히 삭제**됩니다. 다음 `save_state()` 부터 구키는 파일에 존재하지 않습니다.
+- `published_urls` 는 여전히 프로바이더 단위 공유입니다. 여러 키워드에서 동일 기사가 잡혀도 한 번만 발행되도록 하는 Layer 2 역할이라 유지됩니다.
+
+### 8-4. 마이그레이션 정책
+
+`load_state()` 는 **로드 시점 1회** 아래 규칙으로 변환하고, 이후 저장은 항상 신 포맷으로 이뤄집니다.
+
+1. `providers` 래퍼가 없는 초기 구 포맷 파일은 먼저 `{"providers": {"naver": {...}}}` 로 감쌈.
+2. 각 프로바이더 엔트리에 `last_timestamp` 가 남아 있으면:
+   - `naver` 프로바이더 → 현재 설정된 `NAVER_THEME_KEYWORDS` 모든 키워드에 그 값을 **시드**. (구키의 시간 경계를 잃지 않도록)
+   - 기타 프로바이더 → 프로바이더명 자체를 키로 하는 단일 엔트리로 시드.
+3. 변환 후 `last_timestamp` 키는 제거. 다음 `save_state()` 부터 파일에서 완전히 사라짐.
+
+신규 키워드가 `NAVER_THEME_KEYWORDS` 에 추가된 경우, **기존 `keyword_timestamps.values()` 의 최댓값** 을 초기값으로 사용합니다(이력 전체 재수집 방지). 완전 빈 상태 최초 실행에서만 `None` 으로 폴백합니다. ISO8601 UTC 문자열은 사전식 비교와 시간순 비교가 일치하므로 `max()` 가 안전합니다.
+
+반대로 설정에서 제거된 "고아 키워드" 는 `run_once()` 종료 시점에 `keyword_timestamps` 에서 정리되어 파일이 비대해지지 않습니다.
+
+### 8-5. 체크포인트 전진 정책 (키워드 단위)
+
+`run_once()` 의 루프가 다음과 같이 바뀝니다.
+
+```text
+for keyword, (articles, ok) in results.items():
+    for article in articles:
+        # Layer 2: provider::url 중복 체크 후 _publish()
+        ...
+    if ok:
+        keyword_timestamps[keyword] = run_started_at   # 전진
+    else:
+        # 체크포인트 유지 — 다음 실행에서 동일 from_timestamp 로 재시도
+        logger.warning("[%s] 키워드 %r 부분실패/오류 — 체크포인트 유지", ...)
+```
+
+핵심은 **부분 수집분도 그대로 발행**되지만 체크포인트는 유지된다는 점입니다. 다음 실행이 같은 `from_timestamp` 로 재수집하더라도 `published_urls` Set(Layer 2) 가 이미 발행한 URL을 걸러주므로 **중복 발행이 일어나지 않습니다**. 즉, "부분 성공은 재시도하되 이중 발행은 없다" 는 멱등성이 확보됩니다.
+
+### 8-6. 코드/설정 변경 요약
+
+- **`ingestion/api_client.py`**
+  - `BaseNewsClient.fetch_news()` 반환 타입을 `list[dict]` → `tuple[list[dict], bool]` (신규 `FetchResult` 타입).
+  - `NaverNewsClient.fetch_news()` 에서 `HTTPError`, `(Timeout, ConnectionError)`, `ValueError` 를 분기 처리. 모두 `ok=False` 로 수렴.
+  - `NaverNewsClient.fetch_news_parallel()` 시그니처: `from_timestamp: str | None` → `from_timestamps: Mapping[str, str | None] | None`. 반환 타입: `list[dict]` → `dict[str, FetchResult]`.
+  - 페이지 루프 진입 시 `page_index > 0` 에 한해 `time.sleep(_NAVER_PAGE_REQUEST_DELAY_SECONDS = 0.5)`.
+
+- **`ingestion/producer.py`**
+  - `load_state()` 를 **신 포맷 정규화 로더** 로 재작성. 구 `last_timestamp` 는 변환 후 제거.
+  - `_derive_from_timestamps()` 헬퍼 추가: 신규 키워드의 초기값을 `max(기존 체크포인트)` 로 설정.
+  - `_collect_articles()` 가 `dict[str, FetchResult]` 를 반환하도록 변경. Naver 는 `fetch_news_parallel` 경로, 기타 프로바이더는 "프로바이더명을 키워드처럼 쓰는" 단일 엔트리 경로로 통일.
+  - `run_once()` 의 상태 갱신을 "프로바이더 단위 일괄 전진" → "키워드 단위 조건부 전진" 으로 교체. 고아 키워드 정리 루틴 추가. 완료 로그에 `ok_keywords` / `failed_keywords` 노출.
+
+### 8-7. 검증
+
+로컬에서 세 가지 형태의 상태 파일을 `load_state()` 에 통과시켜 마이그레이션을 확인했습니다.
+
+| 입력 | 결과 |
+| --- | --- |
+| 구 초기 포맷 (`providers` 래퍼 없음, `last_timestamp` 단일) | `providers.naver.keyword_timestamps` 에 시드, `last_timestamp` 제거 |
+| 구 중간 포맷 (`providers` 있음 + `last_timestamp`) | 위와 동일, 프로바이더별로 키워드 시드 |
+| 신 포맷 | 변경 없이 통과 |
+
+`run_once()` 의 키워드별 전진 정책은 3 키워드(AI/GPT/LLM) 중 GPT 만 `ok=False` 로 반환시키는 모의 수집으로 검증했습니다. 결과:
+
+- AI, LLM 의 `keyword_timestamps` 는 `run_started_at` 으로 전진.
+- GPT 는 기존 값(T0) 그대로 유지 — 다음 실행에서 같은 범위 재시도.
+- 저장된 파일에 `last_timestamp` 필드가 존재하지 않음 ("구키 제거" 정책 준수).
+- `published_urls` 에 3건 모두 기록되어 다음 run 의 Layer 2 중복 방지가 보장됨.
+
+### 8-8. 운영상 주의 사항
+
+- **이번 배포 직후 첫 실행**: 구 포맷을 쓰던 환경이라면 `last_timestamp` 값이 모든 현행 키워드로 복사됩니다. 이로 인해 첫 run 에서는 키워드 수만큼의 체크포인트가 동일 시각에 놓이고, 정상 수집이면 다음 run 부터 키워드별로 제각각 전진합니다.
+- **Naver 이외의 프로바이더를 추가할 때**: `fetch_news()` 가 반환하는 `ok` 값을 반드시 채워야 합니다(정상 완료 `True`, 일부 실패 `False`). 이를 안 지키면 문제 (A) 와 동일한 유실 경로가 재현됩니다.
+- **부분 실패가 지속되는 키워드**: 체크포인트가 전진하지 않으므로 같은 범위를 매 run 재조회합니다. `published_urls` 로 중복 발행은 막히지만 API 호출량은 증가하므로, 해당 키워드의 장애 원인(키 만료, 쿼리 문법 문제 등)을 로그로 조기에 포착해야 합니다. `WARNING | [naver] 키워드 %r 부분실패/오류` 라인이 반복되면 경보 조건으로 삼는 것을 권장합니다.
+- **`published_urls` 용량**: 지금은 `[-1000:]` 로 최근 1000개를 유지합니다. 키워드별 체크포인트로 재시도 주기가 짧아지므로 이 용량이 좁아 보이면 상향을 검토하세요 (예: 키워드 수 × 최근 수집량).

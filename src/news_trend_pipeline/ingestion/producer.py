@@ -17,7 +17,11 @@ from kafka.errors import KafkaError, KafkaTimeoutError
 from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.core.logger import get_logger
 from news_trend_pipeline.core.utils import ensure_dir, read_json, utc_now_iso
-from news_trend_pipeline.ingestion.api_client import BaseNewsClient, NaverNewsClient
+from news_trend_pipeline.ingestion.api_client import (
+    BaseNewsClient,
+    FetchResult,
+    NaverNewsClient,
+)
 
 
 logger = get_logger(__name__)
@@ -132,20 +136,75 @@ class NewsKafkaProducer:
     # ── 상태 관리 (filelock 적용) ─────────────────────────────────────────────
 
     def load_state(self) -> dict[str, Any]:
-        """producer_state.json을 읽어 반환합니다. 구 포맷은 자동 마이그레이션합니다."""
-        state = read_json(STATE_FILE, {"providers": {}})
-        if "providers" in state:
-            return state
-        # 구 포맷 → 신 포맷 마이그레이션
-        logger.info("이전 상태 파일 포맷을 마이그레이션합니다.")
-        return {
-            "providers": {
+        """producer_state.json을 읽어 **신 포맷** 으로 정규화해 반환합니다.
+
+        신 포맷 구조 (프로바이더 단위):
+            {
+              "providers": {
                 "naver": {
-                    "last_timestamp": state.get("last_timestamp", ""),
-                    "published_urls": state.get("published_urls", []),
+                  "keyword_timestamps": { "AI": "...", "GPT": "..." },
+                  "published_urls": [ "..." ]
+                }
+              }
+            }
+
+        기존 파일이 구 포맷(`last_timestamp` 단일 값, 혹은 `providers` 래퍼 없음)으로
+        저장돼 있으면 **로드 시점에 한 번만** 다음 규칙으로 변환한 뒤, 구 키는 제거합니다.
+          1) `providers` 래퍼가 없으면 전체를 `providers.naver` 로 감쌉니다.
+          2) 각 프로바이더의 `last_timestamp` 값은, 해당 프로바이더가 **naver** 인 경우
+             현재 설정된 `naver_theme_keywords` 모든 키워드의 초기값으로 시드됩니다.
+             비-Naver 프로바이더는 프로바이더명을 키로 단일 엔트리로 시드합니다.
+          3) 변환 후 `last_timestamp` 키는 영구히 삭제되고, 다음 save_state() 부터는
+             신 포맷만 저장됩니다. (= "구키 자체 제거" 정책)
+        """
+        raw = read_json(STATE_FILE, {"providers": {}})
+
+        # (1) `providers` 래퍼가 없는 초기 구 포맷 보정.
+        if "providers" not in raw:
+            logger.info("이전 상태 파일(providers 래퍼 없음) 을 신 포맷으로 변환합니다.")
+            legacy_last_ts: str = raw.get("last_timestamp", "") or ""
+            legacy_urls = raw.get("published_urls", [])
+            raw = {
+                "providers": {
+                    "naver": {
+                        "last_timestamp": legacy_last_ts,
+                        "published_urls": legacy_urls,
+                    }
                 }
             }
-        }
+
+        providers: dict[str, Any] = raw.setdefault("providers", {})
+        migrated_any = False
+
+        for provider_name, provider_state in providers.items():
+            if not isinstance(provider_state, dict):
+                continue
+
+            keyword_timestamps: dict[str, str] = provider_state.setdefault(
+                "keyword_timestamps", {}
+            )
+            provider_state.setdefault("published_urls", [])
+
+            # (2) `last_timestamp` 가 남아 있으면 keyword_timestamps 로 흡수.
+            legacy_ts = provider_state.pop("last_timestamp", None)
+            if legacy_ts:
+                if provider_name == "naver":
+                    # Naver 는 테마 키워드별 체크포인트이므로,
+                    # 현재 설정된 키워드 전부에 구 타임스탬프를 초기 시드.
+                    for keyword in settings.naver_theme_keywords:
+                        if keyword and keyword not in keyword_timestamps:
+                            keyword_timestamps[keyword] = legacy_ts
+                else:
+                    # 기타 프로바이더: 프로바이더명을 키로 단일 엔트리로 시드.
+                    keyword_timestamps.setdefault(provider_name, legacy_ts)
+                migrated_any = True
+
+        if migrated_any:
+            logger.info(
+                "producer_state.json 의 구 `last_timestamp` 필드를 `keyword_timestamps` 로 "
+                "마이그레이션했습니다. 다음 저장부터 구키는 파일에서 사라집니다."
+            )
+        return raw
 
     def save_state(self, state: dict[str, Any]) -> None:
         """producer_state.json을 원자적으로 저장합니다 (임시 파일 → rename).
@@ -244,20 +303,50 @@ class NewsKafkaProducer:
     # ── 기사 수집 (병렬/단일 분기) ────────────────────────────────────────────
 
     @staticmethod
-    def _collect_articles(
-        client: BaseNewsClient,
-        last_timestamp: str | None,
-    ) -> list[dict[str, Any]]:
-        """프로바이더별 수집 방식을 분기합니다.
+    def _derive_from_timestamps(
+        keyword_list: list[str],
+        keyword_timestamps: dict[str, str],
+    ) -> dict[str, str | None]:
+        """키워드 목록에 대한 from_timestamp 매핑을 계산합니다.
 
-        Naver는 테마 키워드 병렬 호출(fetch_news_parallel), 그 외는 단일 호출.
+        - 이미 체크포인트가 있는 키워드는 그 값을 그대로 사용.
+        - 이번 실행에서 새로 추가된 키워드는 **기존 체크포인트들의 최댓값**으로
+          초기화해 "전체 이력 재수집(flood)" 을 방지합니다. ISO8601 UTC 문자열은
+          사전식 비교가 시간순 비교와 일치하므로 `max()` 가 안전합니다.
+        - 상태가 완전히 비어 있는 최초 실행이면 None (증분 필터 없음).
         """
+        fallback: str | None = max(keyword_timestamps.values()) if keyword_timestamps else None
+        return {
+            keyword: keyword_timestamps.get(keyword, fallback) or None
+            for keyword in keyword_list
+        }
+
+    @classmethod
+    def _collect_articles(
+        cls,
+        client: BaseNewsClient,
+        provider_state: dict[str, Any],
+    ) -> dict[str, FetchResult]:
+        """프로바이더별 수집 방식을 분기하고, **키워드별 (articles, ok) 결과 dict** 를 반환합니다.
+
+        - Naver: 테마 키워드별 독립 체크포인트로 병렬 호출(fetch_news_parallel).
+        - 그 외 프로바이더: 프로바이더명을 키로 사용하는 단일 엔트리 dict로 포장하여
+          상위 로직의 분기 없이 동일한 per-keyword 경로를 탈 수 있도록 합니다.
+        """
+        keyword_timestamps: dict[str, str] = provider_state.get("keyword_timestamps", {})
+
         if isinstance(client, NaverNewsClient):
+            keyword_list = [q for q in settings.naver_theme_keywords if q]
+            from_timestamps = cls._derive_from_timestamps(keyword_list, keyword_timestamps)
             return client.fetch_news_parallel(
-                queries=settings.naver_theme_keywords,
-                from_timestamp=last_timestamp,
+                queries=keyword_list,
+                from_timestamps=from_timestamps,
             )
-        return client.fetch_news(from_timestamp=last_timestamp)
+
+        # 비-Naver 프로바이더: 프로바이더명을 "단일 키워드" 로 취급해 동일 인터페이스 유지.
+        single_ts = keyword_timestamps.get(client.provider) or None
+        articles, ok = client.fetch_news(from_timestamp=single_ts)
+        return {client.provider: (articles, ok)}
 
     # ── 핵심 실행 로직 ────────────────────────────────────────────────────────
 
@@ -265,13 +354,24 @@ class NewsKafkaProducer:
         """전체 수집 → 중복 제거 → 전송 → 상태 저장 사이클을 1회 실행합니다.
 
         중복 제거 2-Layer:
-          Layer 1: last_timestamp 기반 증분 수집 (API 호출 최소화)
-          Layer 2: published_urls Set으로 URL 중복 체크 (키: "provider::url")
+          Layer 1: **키워드별** keyword_timestamps 기반 증분 수집 (API 호출 최소화).
+                   키워드 단위로 체크포인트를 관리하므로, 한 키워드의 부분 실패가
+                   다른 키워드의 재수집을 유발하지 않습니다.
+          Layer 2: published_urls Set 으로 URL 중복 체크 (키: "provider::url").
+                   프로바이더 단위 공유이므로, 여러 키워드에서 동일 기사가 잡히면
+                   먼저 도착한 쪽 기준으로 한 번만 발행됩니다.
+
+        체크포인트 전진 정책 (키워드 단위):
+          - ok=True  → keyword_timestamps[keyword] = run_started_at 로 전진.
+          - ok=False → 체크포인트 **유지**. 다음 실행에서 동일 from_timestamp 로 재시도.
+          이 정책은 `fetch_news` 가 중간 페이지 실패 시 (articles, False) 를 돌려주는
+          계약과 짝을 이룹니다. 부분 수집분도 중복제거 로직을 거쳐 발행되지만,
+          뒷페이지 미수집 기사가 threshold 로 필터링되어 유실되는 사고를 막습니다.
 
         유실 방지:
-          - acks=all + idempotence로 브로커 레벨 보장
-          - flush() 후 콜백 오류를 Dead Letter로 기록
-          - save_state()는 atomic rename으로 상태 파일 손상 방지
+          - acks=all + idempotence 로 브로커 레벨 보장
+          - flush() 후 콜백 오류를 Dead Letter 로 기록
+          - save_state() 는 atomic rename 으로 상태 파일 손상 방지
         """
         run_started_at: str = utc_now_iso()
         state = self.load_state()
@@ -280,53 +380,93 @@ class NewsKafkaProducer:
         self._send_errors.clear()
 
         for client in self.clients:
+            # 프로바이더별 상태 슬롯. 신규 프로바이더는 빈 keyword_timestamps 로 초기화.
             provider_state: dict[str, Any] = provider_states.setdefault(
                 client.provider,
-                {"last_timestamp": "", "published_urls": []},
+                {"keyword_timestamps": {}, "published_urls": []},
+            )
+            # 방어적 정리: 혹시라도 구 포맷 잔재가 남아 있으면 제거.
+            provider_state.pop("last_timestamp", None)
+
+            keyword_timestamps: dict[str, str] = provider_state.setdefault(
+                "keyword_timestamps", {}
             )
             seen_urls: set[str] = set(provider_state.get("published_urls", []))
-            last_timestamp: str | None = provider_state.get("last_timestamp") or None
 
             logger.info(
-                "[%s] 수집 시작 — last_timestamp=%s seen_urls=%d",
+                "[%s] 수집 시작 — tracked_keywords=%d seen_urls=%d",
                 client.provider,
-                last_timestamp or "없음",
+                len(keyword_timestamps),
                 len(seen_urls),
             )
 
+            # 수집 자체가 통째로 터진 경우(네트워크 단절 등) → 전체 provider skip.
+            # 이 분기에서는 keyword_timestamps 를 **건드리지 않음** 으로써
+            # 다음 실행에서 동일 체크포인트로 재시도됩니다 (유실 없음).
             try:
-                articles = self._collect_articles(client, last_timestamp)
+                results = self._collect_articles(client, provider_state)
             except Exception as exc:  # noqa: BLE001
                 logger.error("[%s] API 수집 실패: %s", client.provider, exc)
                 continue
 
-            fetch_count = len(articles)
+            fetch_count = 0
             skip_count = 0
+            advanced_keywords = 0
+            failed_keywords = 0
 
-            for article in articles:
-                url: str | None = article.get("url")
-                unique_key = f"{client.provider}::{url}"
+            # 키워드별 루프: 각 키워드의 (articles, ok) 를 독립적으로 처리.
+            for keyword, (articles, ok) in results.items():
+                fetch_count += len(articles)
 
-                # Layer 2 중복 체크: URL Set
-                if not url or unique_key in seen_urls:
-                    skip_count += 1
-                    continue
+                for article in articles:
+                    url: str | None = article.get("url")
+                    unique_key = f"{client.provider}::{url}"
 
-                if self._publish(article):
-                    seen_urls.add(unique_key)
-                    published_count += 1
+                    # Layer 2 중복 체크: URL Set (프로바이더 단위 공유)
+                    if not url or unique_key in seen_urls:
+                        skip_count += 1
+                        continue
 
-            # Layer 1: 다음 실행의 from 기준을 수집 시작 시각으로 고정
-            # (published_at 기준 시 분 단위 경계 기사 누락 방지)
-            provider_state["last_timestamp"] = run_started_at
+                    if self._publish(article):
+                        seen_urls.add(unique_key)
+                        published_count += 1
+
+                # Layer 1: 성공한 키워드만 체크포인트 전진.
+                # published_at 기준 대신 run_started_at 을 사용하는 이유는
+                # 분 단위 경계 기사 누락(시각이 같은 기사가 서로 다른 페이지에 걸침)을 피하기 위함.
+                if ok:
+                    keyword_timestamps[keyword] = run_started_at
+                    advanced_keywords += 1
+                else:
+                    logger.warning(
+                        "[%s] 키워드 %r 부분실패/오류 — 체크포인트 유지(%s)",
+                        client.provider,
+                        keyword,
+                        keyword_timestamps.get(keyword, "없음"),
+                    )
+                    failed_keywords += 1
+
+            # 현재 설정에서 제거된 "고아 키워드" 의 체크포인트는 파일에서도 정리.
+            # (Naver 에만 해당. 다른 프로바이더는 provider 이름 = keyword 이므로 대상 아님.)
+            if isinstance(client, NaverNewsClient):
+                active_keywords = {q for q in settings.naver_theme_keywords if q}
+                stale = [k for k in list(keyword_timestamps.keys()) if k not in active_keywords]
+                for k in stale:
+                    logger.info("[%s] 고아 키워드 체크포인트 제거: %r", client.provider, k)
+                    keyword_timestamps.pop(k, None)
+
+            provider_state["keyword_timestamps"] = keyword_timestamps
             provider_state["published_urls"] = list(seen_urls)[-1000:]
 
             logger.info(
-                "[%s] 완료 — fetch=%d skip(중복)=%d publish=%d",
+                "[%s] 완료 — fetch=%d skip(중복)=%d publish=%d "
+                "ok_keywords=%d failed_keywords=%d",
                 client.provider,
                 fetch_count,
                 skip_count,
                 fetch_count - skip_count,
+                advanced_keywords,
+                failed_keywords,
             )
 
         # 브로커에 버퍼링된 메시지를 모두 플러시

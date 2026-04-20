@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 import requests
@@ -21,6 +21,14 @@ logger = get_logger(__name__)
 # Naver 검색 API는 초당 호출 제한이 있어, 동일 키워드의 페이지네이션 호출 사이에
 # 짧은 지연을 두어 429(Too Many Requests)를 예방합니다.
 _NAVER_PAGE_REQUEST_DELAY_SECONDS = 0.5
+
+
+# fetch_news() 반환 타입: (수집된 기사 목록, ok 플래그).
+#   ok=True  → 모든 페이지를 예외 없이 순회 완료(조기 중단 포함, 정상 종료).
+#   ok=False → 페이지네이션 중 네트워크/HTTP/파싱 오류 발생.
+#              → 호출자는 체크포인트(last_timestamp)를 전진시키지 말고
+#                다음 실행에서 같은 from_timestamp 로 재시도해야 합니다.
+FetchResult = tuple[list[dict[str, Any]], bool]
 
 
 def strip_html_tags(text: str | None) -> str | None:
@@ -38,7 +46,12 @@ class BaseNewsClient(ABC):
         query: str | None = None,
         from_timestamp: str | None = None,
         page_size: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> FetchResult:
+        """단일 키워드 수집 결과를 (articles, ok) 튜플로 반환합니다.
+
+        ok=False 인 경우, 호출자는 해당 키워드의 체크포인트를 전진시키지 말고
+        다음 실행에서 동일한 from_timestamp 로 재시도해야 합니다.
+        """
         raise NotImplementedError
 
 
@@ -59,8 +72,17 @@ class NaverNewsClient(BaseNewsClient):
         query: str | None = None,
         from_timestamp: str | None = None,
         page_size: int | None = None,
-    ) -> list[dict[str, Any]]:
-        # 단일 키워드 호출. 병렬 호출 시에는 fetch_news_parallel()을 사용합니다.
+    ) -> FetchResult:
+        """단일 키워드로 Naver 뉴스 페이지네이션 수집을 수행합니다.
+
+        반환값은 (articles, ok) 튜플입니다.
+          - ok=True  : 모든 페이지를 정상 순회 완료 (threshold 조기 중단 포함).
+          - ok=False : 페이지 중 하나라도 네트워크/HTTP/파싱 오류가 발생해 루프를 중단.
+                       → 호출자는 이 키워드의 체크포인트를 **전진시키지 않아야** 합니다.
+
+        병렬 호출 시에는 fetch_news_parallel()을 사용합니다. 단, 병렬 호출도
+        내부적으로 이 함수를 그대로 사용합니다.
+        """
         effective_query = query or (
             settings.naver_theme_keywords[0] if settings.naver_theme_keywords else "AI"
         )
@@ -68,6 +90,8 @@ class NaverNewsClient(BaseNewsClient):
         start_positions = [1 + page * display for page in range(settings.naver_news_max_pages)]
         articles: list[dict[str, Any]] = []
         threshold = self._parse_timestamp(from_timestamp) if from_timestamp else None
+        # ok 플래그: 기본 True, 페이지 루프에서 예외가 발생하면 False 로 전환.
+        ok = True
 
         logger.info(
             "Naver API 호출 시작 — query=%r from=%s display=%d max_pages=%d",
@@ -85,12 +109,34 @@ class NaverNewsClient(BaseNewsClient):
             try:
                 payload = self._request_news(query=effective_query, display=display, start=start)
             except requests.HTTPError as exc:
+                # 4xx/5xx 응답. 429(rate limit) 포함. 부분 성공으로 보고.
                 logger.warning(
-                    "Naver API 요청 실패 query=%r start=%d: %s",
+                    "Naver API HTTP 오류 query=%r start=%d: %s",
                     effective_query,
                     start,
                     exc,
                 )
+                ok = False
+                break
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                # 타임아웃/네트워크 단절. 재시도 가능한 일시 장애로 간주.
+                logger.warning(
+                    "Naver API 네트워크 오류 query=%r start=%d: %s",
+                    effective_query,
+                    start,
+                    exc,
+                )
+                ok = False
+                break
+            except ValueError as exc:
+                # response.json() 파싱 실패. 응답이 손상된 상태이므로 중단.
+                logger.error(
+                    "Naver API 응답 파싱 실패 query=%r start=%d: %s",
+                    effective_query,
+                    start,
+                    exc,
+                )
+                ok = False
                 break
 
             items = payload.get("items", [])
@@ -121,6 +167,9 @@ class NaverNewsClient(BaseNewsClient):
             articles.extend(normalized_batch)
 
             if threshold and items:
+                # 최신순(sort=date)으로 내려온다는 전제 하에, 마지막 아이템(페이지 내 최고참)이
+                # threshold 이하라면 그 뒤 페이지는 모두 이미 처리된 기사이므로 조기 종료.
+                # 이 경로는 정상 종료이므로 ok=True 를 유지합니다.
                 oldest_item = self._normalize_article(items[-1], effective_query)
                 oldest_timestamp = self._parse_timestamp(oldest_item.get("published_at"))
                 if oldest_timestamp and oldest_timestamp <= threshold:
@@ -135,48 +184,75 @@ class NaverNewsClient(BaseNewsClient):
 
         unique_articles = self._deduplicate_articles(articles)
         logger.info(
-            "Naver API 수집 완료 — query=%r articles=%d",
+            "Naver API 수집 완료 — query=%r articles=%d ok=%s",
             effective_query,
             len(unique_articles),
+            ok,
         )
-        return unique_articles
+        return unique_articles, ok
 
     # ── 다중 키워드 병렬 수집 ─────────────────────────────────────────────────
     def fetch_news_parallel(
         self,
         queries: Iterable[str] | None = None,
-        from_timestamp: str | None = None,
+        from_timestamps: Mapping[str, str | None] | None = None,
         page_size: int | None = None,
         max_workers: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, FetchResult]:
         """테마 키워드 집합에 대해 ThreadPoolExecutor로 병렬 API 호출.
 
-        Naver 검색 API는 키워드별 독립 호출이므로 I/O 대기가 크고 GIL 영향이 적어
-        스레드 기반 병렬화로 선형에 가까운 속도 향상을 얻을 수 있습니다.
+        키워드별로 독립된 체크포인트(`from_timestamps[keyword]`)를 받아
+        각 키워드의 (articles, ok) 결과를 {keyword: (articles, ok)} dict로 반환합니다.
+
+        설계 포인트:
+          - 한 키워드의 부분 실패가 다른 키워드의 체크포인트 전진에 영향을 주지 않도록,
+            키워드 단위로 ok 플래그를 그대로 노출합니다.
+          - 스레드 내부 예외(fetch_news 본체가 완전히 터진 경우)는 ok=False + 빈 articles
+            로 정규화하여 호출자 쪽 분기를 단순하게 유지합니다.
+          - Naver 검색 API는 키워드별 독립 호출이라 I/O 대기가 커 GIL 영향이 적고,
+            스레드 기반 병렬화로 선형에 가까운 속도 향상을 얻습니다.
+
+        Parameters
+        ----------
+        queries:
+            대상 키워드 목록. None 이면 settings.naver_theme_keywords 사용.
+        from_timestamps:
+            키워드별 증분 기준 시각 매핑. 누락된 키워드는 None(=증분 필터 없음)으로 취급.
+        page_size, max_workers:
+            기존 시그니처와 동일.
         """
         keyword_list = [q for q in (queries or settings.naver_theme_keywords) if q]
         if not keyword_list:
             logger.warning("Naver 병렬 호출 대상 키워드가 비어 있습니다. NAVER_THEME_KEYWORDS 확인.")
-            return []
+            return {}
+
+        # 키워드별 from_timestamp 매핑. 입력이 None 이면 전 키워드에 대해 None 적용.
+        timestamp_map: dict[str, str | None] = {
+            keyword: (from_timestamps.get(keyword) if from_timestamps else None)
+            for keyword in keyword_list
+        }
 
         effective_workers = max(
             1,
             min(max_workers or settings.naver_max_workers, len(keyword_list)),
         )
         logger.info(
-            "Naver 병렬 호출 시작 — keywords=%d workers=%d from=%s",
+            "Naver 병렬 호출 시작 — keywords=%d workers=%d per_keyword_from=%s",
             len(keyword_list),
             effective_workers,
-            from_timestamp or "없음",
+            {k: (v or "없음") for k, v in timestamp_map.items()},
         )
 
-        collected: list[dict[str, Any]] = []
+        # 결과 컨테이너는 dict: 키워드 -> (articles, ok).
+        # 각 키워드의 체크포인트를 호출자가 독립적으로 갱신할 수 있도록 분리 보관.
+        results: dict[str, FetchResult] = {keyword: ([], False) for keyword in keyword_list}
+
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_to_query = {
                 executor.submit(
                     self.fetch_news,
                     keyword,
-                    from_timestamp,
+                    timestamp_map[keyword],
                     page_size,
                 ): keyword
                 for keyword in keyword_list
@@ -184,21 +260,30 @@ class NaverNewsClient(BaseNewsClient):
             for future in as_completed(future_to_query):
                 keyword = future_to_query[future]
                 try:
-                    batch = future.result()
+                    articles, ok = future.result()
                 except Exception as exc:  # noqa: BLE001
+                    # fetch_news 본체에서 예상치 못한 예외가 올라온 경우 — 체크포인트 보존용으로 ok=False.
                     logger.error("Naver 병렬 호출 실패 query=%r: %s", keyword, exc)
+                    results[keyword] = ([], False)
                     continue
-                logger.info("Naver 병렬 수집 완료 — query=%r articles=%d", keyword, len(batch))
-                collected.extend(batch)
+                logger.info(
+                    "Naver 병렬 수집 완료 — query=%r articles=%d ok=%s",
+                    keyword,
+                    len(articles),
+                    ok,
+                )
+                results[keyword] = (articles, ok)
 
-        unique_articles = self._deduplicate_articles(collected)
+        total_articles = sum(len(a) for a, _ in results.values())
+        ok_count = sum(1 for _, ok in results.values() if ok)
         logger.info(
-            "Naver 병렬 호출 종합 — keywords=%d raw=%d unique=%d",
+            "Naver 병렬 호출 종합 — keywords=%d ok=%d partial_or_fail=%d raw=%d",
             len(keyword_list),
-            len(collected),
-            len(unique_articles),
+            ok_count,
+            len(keyword_list) - ok_count,
+            total_articles,
         )
-        return unique_articles
+        return results
 
     # ── HTTP / 정규화 ────────────────────────────────────────────────────────
     def _request_news(self, query: str, display: int, start: int) -> dict[str, Any]:
