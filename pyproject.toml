@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "news-trend-pipeline"
+version = "0.2.0"
+description = "News ingestion pipeline — Naver API → Kafka → Airflow orchestration (src layout rev.)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "ymyu", email = "ymyu@satreci.com" }]
+dependencies = [
+    "python-dotenv==1.0.1",
+    "kafka-python==2.3.1",
+    "requests==2.32.4",
+    "filelock>=3.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["news_trend_pipeline*"]
+
+[tool.setuptools.package-dir]
+"" = "src"
