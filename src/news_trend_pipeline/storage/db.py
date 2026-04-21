@@ -191,9 +191,19 @@ def upsert_from_staging_keywords() -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
+                WITH dedup AS (
+                    SELECT
+                        article_provider,
+                        article_url,
+                        keyword,
+                        MAX(keyword_count) AS keyword_count,
+                        MAX(processed_at) AS processed_at
+                    FROM stg_keywords
+                    GROUP BY article_provider, article_url, keyword
+                )
                 INSERT INTO keywords (article_provider, article_url, keyword, keyword_count, processed_at)
                 SELECT article_provider, article_url, keyword, keyword_count, processed_at
-                FROM stg_keywords
+                FROM dedup
                 ON CONFLICT (article_provider, article_url, keyword)
                 DO UPDATE SET
                     keyword_count = EXCLUDED.keyword_count,
@@ -207,9 +217,20 @@ def upsert_from_staging_keyword_trends() -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
+                WITH dedup AS (
+                    SELECT
+                        provider,
+                        window_start,
+                        window_end,
+                        keyword,
+                        SUM(keyword_count) AS keyword_count,
+                        MAX(processed_at) AS processed_at
+                    FROM stg_keyword_trends
+                    GROUP BY provider, window_start, window_end, keyword
+                )
                 INSERT INTO keyword_trends (provider, window_start, window_end, keyword, keyword_count, processed_at)
                 SELECT provider, window_start, window_end, keyword, keyword_count, processed_at
-                FROM stg_keyword_trends
+                FROM dedup
                 ON CONFLICT (provider, window_start, window_end, keyword)
                 DO UPDATE SET
                     keyword_count = keyword_trends.keyword_count + EXCLUDED.keyword_count,
@@ -223,9 +244,21 @@ def upsert_from_staging_keyword_relations() -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
+                WITH dedup AS (
+                    SELECT
+                        provider,
+                        window_start,
+                        window_end,
+                        keyword_a,
+                        keyword_b,
+                        SUM(cooccurrence_count) AS cooccurrence_count,
+                        MAX(processed_at) AS processed_at
+                    FROM stg_keyword_relations
+                    GROUP BY provider, window_start, window_end, keyword_a, keyword_b
+                )
                 INSERT INTO keyword_relations (provider, window_start, window_end, keyword_a, keyword_b, cooccurrence_count, processed_at)
                 SELECT provider, window_start, window_end, keyword_a, keyword_b, cooccurrence_count, processed_at
-                FROM stg_keyword_relations
+                FROM dedup
                 ON CONFLICT (provider, window_start, window_end, keyword_a, keyword_b)
                 DO UPDATE SET
                     cooccurrence_count = keyword_relations.cooccurrence_count + EXCLUDED.cooccurrence_count,

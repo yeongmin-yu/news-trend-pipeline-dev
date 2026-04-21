@@ -92,47 +92,114 @@ flowchart LR
 - 선택 키워드와 시간대에 해당하는 관련 기사 목록 및 원문 링크
 
 ## 디렉토리 구조
-
-src layout으로 리팩토링되었습니다. 애플리케이션 코드는 `src/news_trend_pipeline/` 패키지 안으로 모으고, Airflow DAG/Docker 설정/런타임 산출물을 각각 별도 최상위 폴더로 분리했습니다.
-
 ```text
 news-trend-pipeline/
-├─ src/
+├─ src/                       # dev mount -> /opt/news-trend-pipeline/src
 │  └─ news_trend_pipeline/
 │     ├─ __init__.py
-│     ├─ core/                # 공통 설정, 로거, 유틸 (구 common/)
+│     ├─ core/                # 공통 설정, 로거, 유틸
 │     ├─ ingestion/           # API client / Kafka producer / replay
-│     ├─ processing/          # (예정) Spark 집계
-│     ├─ analytics/           # (예정) 이벤트 분석
-│     ├─ api/                 # (예정) FastAPI 조회 계층
-│     └─ dashboard/           # (예정) Streamlit 대시보드
+│     ├─ processing/          # Spark 집계
+│     ├─ analytics/           # 복합명사 / 이벤트 분석
+│     ├─ api/                 # FastAPI 조회 계층
+│     └─ dashboard/           # Streamlit 대시보드
 ├─ airflow/
-│  └─ dags/                   # Airflow DAG 정의 (구 batch/dags/)
+│  └─ dags/                   # dev mount -> /opt/airflow/dags
 ├─ infra/
 │  └─ airflow/
 │     ├─ Dockerfile.airflow   # Airflow 이미지
-│     ├─ config/              # airflow.cfg
-│     └─ plugins/             # Airflow plugins
+│     ├─ config/              # dev mount -> /opt/airflow/config
+│     └─ plugins/             # dev mount -> /opt/airflow/plugins
 ├─ runtime/
-│  ├─ state/                  # 수집 상태, dead_letter.jsonl 등 (구 state/)
-│  └─ logs/                   # Airflow 로그 (구 airflow-docker/logs/)
+│  ├─ state/                  # dev mount -> /opt/news-trend-pipeline/runtime/state
+│  ├─ checkpoints/            # dev mount -> /opt/news-trend-pipeline/runtime/checkpoints
+│  ├─ logs/                   # dev mount -> /opt/airflow/logs
+│  └─ spark-events/           # dev mount -> /tmp/spark-events
 ├─ tests/
 │  ├─ unit/
 │  └─ integration/
-├─ scripts/                   # Kafka consumer 확인 스크립트 등
+├─ scripts/                   # dev mount -> /opt/news-trend-pipeline/scripts
 ├─ docs/
 │  ├─ DIRECTION.md
 │  ├─ STEP1_KAFKA.md
-│  ├─ STEP1_KAFKA_2.md        # Naver 병렬 호출 + URL partition key + 구조 리팩토링
-│  └─ DISASTER_RECOVERY.md
-├─ requirements/              # 레거시 requirements (Docker 빌드에서 사용)
+│  ├─ STEP1_KAFKA_2.md
+│  ├─ DISASTER_RECOVERY.md
+│  └─ FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md
+├─ requirements/              # Docker 빌드에서 사용
 ├─ pyproject.toml             # setuptools src layout 패키지 설정
 ├─ docker-compose.yml
 ├─ .env / .env.example
 └─ README.md
 ```
 
-컨테이너 안에서는 프로젝트 루트를 `/opt/news-trend-pipeline` 에 마운트하며, `PYTHONPATH=/opt/news-trend-pipeline/src` 로 `news_trend_pipeline` 패키지를 import할 수 있도록 구성되어 있습니다. 로컬 개발 시에는 `pip install -e .` 로 editable 설치를 사용하거나 `PYTHONPATH=src` 환경변수를 설정하세요.
+개발용 `docker-compose.yml` 은 전체 프로젝트를 통째로 mount 하지 않고, 서비스별로 필요한 폴더만 부분 mount 합니다.
+
+### 개발용 mount 매핑
+
+| 서비스 그룹 | 실제 컨테이너 | 호스트 디렉터리 | 컨테이너 경로 | 용도 |
+| --- | --- | --- | --- | --- |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./src` | `/opt/news-trend-pipeline/src` | DAG 내부에서 애플리케이션 패키지 import |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./runtime/state` | `/opt/news-trend-pipeline/runtime/state` | producer 상태, dead letter, replay 상태 파일 유지 |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./airflow/dags` | `/opt/airflow/dags` | 수집/재처리/사전 추출 DAG 로딩 |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./runtime/logs` | `/opt/airflow/logs` | Airflow 실행 로그 저장 |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./infra/airflow/config` | `/opt/airflow/config` | Airflow 설정 파일 제공 |
+| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./infra/airflow/plugins` | `/opt/airflow/plugins` | Airflow 커스텀 플러그인 로딩 |
+| Spark 처리 | `spark-streaming` | `./src` | `/opt/news-trend-pipeline/src` | 스트리밍 애플리케이션 import |
+| Spark 처리 | `spark-streaming` | `./scripts` | `/opt/news-trend-pipeline/scripts` | `spark-submit` 진입 스크립트 실행 |
+| Spark 처리 | `spark-streaming` | `./runtime/checkpoints` | `/opt/news-trend-pipeline/runtime/checkpoints` | Structured Streaming 체크포인트 유지 |
+| Spark 처리 | `spark-streaming` | `./runtime/spark-events` | `/tmp/spark-events` | Spark event log 저장 |
+| Spark 클러스터 | `spark-master`, `spark-worker-1`, `spark-worker-2` | `./src` | `/opt/news-trend-pipeline/src` | 공통 코드 참조 및 실행 환경 일치 |
+| Spark 클러스터 | `spark-master`, `spark-worker-1`, `spark-worker-2` | `./runtime/spark-events` | `/tmp/spark-events` | Spark event log 공유 |
+| Spark UI | `spark-history` | `./runtime/spark-events` | `/tmp/spark-events` | 저장된 event log 기반 History UI 제공 |
+
+정리하면:
+- Airflow는 `src`, `dags`, `runtime/state`, `runtime/logs`, `config`, `plugins`만 봅니다.
+- `spark-streaming` 은 `src`, `scripts`, `runtime/checkpoints`, `runtime/spark-events`만 봅니다.
+- `spark-master`, `spark-worker-*`, `spark-history` 는 클러스터 동작에 필요한 최소 경로만 공유합니다.
+
+컨테이너 내부 import 경로는 `PYTHONPATH=/opt/news-trend-pipeline/src` 기준입니다. 로컬 개발 시에는 `pip install -e .` 를 사용하거나 `PYTHONPATH=src` 환경변수를 설정하세요.
+
+요약:
+- 개발 단계에서는 코드 변경을 빠르게 반영하기 위해 필요한 디렉터리만 bind mount 합니다.
+- 운영 전환 단계에서는 bind mount 의존을 줄이고 이미지 `COPY` 중심으로 바꾸는 것을 권장합니다.
+- 운영 전환 체크리스트는 [`docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md`](./docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md) 에 정리되어 있습니다.
+
+## Docker 서비스 구성
+
+현재 `docker-compose.yml` 기준으로 아래 서비스들이 함께 올라갑니다.
+
+### 서비스별 역할
+
+| 서비스 | 주요 포트 | 역할 |
+| --- | --- | --- |
+| `zookeeper` | `2181` | Kafka 브로커 메타데이터 관리 |
+| `kafka` | `9092` | 뉴스 메시지 적재용 Kafka 브로커 |
+| `kafka-init` | 없음 | 부팅 시 `news_topic` 토픽 생성 보장 |
+| `app-postgres` | `5432` | 기사 원문, 키워드, 트렌드, 연관 키워드 저장용 애플리케이션 DB |
+| `airflow-postgres` | 내부 전용 | Airflow 메타데이터 DB |
+| `spark-master` | `7077`, `8080` | Spark standalone master 및 클러스터 UI |
+| `spark-worker-1` | `8081` | Spark worker 1 |
+| `spark-worker-2` | `8082` | Spark worker 2 |
+| `spark-history` | `18080` | Spark event log 기반 History UI |
+| `spark-streaming` | 없음 | Kafka를 읽어 Spark 집계를 수행하고 PostgreSQL에 적재 |
+| `airflow-apiserver` | `9080` | Airflow API/UI 제공 |
+| `airflow-scheduler` | 내부 전용 | 수집/재처리/사전 추출 DAG 스케줄링 |
+| `airflow-dag-processor` | 내부 전용 | DAG 파싱 및 처리 |
+| `airflow-triggerer` | 내부 전용 | deferrable task/trigger 처리 |
+| `airflow-init` | 없음 | Airflow DB 마이그레이션, 관리자 계정 생성, 초기 디렉터리 준비 |
+
+### 서비스 묶음 관점
+
+- 메시징 계층: `zookeeper`, `kafka`, `kafka-init`
+- 저장 계층: `app-postgres`, `airflow-postgres`
+- 처리 계층: `spark-master`, `spark-worker-1`, `spark-worker-2`, `spark-history`, `spark-streaming`
+- 오케스트레이션 계층: `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init`
+
+구성 흐름 요약:
+- Airflow가 뉴스 수집과 재처리 DAG를 실행합니다.
+- 수집된 뉴스는 Kafka `news_topic` 으로 들어갑니다.
+- `spark-streaming` 이 Kafka를 소비해 PostgreSQL 집계 테이블을 갱신합니다.
+- Airflow와 Spark는 서로 다른 역할을 가지며, Airflow는 오케스트레이션, Spark는 스트리밍 처리에 집중합니다.
 
 ## 실행
 

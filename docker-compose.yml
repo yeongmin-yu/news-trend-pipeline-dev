@@ -30,7 +30,8 @@ x-airflow-common:
     SPARK_APP_NAME: ${SPARK_APP_NAME:-news-trend-pipeline}
     SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
   volumes:
-    - .:/opt/news-trend-pipeline
+    - ./src:/opt/news-trend-pipeline/src
+    - ./runtime/state:/opt/news-trend-pipeline/runtime/state
     - ./airflow/dags:/opt/airflow/dags
     - ./runtime/logs:/opt/airflow/logs
     - ./infra/airflow/config:/opt/airflow/config
@@ -143,7 +144,7 @@ services:
       - "7077:7077"
       - "8080:8080"
     volumes:
-      - .:/opt/news-trend-pipeline
+      - ./src:/opt/news-trend-pipeline/src
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
@@ -158,7 +159,7 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - .:/opt/news-trend-pipeline
+      - ./src:/opt/news-trend-pipeline/src
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
@@ -173,7 +174,7 @@ services:
     ports:
       - "8082:8081"
     volumes:
-      - .:/opt/news-trend-pipeline
+      - ./src:/opt/news-trend-pipeline/src
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
@@ -227,7 +228,9 @@ services:
       spark-master:
         condition: service_started
     volumes:
-      - .:/opt/news-trend-pipeline
+      - ./src:/opt/news-trend-pipeline/src
+      - ./scripts:/opt/news-trend-pipeline/scripts
+      - ./runtime/checkpoints:/opt/news-trend-pipeline/runtime/checkpoints
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
@@ -301,8 +304,8 @@ services:
       - -c
       - |
         mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config
-        mkdir -p /opt/news-trend-pipeline/runtime/state /opt/news-trend-pipeline/runtime/logs /opt/news-trend-pipeline/runtime/checkpoints /opt/news-trend-pipeline/runtime/spark-events
-        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow /opt/news-trend-pipeline
+        mkdir -p /opt/news-trend-pipeline/runtime/state
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow /opt/news-trend-pipeline/runtime/state
         /entrypoint airflow db migrate
         /entrypoint airflow users create \
           --username "${_AIRFLOW_WWW_USER_USERNAME:-airflow}" \
