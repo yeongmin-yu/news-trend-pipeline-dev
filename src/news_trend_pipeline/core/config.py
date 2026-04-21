@@ -101,5 +101,9 @@ class Settings:
             f"password={self.postgres_password}"
         )
 
+    @property
+    def spark_jdbc_url(self) -> str:
+        return f"jdbc:postgresql://{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+
 
 settings = Settings()
