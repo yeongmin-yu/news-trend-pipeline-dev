@@ -221,6 +221,7 @@ news-trend-pipeline/
 - `KAFKA_BOOTSTRAP_SERVERS`: Kafka 접속 주소
 - `KAFKA_TOPIC`: 정상 메시지 topic
 - `STATE_DIR`: 수집 상태/Dead Letter 파일 경로 (기본 `./runtime/state`)
+- `DICTIONARY_REFRESH_INTERVAL_SECONDS`: 복합명사/불용어 사전 버전 확인 주기 (기본 60초)
 
 ```powershell
 Copy-Item .env.example .env

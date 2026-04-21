@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -10,6 +12,9 @@ try:
     from kiwipiepy import Kiwi
 except ImportError:  # pragma: no cover
     Kiwi = None
+
+from news_trend_pipeline.core.config import settings
+from news_trend_pipeline.core.logger import get_logger
 
 
 # DB를 사용할 수 없는 환경의 fallback 불용어
@@ -65,11 +70,70 @@ KOREAN_NOUN_TAGS = {"NNG", "NNP"}
 DEFAULT_DICT_PATH = Path(__file__).resolve().parents[1] / "core" / "korean_user_dict.txt"
 KOREAN_USER_DICT_PATH = Path(os.getenv("KOREAN_USER_DICT_PATH", str(DEFAULT_DICT_PATH)))
 USER_WORD_SCORE = 5.0
+logger = get_logger(__name__)
+_DICTIONARY_VERSION_NAMES = ("compound_noun_dict", "stopword_dict")
+_dictionary_refresh_lock = threading.Lock()
+_cached_dictionary_versions: dict[str, int] | None = None
+_last_dictionary_version_check_at = 0.0
 
 
 # ---------------------------------------------------------------------------
 # 사전 로딩 — DB 우선, 실패 시 파일/기본값 fallback
 # ---------------------------------------------------------------------------
+
+
+def _clear_dictionary_caches() -> None:
+    get_user_dictionary.cache_clear()
+    get_user_dictionary_set.cache_clear()
+    _get_max_compound_len.cache_clear()
+    get_kiwi.cache_clear()
+    _get_stopwords.cache_clear()
+
+
+def _refresh_dictionary_caches_if_needed(*, force: bool = False) -> None:
+    global _cached_dictionary_versions
+    global _last_dictionary_version_check_at
+
+    now = time.monotonic()
+    refresh_interval = max(settings.dictionary_refresh_interval_seconds, 1)
+    if not force and (now - _last_dictionary_version_check_at) < refresh_interval:
+        return
+
+    with _dictionary_refresh_lock:
+        now = time.monotonic()
+        if not force and (now - _last_dictionary_version_check_at) < refresh_interval:
+            return
+
+        _last_dictionary_version_check_at = now
+        try:
+            from news_trend_pipeline.storage.db import fetch_dictionary_versions  # noqa: PLC0415
+
+            latest_versions = fetch_dictionary_versions()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Dictionary version check skipped: %s", exc)
+            return
+
+        normalized_versions = {
+            name: int(latest_versions.get(name, 1))
+            for name in _DICTIONARY_VERSION_NAMES
+        }
+
+        if _cached_dictionary_versions is None:
+            _cached_dictionary_versions = normalized_versions
+            logger.info("Dictionary versions initialized: %s", normalized_versions)
+            return
+
+        if normalized_versions == _cached_dictionary_versions:
+            return
+
+        previous_versions = _cached_dictionary_versions
+        _clear_dictionary_caches()
+        _cached_dictionary_versions = normalized_versions
+        logger.info(
+            "Dictionary versions changed: %s -> %s. Reloading cached dictionaries.",
+            previous_versions,
+            normalized_versions,
+        )
 
 def _load_user_dictionary_from_file(path: Path = KOREAN_USER_DICT_PATH) -> list[str]:
     """텍스트 파일에서 복합명사 목록을 로드한다 (fallback용)."""
@@ -203,6 +267,7 @@ def clean_text(text: str | None) -> str:
 
 
 def tokenize(text: str | None) -> list[str]:
+    _refresh_dictionary_caches_if_needed()
     cleaned = clean_text(text)
     stopwords = _get_stopwords()
     kiwi = get_kiwi()

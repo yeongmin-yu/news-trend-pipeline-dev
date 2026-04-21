@@ -114,6 +114,44 @@ CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status ON compound_noun_
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency ON compound_noun_candidates(frequency DESC);
 CREATE INDEX IF NOT EXISTS idx_stopword_dict_language ON stopword_dict(language);
 
+-- 사전 버전 메타데이터 (hot reload 감지용)
+CREATE TABLE IF NOT EXISTS dictionary_versions (
+    dict_name   VARCHAR(50) PRIMARY KEY,
+    version     BIGINT      NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO dictionary_versions (dict_name, version)
+VALUES
+    ('compound_noun_dict', 1),
+    ('stopword_dict', 1)
+ON CONFLICT (dict_name) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION bump_dictionary_version() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO dictionary_versions (dict_name, version, updated_at)
+    VALUES (TG_TABLE_NAME, 2, now())
+    ON CONFLICT (dict_name)
+    DO UPDATE SET
+        version = dictionary_versions.version + 1,
+        updated_at = now();
+
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_bump_compound_noun_dict_version ON compound_noun_dict;
+CREATE TRIGGER trg_bump_compound_noun_dict_version
+AFTER INSERT OR UPDATE OR DELETE ON compound_noun_dict
+FOR EACH ROW
+EXECUTE FUNCTION bump_dictionary_version();
+
+DROP TRIGGER IF EXISTS trg_bump_stopword_dict_version ON stopword_dict;
+CREATE TRIGGER trg_bump_stopword_dict_version
+AFTER INSERT OR UPDATE OR DELETE ON stopword_dict
+FOR EACH ROW
+EXECUTE FUNCTION bump_dictionary_version();
+
 -- Unique indexes for upsert correctness (streaming 재처리 대비)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_trends_unique
     ON keyword_trends(provider, window_start, window_end, keyword);

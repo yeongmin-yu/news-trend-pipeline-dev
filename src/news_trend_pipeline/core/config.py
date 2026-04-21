@@ -84,6 +84,7 @@ class Settings:
     compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))
     compound_extraction_min_char_length: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_CHAR_LENGTH", "4"))
     compound_extraction_max_morpheme_count: int = int(os.getenv("COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT", "4"))
+    dictionary_refresh_interval_seconds: int = int(os.getenv("DICTIONARY_REFRESH_INTERVAL_SECONDS", "60"))
 
     postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
     postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))

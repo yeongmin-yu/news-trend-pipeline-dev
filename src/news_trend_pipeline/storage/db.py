@@ -77,6 +77,21 @@ def fetch_stopwords(language: str = "ko") -> set[str]:
             return {row[0] for row in cursor.fetchall()}
 
 
+def fetch_dictionary_versions() -> dict[str, int]:
+    """사전 버전 메타데이터를 반환한다."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT dict_name, version
+                FROM dictionary_versions
+                WHERE dict_name IN ('compound_noun_dict', 'stopword_dict')
+                ORDER BY dict_name
+                """
+            )
+            return {row[0]: int(row[1]) for row in cursor.fetchall()}
+
+
 def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict[str, Any]]:
     """복합명사 후보 추출용 기사 목록을 ingested_at 범위로 조회한다."""
     with get_connection() as conn:
