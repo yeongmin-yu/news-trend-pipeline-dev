@@ -16,6 +16,7 @@ if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from news_trend_pipeline.core.config import settings
+from news_trend_pipeline.core.schemas import NormalizedNewsArticle
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -60,13 +61,14 @@ def main(argv: list[str] | None = None) -> int:
     count = 0
     for message in consumer:
         count += 1
+        article = NormalizedNewsArticle.from_dict(message.value)
         print(
             json.dumps(
                 {
                     "topic": message.topic,
                     "partition": message.partition,
                     "offset": message.offset,
-                    "value": message.value,
+                    "value": article.to_dict(include_metadata=True),
                 },
                 ensure_ascii=False,
                 indent=2,

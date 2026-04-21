@@ -5,7 +5,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,6 +16,7 @@ from kafka.errors import KafkaError, KafkaTimeoutError
 
 from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.core.logger import get_logger
+from news_trend_pipeline.core.schemas import NormalizedNewsArticle
 from news_trend_pipeline.core.utils import ensure_dir, read_json, utc_now_iso
 from news_trend_pipeline.ingestion.api_client import (
     BaseNewsClient,
@@ -34,39 +35,26 @@ LOCK_FILE = STATE_FILE.with_suffix(".lock")
 # ── Dead Letter 레코드 ─────────────────────────────────────────────────────────
 
 def _make_dead_letter_record(
-    article: dict[str, Any],
+    article: Mapping[str, Any] | NormalizedNewsArticle,
     reason: str,
     attempt: int = 1,
 ) -> dict[str, Any]:
     """Kafka 전송 실패 메시지를 Dead Letter 레코드로 감쌉니다."""
+    normalized = article if isinstance(article, NormalizedNewsArticle) else NormalizedNewsArticle.from_dict(article)
     return {
         "failed_at": utc_now_iso(),
         "reason": reason,
         "attempt": attempt,
-        "payload": article,
+        "payload": normalized.to_dict(include_internal=True),
     }
 
 
 # ── 메시지 빌더 ───────────────────────────────────────────────────────────────
 
-def build_message(article: dict[str, Any]) -> dict[str, Any]:
-    """article dict에 metadata 블록을 추가하여 최종 Kafka 메시지를 반환합니다.
-
-    내부 필드(`_`로 시작)는 Kafka로 나가지 않도록 제거합니다.
-    `_query` 필드는 수집 시 사용한 테마 키워드를 담고 있으며, metadata.query로 옮깁니다.
-    """
-    provider = article.get("provider", "unknown")
-    query = article.get("_query") or ""
-    # 내부 전용 필드(_로 시작) 제거
-    clean_article = {k: v for k, v in article.items() if not k.startswith("_")}
-    return {
-        **clean_article,
-        "metadata": {
-            "source": provider,
-            "version": settings.schema_version,
-            "query": query,
-        },
-    }
+def build_message(article: Mapping[str, Any] | NormalizedNewsArticle) -> dict[str, Any]:
+    """정규화 기사 스키마를 Kafka 메시지 포맷으로 직렬화합니다."""
+    normalized = article if isinstance(article, NormalizedNewsArticle) else NormalizedNewsArticle.from_dict(article)
+    return normalized.to_message(schema_version=settings.schema_version)
 
 
 # ── Producer ─────────────────────────────────────────────────────────────────
@@ -162,13 +150,13 @@ class NewsKafkaProducer:
         # (1) `providers` 래퍼가 없는 초기 구 포맷 보정.
         if "providers" not in raw:
             logger.info("이전 상태 파일(providers 래퍼 없음) 을 신 포맷으로 변환합니다.")
-            legacy_last_ts: str = raw.get("last_timestamp", "") or ""
-            legacy_urls = raw.get("published_urls", [])
+            previous_last_ts: str = raw.get("last_timestamp", "") or ""
+            previous_urls = raw.get("published_urls", [])
             raw = {
                 "providers": {
                     "naver": {
-                        "last_timestamp": legacy_last_ts,
-                        "published_urls": legacy_urls,
+                        "last_timestamp": previous_last_ts,
+                        "published_urls": previous_urls,
                     }
                 }
             }
@@ -186,17 +174,17 @@ class NewsKafkaProducer:
             provider_state.setdefault("published_urls", [])
 
             # (2) `last_timestamp` 가 남아 있으면 keyword_timestamps 로 흡수.
-            legacy_ts = provider_state.pop("last_timestamp", None)
-            if legacy_ts:
+            previous_ts = provider_state.pop("last_timestamp", None)
+            if previous_ts:
                 if provider_name == "naver":
                     # Naver 는 테마 키워드별 체크포인트이므로,
                     # 현재 설정된 키워드 전부에 구 타임스탬프를 초기 시드.
                     for keyword in settings.naver_theme_keywords:
                         if keyword and keyword not in keyword_timestamps:
-                            keyword_timestamps[keyword] = legacy_ts
+                            keyword_timestamps[keyword] = previous_ts
                 else:
                     # 기타 프로바이더: 프로바이더명을 키로 단일 엔트리로 시드.
-                    keyword_timestamps.setdefault(provider_name, legacy_ts)
+                    keyword_timestamps.setdefault(provider_name, previous_ts)
                 migrated_any = True
 
         if migrated_any:
