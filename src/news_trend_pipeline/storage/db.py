@@ -65,7 +65,7 @@ def insert_news_raw(articles: list[dict[str, Any]]) -> None:
     """
     rows = [
         (
-            article.get("provider", "newsapi"),
+            article.get("provider"),
             article.get("source"),
             article.get("author"),
             article.get("title"),
@@ -96,7 +96,7 @@ def insert_keyword_trends(rows: list[dict[str, Any]]) -> None:
     """
     values = [
         (
-            row.get("provider", "newsapi"),
+            row.get("provider"),
             row["window_start"],
             row["window_end"],
             row["keyword"],
@@ -128,7 +128,7 @@ def insert_keyword_relations(rows: list[dict[str, Any]]) -> None:
     """
     values = [
         (
-            row.get("provider", "newsapi"),
+            row.get("provider"),
             row["window_start"],
             row["window_end"],
             row["keyword_a"],
@@ -171,7 +171,7 @@ def replace_keyword_trends(rows: list[dict[str, Any]], *, window_start: datetime
     """
     values = [
         (
-            row.get("provider", provider or "newsapi"),
+            row.get("provider", provider),
             row["window_start"],
             row["window_end"],
             row["keyword"],
@@ -198,7 +198,7 @@ def rebuild_keywords_for_date(target_date: date, provider: str | None = None) ->
     processed_at = datetime.now(timezone.utc)
     rows: list[tuple[str, str, str, int, datetime]] = []
     article_keys = [
-        (article.get("provider", "newsapi"), article["url"])
+        (article.get("provider"), article["url"])
         for article in articles
         if article.get("url")
     ]
@@ -210,10 +210,10 @@ def rebuild_keywords_for_date(target_date: date, provider: str | None = None) ->
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        counts = Counter(tokenize(article_text, provider=article.get("provider")))
+        counts = Counter(tokenize(article_text))
         rows.extend(
             (
-                article.get("provider", "newsapi"),
+                article.get("provider"),
                 article_url,
                 keyword,
                 count,
@@ -260,8 +260,8 @@ def rebuild_keyword_trends_for_date(target_date: date, provider: str | None = No
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        for keyword, count in Counter(tokenize(article_text, provider=article.get("provider"))).items():
-            window_counts[(article.get("provider", "newsapi"), window_start, window_end, keyword)] += count
+        for keyword, count in Counter(tokenize(article_text)).items():
+            window_counts[(article.get("provider"), window_start, window_end, keyword)] += count
 
     rows = [
         {
@@ -297,14 +297,14 @@ def rebuild_keyword_relations_for_date(target_date: date, provider: str | None =
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        keyword_counts = Counter(tokenize(article_text, provider=article.get("provider")))
+        keyword_counts = Counter(tokenize(article_text))
         representative_keywords = [
             keyword
             for keyword, _ in sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[: settings.relation_keyword_limit]
         ]
         for idx, keyword_a in enumerate(representative_keywords):
             for keyword_b in representative_keywords[idx + 1 :]:
-                relation_counts[(article.get("provider", "newsapi"), window_start, window_end, keyword_a, keyword_b)] += 1
+                relation_counts[(article.get("provider"), window_start, window_end, keyword_a, keyword_b)] += 1
 
     rows = [
         {

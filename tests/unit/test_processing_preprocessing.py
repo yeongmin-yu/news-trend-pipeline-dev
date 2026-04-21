@@ -1,9 +1,9 @@
 from news_trend_pipeline.processing.preprocessing import clean_text, merge_compound_nouns
 
 
-def test_clean_text_removes_html_for_naver() -> None:
+def test_clean_text_removes_html_and_non_korean() -> None:
     text = "<b>AI</b> 2026 혁신!"
-    assert clean_text(text, provider="naver") == "혁신"
+    assert clean_text(text) == "혁신"
 
 
 def test_merge_compound_nouns_prefers_longest_match() -> None:

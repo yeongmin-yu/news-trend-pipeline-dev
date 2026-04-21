@@ -11,101 +11,6 @@ try:
 except ImportError:  # pragma: no cover
     Kiwi = None
 
-try:
-    import spacy
-except ImportError:  # pragma: no cover
-    spacy = None
-
-
-ENGLISH_STOPWORDS = {
-    "a",
-    "about",
-    "after",
-    "all",
-    "also",
-    "an",
-    "and",
-    "any",
-    "are",
-    "as",
-    "at",
-    "be",
-    "been",
-    "before",
-    "being",
-    "but",
-    "by",
-    "can",
-    "could",
-    "do",
-    "does",
-    "even",
-    "for",
-    "from",
-    "has",
-    "have",
-    "he",
-    "her",
-    "here",
-    "his",
-    "how",
-    "http",
-    "https",
-    "if",
-    "in",
-    "into",
-    "is",
-    "it",
-    "its",
-    "just",
-    "like",
-    "may",
-    "more",
-    "most",
-    "new",
-    "news",
-    "not",
-    "of",
-    "on",
-    "one",
-    "only",
-    "or",
-    "our",
-    "out",
-    "over",
-    "reuters",
-    "s",
-    "said",
-    "says",
-    "she",
-    "should",
-    "so",
-    "some",
-    "that",
-    "the",
-    "their",
-    "them",
-    "there",
-    "these",
-    "they",
-    "this",
-    "those",
-    "to",
-    "up",
-    "us",
-    "using",
-    "via",
-    "was",
-    "we",
-    "were",
-    "what",
-    "will",
-    "with",
-    "would",
-    "www",
-    "you",
-    "your",
-}
 
 KOREAN_STOPWORDS = {
     "기자",
@@ -156,10 +61,8 @@ KOREAN_STOPWORDS = {
 
 KOREAN_TOKEN_PATTERN = r"[\uAC00-\uD7A3]+"
 KOREAN_NOUN_TAGS = {"NNG", "NNP"}
-ENGLISH_NOUN_TAGS = {"NOUN", "PROPN"}
 DEFAULT_DICT_PATH = Path(__file__).resolve().parents[1] / "core" / "korean_user_dict.txt"
 KOREAN_USER_DICT_PATH = Path(os.getenv("KOREAN_USER_DICT_PATH", str(DEFAULT_DICT_PATH)))
-SPACY_MODEL_NAME = os.getenv("SPACY_MODEL_NAME", "en_core_web_sm")
 USER_WORD_SCORE = 5.0
 
 
@@ -214,19 +117,6 @@ def get_kiwi() -> Kiwi | None:
     return kiwi
 
 
-@lru_cache(maxsize=1)
-def get_spacy_nlp():
-    if spacy is None:
-        return None
-    try:
-        return spacy.load(
-            SPACY_MODEL_NAME,
-            disable=["parser", "lemmatizer", "ner", "textcat"],
-        )
-    except Exception:  # pragma: no cover
-        return None
-
-
 def merge_compound_nouns(
     tokens: list[str],
     user_dict: frozenset[str] | None = None,
@@ -263,68 +153,39 @@ def merge_compound_nouns(
     return result
 
 
-def clean_text(text: str | None, provider: str | None = None) -> str:
+def clean_text(text: str | None) -> str:
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = re.sub(r"http\S+", " ", text)
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\[\+\d+\s+chars\]", " ", text)
-    if provider == "naver":
-        text = text.lower()
-        text = re.sub(r"[^\uAC00-\uD7A3\s]", " ", text)
-    else:
-        text = re.sub(r"[^A-Za-z0-9\s]", " ", text)
+    text = text.lower()
+    text = re.sub(r"[^\uAC00-\uD7A3\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-def tokenize(text: str | None, provider: str | None = None) -> list[str]:
-    cleaned = clean_text(text, provider=provider)
-    if provider == "naver":
-        kiwi = get_kiwi()
-        if kiwi is not None:
-            raw_nouns: list[str] = []
-            raw_spans: list[tuple[int, int]] = []
-            for token in kiwi.tokenize(cleaned):
-                normalized = unicodedata.normalize("NFC", token.form)
-                if token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
-                    raw_nouns.append(normalized)
-                    raw_spans.append((token.start, token.start + token.len))
-            merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(), spans=raw_spans)
-            nouns = [token for token in merged if len(token) > 1 and token not in KOREAN_STOPWORDS]
-            if nouns:
-                return nouns
-
-        fallback_tokens = [
-            token
-            for token in cleaned.split()
-            if token and token not in KOREAN_STOPWORDS and len(token) > 1 and re.fullmatch(KOREAN_TOKEN_PATTERN, token)
-        ]
-        merged_fallback = merge_compound_nouns(fallback_tokens, get_user_dictionary_set())
-        return [token for token in merged_fallback if len(token) > 1 and token not in KOREAN_STOPWORDS]
-
-    nlp = get_spacy_nlp()
-    if nlp is not None:
-        nouns = [
-            token.text.lower()
-            for token in nlp(cleaned)
-            if token.pos_ in ENGLISH_NOUN_TAGS
-            and token.text
-            and token.text.lower() not in ENGLISH_STOPWORDS
-            and len(token.text) > 1
-            and not token.text.isdigit()
-            and re.search(r"[a-z]", token.text.lower())
-        ]
+def tokenize(text: str | None) -> list[str]:
+    cleaned = clean_text(text)
+    kiwi = get_kiwi()
+    if kiwi is not None:
+        raw_nouns: list[str] = []
+        raw_spans: list[tuple[int, int]] = []
+        for token in kiwi.tokenize(cleaned):
+            normalized = unicodedata.normalize("NFC", token.form)
+            if token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
+                raw_nouns.append(normalized)
+                raw_spans.append((token.start, token.start + token.len))
+        merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(), spans=raw_spans)
+        nouns = [token for token in merged if len(token) > 1 and token not in KOREAN_STOPWORDS]
         if nouns:
             return nouns
 
-    return [
-        token.lower()
+    fallback_tokens = [
+        token
         for token in cleaned.split()
-        if token
-        and token.lower() not in ENGLISH_STOPWORDS
-        and len(token) > 1
-        and not token.isdigit()
-        and re.search(r"[a-z]", token.lower())
+        if token and token not in KOREAN_STOPWORDS and len(token) > 1 and re.fullmatch(KOREAN_TOKEN_PATTERN, token)
     ]
+    merged_fallback = merge_compound_nouns(fallback_tokens, get_user_dictionary_set())
+    return [token for token in merged_fallback if len(token) > 1 and token not in KOREAN_STOPWORDS]
