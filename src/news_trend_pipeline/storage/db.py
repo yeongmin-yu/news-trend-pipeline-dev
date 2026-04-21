@@ -83,7 +83,7 @@ def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT title, description, content
+                SELECT title, summary
                 FROM news_raw
                 WHERE ingested_at >= %s AND ingested_at < %s
                 ORDER BY ingested_at ASC
@@ -178,8 +178,8 @@ def upsert_from_staging_news_raw() -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO news_raw (provider, source, author, title, description, content, url, published_at, ingested_at)
-                SELECT provider, source, author, title, description, content, url, published_at, ingested_at
+                INSERT INTO news_raw (provider, source, title, summary, url, published_at, ingested_at)
+                SELECT provider, source, title, summary, url, published_at, ingested_at
                 FROM stg_news_raw
                 ON CONFLICT (provider, url) DO NOTHING;
                 TRUNCATE stg_news_raw;
@@ -275,25 +275,21 @@ def insert_news_raw(articles: list[dict[str, Any]]) -> None:
         INSERT INTO news_raw (
             provider,
             source,
-            author,
             title,
-            description,
-            content,
+            summary,
             url,
             published_at,
             ingested_at
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (provider, url) DO NOTHING
     """
     rows = [
         (
             article.get("provider"),
             article.get("source"),
-            article.get("author"),
             article.get("title"),
-            article.get("description"),
-            article.get("content"),
+            article.get("summary") or article.get("description") or article.get("content"),
             article.get("url"),
             article.get("published_at"),
             article.get("ingested_at"),
@@ -368,7 +364,7 @@ def insert_keyword_relations(rows: list[dict[str, Any]]) -> None:
 
 def fetch_news_raw_between(start_at: datetime, end_at: datetime, provider: str | None = None) -> list[dict[str, Any]]:
     query = """
-        SELECT provider, source, author, title, description, content, url, published_at, ingested_at
+        SELECT provider, source, title, summary, url, published_at, ingested_at
         FROM news_raw
         WHERE published_at >= %s
           AND published_at < %s
@@ -431,7 +427,7 @@ def rebuild_keywords_for_date(target_date: date, provider: str | None = None) ->
         if not article_url:
             continue
         article_text = " ".join(
-            part for part in [article.get("title"), article.get("description"), article.get("content")] if part
+            part for part in [article.get("title"), article.get("summary")] if part
         )
         counts = Counter(tokenize(article_text))
         rows.extend(
@@ -481,7 +477,7 @@ def rebuild_keyword_trends_for_date(target_date: date, provider: str | None = No
         window_start = normalized.replace(minute=minute_bucket)
         window_end = window_start + timedelta(minutes=10)
         article_text = " ".join(
-            part for part in [article.get("title"), article.get("description"), article.get("content")] if part
+            part for part in [article.get("title"), article.get("summary")] if part
         )
         for keyword, count in Counter(tokenize(article_text)).items():
             window_counts[(article.get("provider"), window_start, window_end, keyword)] += count
@@ -518,7 +514,7 @@ def rebuild_keyword_relations_for_date(target_date: date, provider: str | None =
         window_start = normalized.replace(minute=minute_bucket)
         window_end = window_start + timedelta(minutes=10)
         article_text = " ".join(
-            part for part in [article.get("title"), article.get("description"), article.get("content")] if part
+            part for part in [article.get("title"), article.get("summary")] if part
         )
         keyword_counts = Counter(tokenize(article_text))
         representative_keywords = [

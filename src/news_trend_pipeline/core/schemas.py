@@ -61,10 +61,8 @@ class ArticleMetadata:
 class NormalizedNewsArticle:
     provider: str
     source: str | None
-    author: str | None
     title: str
-    description: str | None
-    content: str | None
+    summary: str | None
     url: str
     published_at: str | None
     ingested_at: str
@@ -81,10 +79,13 @@ class NormalizedNewsArticle:
         return cls(
             provider=_normalize_required_text(payload.get("provider", "unknown"), "provider"),
             source=_normalize_optional_text(payload.get("source")),
-            author=_normalize_optional_text(payload.get("author")),
             title=_normalize_required_text(payload.get("title"), "title"),
-            description=_normalize_optional_text(payload.get("description")),
-            content=_normalize_optional_text(payload.get("content")),
+            # Legacy payloads may still provide description/content instead of summary.
+            summary=_normalize_optional_text(
+                payload.get("summary")
+                or payload.get("description")
+                or payload.get("content")
+            ),
             url=_normalize_required_text(payload.get("url"), "url"),
             published_at=_normalize_timestamp(
                 payload.get("published_at"),
@@ -104,10 +105,8 @@ class NormalizedNewsArticle:
         payload: dict[str, Any] = {
             "provider": self.provider,
             "source": self.source,
-            "author": self.author,
             "title": self.title,
-            "description": self.description,
-            "content": self.content,
+            "summary": self.summary,
             "url": self.url,
             "published_at": self.published_at,
             "ingested_at": self.ingested_at,
@@ -137,10 +136,8 @@ class NormalizedNewsArticle:
             [
                 StructField("provider", StringType()),
                 StructField("source", StringType()),
-                StructField("author", StringType()),
                 StructField("title", StringType()),
-                StructField("description", StringType()),
-                StructField("content", StringType()),
+                StructField("summary", StringType()),
                 StructField("url", StringType()),
                 StructField("published_at", StringType()),
                 StructField("ingested_at", StringType()),

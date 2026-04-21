@@ -54,12 +54,12 @@ Spark 스트리밍 잡(`spark_job.py`)에서 전처리를 호출하는 방식은
 # spark_job.py 내 핵심 흐름
 parsed = (
     raw_stream
-    .withColumn("article_text", expr("concat_ws(' ', title, description, content)"))
+    .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
     .withColumn("tokens", tokenize_udf(col("article_text")))
 )
 ```
 
-1. `title + description + content`를 하나의 분석용 본문으로 합친다.
+1. `title + summary`를 하나의 분석용 본문으로 합친다.
 2. `tokenize_udf` 첫 호출 시 워커 프로세스 내 `@lru_cache`가 트리거되어 DB에서 사전을 로드한다.
 3. `tokenize()` 결과인 토큰 배열이 이후 집계의 단위가 된다.
 
@@ -309,7 +309,7 @@ CREATE TABLE IF NOT EXISTS compound_noun_candidates (
 1. news_raw에서 지정 기간(ingested_at 기준) 기사 조회
 2. Kiwi를 사용자 사전 없이 초기화          ← 미등록 복합어가 형태소로 분리됨
 3. 기사별 처리:
-   a. title + description + content 합산 → clean_text()
+a. title + summary 합산 → clean_text()
    b. kiwi.tokenize() → NNG/NNP 명사 추출
    c. 연속 형태소 조합 탐색 (2 ~ max_morpheme_count개)
       └─ 스팬 연속성 검사: spans[j].end == spans[j+1].start
@@ -475,7 +475,7 @@ tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
 
 parsed = (
     raw_stream
-    .withColumn("article_text", expr("concat_ws(' ', title, description, content)"))
+.withColumn("article_text", expr("concat_ws(' ', title, summary)"))
     .withColumn("tokens", tokenize_udf(col("article_text")))
 )
 ```

@@ -1,11 +1,9 @@
 CREATE TABLE IF NOT EXISTS news_raw (
     id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'newsapi',
+    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
     source VARCHAR(255),
-    author VARCHAR(255),
     title TEXT NOT NULL,
-    description TEXT,
-    content TEXT,
+    summary TEXT,
     url TEXT NOT NULL,
     published_at TIMESTAMPTZ,
     ingested_at TIMESTAMPTZ DEFAULT NOW()
@@ -13,7 +11,7 @@ CREATE TABLE IF NOT EXISTS news_raw (
 
 CREATE TABLE IF NOT EXISTS keywords (
     id BIGSERIAL PRIMARY KEY,
-    article_provider VARCHAR(50) NOT NULL DEFAULT 'newsapi',
+    article_provider VARCHAR(50) NOT NULL DEFAULT 'naver',
     article_url TEXT NOT NULL,
     keyword VARCHAR(255) NOT NULL,
     keyword_count INTEGER NOT NULL DEFAULT 1,
@@ -22,7 +20,7 @@ CREATE TABLE IF NOT EXISTS keywords (
 
 CREATE TABLE IF NOT EXISTS keyword_trends (
     id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'newsapi',
+    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
     window_start TIMESTAMPTZ NOT NULL,
     window_end TIMESTAMPTZ NOT NULL,
     keyword VARCHAR(255) NOT NULL,
@@ -32,7 +30,7 @@ CREATE TABLE IF NOT EXISTS keyword_trends (
 
 CREATE TABLE IF NOT EXISTS keyword_relations (
     id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'newsapi',
+    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
     window_start TIMESTAMPTZ NOT NULL,
     window_end TIMESTAMPTZ NOT NULL,
     keyword_a VARCHAR(255) NOT NULL,
@@ -42,10 +40,33 @@ CREATE TABLE IF NOT EXISTS keyword_relations (
 );
 
 ALTER TABLE news_raw DROP CONSTRAINT IF EXISTS news_raw_url_key;
-ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'newsapi';
-ALTER TABLE keywords ADD COLUMN IF NOT EXISTS article_provider VARCHAR(50) NOT NULL DEFAULT 'newsapi';
-ALTER TABLE keyword_trends ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'newsapi';
-ALTER TABLE keyword_relations ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'newsapi';
+ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
+ALTER TABLE news_raw ALTER COLUMN provider SET DEFAULT 'naver';
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'news_raw' AND column_name = 'description'
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'news_raw' AND column_name = 'summary'
+    ) THEN
+        EXECUTE 'ALTER TABLE news_raw RENAME COLUMN description TO summary';
+    END IF;
+END $$;
+
+ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE news_raw DROP COLUMN IF EXISTS author;
+ALTER TABLE news_raw DROP COLUMN IF EXISTS content;
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS article_provider VARCHAR(50) NOT NULL DEFAULT 'naver';
+ALTER TABLE keywords ALTER COLUMN article_provider SET DEFAULT 'naver';
+ALTER TABLE keyword_trends ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
+ALTER TABLE keyword_trends ALTER COLUMN provider SET DEFAULT 'naver';
+ALTER TABLE keyword_relations ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
+ALTER TABLE keyword_relations ALTER COLUMN provider SET DEFAULT 'naver';
 
 CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
 CREATE INDEX IF NOT EXISTS idx_keyword_trends_window ON keyword_trends(window_start, window_end);
@@ -108,3 +129,22 @@ CREATE TABLE IF NOT EXISTS stg_news_raw (LIKE news_raw INCLUDING DEFAULTS EXCLUD
 CREATE TABLE IF NOT EXISTS stg_keywords (LIKE keywords INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
 CREATE TABLE IF NOT EXISTS stg_keyword_trends (LIKE keyword_trends INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
 CREATE TABLE IF NOT EXISTS stg_keyword_relations (LIKE keyword_relations INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'stg_news_raw' AND column_name = 'description'
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'stg_news_raw' AND column_name = 'summary'
+    ) THEN
+        EXECUTE 'ALTER TABLE stg_news_raw RENAME COLUMN description TO summary';
+    END IF;
+END $$;
+
+ALTER TABLE stg_news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE stg_news_raw DROP COLUMN IF EXISTS author;
+ALTER TABLE stg_news_raw DROP COLUMN IF EXISTS content;

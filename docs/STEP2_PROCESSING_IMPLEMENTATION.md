@@ -64,7 +64,7 @@ Step 2에서 필요한 실행 설정은 모두 `core/config.py`에 모았다.
 2. 정규화 기사 스키마에 맞는 구조로 파싱한다.
 3. `news_raw` 컬럼을 `stg_news_raw`에 JDBC bulk write한다.
 4. `upsert_from_staging_news_raw()` 호출 → `news_raw`에 upsert, staging TRUNCATE.
-5. `title + description + content`를 합쳐 분석용 본문을 만든다.
+5. `title + summary`를 합쳐 분석용 본문을 만든다.
 6. 한국어 전처리(Kiwi 형태소 분석 + 복합명사 병합 + 불용어 제거)로 토큰을 추출한다.
 7. 기사별 키워드 빈도를 `stg_keywords`에 JDBC write → `keywords` 테이블 upsert.
 8. event time 기준 10분 윈도우로 키워드 빈도를 집계 → `stg_keyword_trends` → upsert.
@@ -96,13 +96,25 @@ Spark DataFrame
 - Processing 단계 진입 시점에 스키마 검증을 거친 뒤 저장하므로 저장 데이터 일관성이 좋아진다.
 - `news_raw`와 집계 결과가 같은 처리 경계에서 생성되므로 재처리 정책을 맞추기 쉽다.
 
+현재 `news_raw`의 canonical 컬럼은 아래와 같다.
+
+- `provider`
+- `source`
+- `title`
+- `summary`
+- `url`
+- `published_at`
+- `ingested_at`
+
+Naver 응답에는 작성자(`author`)와 기사 본문(`content`)이 안정적으로 제공되지 않으므로 저장 스키마에서 제거했다. 기존 `description`은 의미를 더 분명히 하기 위해 `summary`로 통일했다.
+
 ## DB 스키마
 
 ### 주요 테이블
 
 | 테이블 | 설명 |
 |--------|------|
-| `news_raw` | 기사 원문 (provider, url unique) |
+| `news_raw` | Naver 정규화 기사 원문 (`provider`, `url` unique) |
 | `keywords` | 기사별 키워드 빈도 (article_provider, article_url, keyword unique) |
 | `keyword_trends` | 윈도우 집계 키워드 빈도 (provider, window_start, window_end, keyword unique) |
 | `keyword_relations` | 윈도우 집계 연관 키워드 (provider, window_start, window_end, keyword_a, keyword_b unique) |

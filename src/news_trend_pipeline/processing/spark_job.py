@@ -4,6 +4,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf
 from pyspark.sql.functions import (
     col,
+    coalesce,
     count as spark_count,
     current_timestamp,
     expr,
@@ -13,7 +14,7 @@ from pyspark.sql.functions import (
     window,
 )
 from pyspark.sql.functions import row_number
-from pyspark.sql.types import ArrayType, StringType
+from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
 from news_trend_pipeline.core.config import settings
@@ -32,7 +33,13 @@ from news_trend_pipeline.storage.db import (
 logger = get_logger(__name__)
 
 
-ARTICLE_SCHEMA = NormalizedNewsArticle.spark_schema()
+ARTICLE_SCHEMA = StructType(
+    NormalizedNewsArticle.spark_schema().fields[:]
+    + [
+        StructField("description", StringType()),
+        StructField("content", StringType()),
+    ]
+)
 
 
 def extract_tokens(text: str | None) -> list[str]:
@@ -77,10 +84,11 @@ def run_streaming_job() -> None:
         raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
         .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
         .select("data.*")
+        .withColumn("summary", coalesce(col("summary"), col("description"), col("content")))
         .withColumn("published_at", to_timestamp("published_at"))
         .withColumn("ingested_at", to_timestamp("ingested_at"))
         .withColumn("event_time", col("published_at"))
-        .withColumn("article_text", expr("concat_ws(' ', title, description, content)"))
+        .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
         .withColumn("tokens", tokenize_udf(col("article_text")))
         .dropna(subset=["event_time", "url"])
     )
@@ -93,7 +101,7 @@ def run_streaming_job() -> None:
 
         # news_raw
         _jdbc_write(
-            batch_df.select("provider", "source", "author", "title", "description", "content", "url", "published_at", "ingested_at"),
+            batch_df.select("provider", "source", "title", "summary", "url", "published_at", "ingested_at"),
             "stg_news_raw", jdbc_url, jdbc_props,
         )
         upsert_from_staging_news_raw()

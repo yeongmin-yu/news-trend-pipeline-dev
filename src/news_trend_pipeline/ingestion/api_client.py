@@ -309,16 +309,14 @@ class NaverNewsClient(BaseNewsClient):
     def _normalize_article(self, item: dict[str, Any], query: str | None = None) -> dict[str, Any]:
         publisher_url = item.get("originallink") or item.get("link") or ""
         publisher = urlparse(publisher_url).netloc or "Naver News"
-        description = strip_html_tags(item.get("description"))
+        summary = strip_html_tags(item.get("description"))
         title = strip_html_tags(item.get("title"))
         published_at = self._normalize_pub_date(item.get("pubDate"))
         article: dict[str, Any] = {
             "provider": self.provider,
             "source": publisher,
-            "author": None,
             "title": title,
-            "description": description,
-            "content": description,
+            "summary": summary,
             "url": publisher_url or item.get("link"),
             "published_at": published_at,
             "ingested_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),

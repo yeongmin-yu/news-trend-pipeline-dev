@@ -157,10 +157,8 @@ def fetch_news_parallel(
 {
   "provider": "naver",
   "source": "it.chosun.com",
-  "author": null,
   "title": "OpenAI, 차세대 GPT 모델 공개",
-  "description": "OpenAI가 차세대 GPT 모델을 공개하고…",
-  "content": "OpenAI가 차세대 GPT 모델을 공개하고…",
+  "summary": "OpenAI가 차세대 GPT 모델을 공개하고…",
   "url": "https://it.chosun.com/site/data/html_dir/2026/04/20/2026042000123.html",
   "published_at": "2026-04-20T09:15:00+00:00",
   "ingested_at": "2026-04-20T09:20:03+00:00",
@@ -173,6 +171,19 @@ def fetch_news_parallel(
 ```
 
 `metadata.query` 필드는 이제 **이 기사가 실제로 수집된 테마 키워드**를 담습니다.
+
+현재 Naver 단일 소스 기준 canonical 기사 스키마는 아래와 같습니다.
+
+- `provider`
+- `source`
+- `title`
+- `summary`
+- `url`
+- `published_at`
+- `ingested_at`
+- `metadata.source`
+- `metadata.version`
+- `metadata.query`
 
 ---
 

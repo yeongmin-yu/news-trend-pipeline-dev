@@ -70,7 +70,7 @@ def _extract_candidates(
     """기사 목록에서 복합명사 후보를 추출한다.
 
     Args:
-        articles: title/description/content 딕셔너리 목록.
+        articles: title/summary 딕셔너리 목록.
         min_frequency: 후보로 올리기 위한 최소 총 출현 횟수.
         min_char_length: 후보 단어의 최소 글자 수 (형태소 합산).
         max_morpheme_count: 합칠 형태소 최대 개수 (2 ≤ n ≤ max).
@@ -92,8 +92,7 @@ def _extract_candidates(
             part
             for part in (
                 article.get("title"),
-                article.get("description"),
-                article.get("content"),
+                article.get("summary"),
             )
             if part
         )
