@@ -80,6 +80,11 @@ class Settings:
     keyword_window_duration: str = os.getenv("KEYWORD_WINDOW_DURATION", "10 minutes")
     relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "8"))
 
+    compound_extraction_window_days: int = int(os.getenv("COMPOUND_EXTRACTION_WINDOW_DAYS", "1"))
+    compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))
+    compound_extraction_min_char_length: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_CHAR_LENGTH", "4"))
+    compound_extraction_max_morpheme_count: int = int(os.getenv("COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT", "4"))
+
     postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
     postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))
     postgres_db: str = os.getenv("POSTGRES_DB", "news_pipeline")
