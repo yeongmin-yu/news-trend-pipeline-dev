@@ -92,3 +92,19 @@ CREATE TABLE IF NOT EXISTS stopword_dict (
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status ON compound_noun_candidates(status);
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency ON compound_noun_candidates(frequency DESC);
 CREATE INDEX IF NOT EXISTS idx_stopword_dict_language ON stopword_dict(language);
+
+-- Unique indexes for upsert correctness (streaming 재처리 대비)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_trends_unique
+    ON keyword_trends(provider, window_start, window_end, keyword);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_relations_unique
+    ON keyword_relations(provider, window_start, window_end, keyword_a, keyword_b);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_unique
+    ON keywords(article_provider, article_url, keyword);
+
+-- Staging tables: Spark JDBC bulk write 대상 (upsert 후 TRUNCATE)
+CREATE TABLE IF NOT EXISTS stg_news_raw (LIKE news_raw INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
+CREATE TABLE IF NOT EXISTS stg_keywords (LIKE keywords INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
+CREATE TABLE IF NOT EXISTS stg_keyword_trends (LIKE keyword_trends INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
+CREATE TABLE IF NOT EXISTS stg_keyword_relations (LIKE keyword_relations INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);

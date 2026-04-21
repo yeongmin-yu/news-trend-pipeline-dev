@@ -173,6 +173,67 @@ def _seed_stopwords() -> None:
     logger.info("Seeded %d Korean stopwords", len(_STOPWORD_SEED))
 
 
+def upsert_from_staging_news_raw() -> None:
+    """stg_news_raw → news_raw upsert 후 staging TRUNCATE."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO news_raw (provider, source, author, title, description, content, url, published_at, ingested_at)
+                SELECT provider, source, author, title, description, content, url, published_at, ingested_at
+                FROM stg_news_raw
+                ON CONFLICT (provider, url) DO NOTHING;
+                TRUNCATE stg_news_raw;
+            """)
+
+
+def upsert_from_staging_keywords() -> None:
+    """stg_keywords → keywords upsert 후 staging TRUNCATE."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO keywords (article_provider, article_url, keyword, keyword_count, processed_at)
+                SELECT article_provider, article_url, keyword, keyword_count, processed_at
+                FROM stg_keywords
+                ON CONFLICT (article_provider, article_url, keyword)
+                DO UPDATE SET
+                    keyword_count = EXCLUDED.keyword_count,
+                    processed_at  = EXCLUDED.processed_at;
+                TRUNCATE stg_keywords;
+            """)
+
+
+def upsert_from_staging_keyword_trends() -> None:
+    """stg_keyword_trends → keyword_trends upsert (누적) 후 staging TRUNCATE."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO keyword_trends (provider, window_start, window_end, keyword, keyword_count, processed_at)
+                SELECT provider, window_start, window_end, keyword, keyword_count, processed_at
+                FROM stg_keyword_trends
+                ON CONFLICT (provider, window_start, window_end, keyword)
+                DO UPDATE SET
+                    keyword_count = keyword_trends.keyword_count + EXCLUDED.keyword_count,
+                    processed_at  = EXCLUDED.processed_at;
+                TRUNCATE stg_keyword_trends;
+            """)
+
+
+def upsert_from_staging_keyword_relations() -> None:
+    """stg_keyword_relations → keyword_relations upsert (누적) 후 staging TRUNCATE."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO keyword_relations (provider, window_start, window_end, keyword_a, keyword_b, cooccurrence_count, processed_at)
+                SELECT provider, window_start, window_end, keyword_a, keyword_b, cooccurrence_count, processed_at
+                FROM stg_keyword_relations
+                ON CONFLICT (provider, window_start, window_end, keyword_a, keyword_b)
+                DO UPDATE SET
+                    cooccurrence_count = keyword_relations.cooccurrence_count + EXCLUDED.cooccurrence_count,
+                    processed_at       = EXCLUDED.processed_at;
+                TRUNCATE stg_keyword_relations;
+            """)
+
+
 def insert_news_raw(articles: list[dict[str, Any]]) -> None:
     if not articles:
         return

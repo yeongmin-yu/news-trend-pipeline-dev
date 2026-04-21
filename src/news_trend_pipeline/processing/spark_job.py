@@ -21,10 +21,11 @@ from news_trend_pipeline.core.logger import get_logger
 from news_trend_pipeline.core.schemas import NormalizedNewsArticle
 from news_trend_pipeline.processing.preprocessing import tokenize
 from news_trend_pipeline.storage.db import (
-    insert_keyword_relations,
-    insert_keyword_trends,
-    insert_news_raw,
     safe_initialize_database,
+    upsert_from_staging_keyword_relations,
+    upsert_from_staging_keyword_trends,
+    upsert_from_staging_keywords,
+    upsert_from_staging_news_raw,
 )
 
 
@@ -36,6 +37,10 @@ ARTICLE_SCHEMA = NormalizedNewsArticle.spark_schema()
 
 def extract_tokens(text: str | None) -> list[str]:
     return tokenize(text)
+
+
+def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
+    df.write.jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
 
 
 def build_spark_session() -> SparkSession:
@@ -52,6 +57,13 @@ def run_streaming_job() -> None:
     spark.sparkContext.setLogLevel("WARN")
     safe_initialize_database()
     tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
+
+    jdbc_url = settings.spark_jdbc_url
+    jdbc_props = {
+        "user": settings.postgres_user,
+        "password": settings.postgres_password,
+        "driver": "org.postgresql.Driver",
+    }
 
     raw_stream = (
         spark.readStream.format("kafka")
@@ -75,23 +87,14 @@ def run_streaming_job() -> None:
         if batch_df.isEmpty():
             return
 
-        raw_rows = [
-            row.asDict()
-            for row in batch_df.select(
-                "provider",
-                "source",
-                "author",
-                "title",
-                "description",
-                "content",
-                "url",
-                "published_at",
-                "ingested_at",
-            ).collect()
-        ]
-        if raw_rows:
-            logger.info("Persisting %s raw article rows from batch %s", len(raw_rows), batch_id)
-            insert_news_raw(raw_rows)
+        logger.info("Processing batch %s", batch_id)
+
+        # news_raw
+        _jdbc_write(
+            batch_df.select("provider", "source", "author", "title", "description", "content", "url", "published_at", "ingested_at"),
+            "stg_news_raw", jdbc_url, jdbc_props,
+        )
+        upsert_from_staging_news_raw()
 
         article_keywords = (
             batch_df.select("provider", "url", "event_time", explode(col("tokens")).alias("keyword"))
@@ -99,29 +102,36 @@ def run_streaming_job() -> None:
             .agg(spark_count("*").alias("keyword_count"))
         )
 
+        # keywords (per-article)
+        _jdbc_write(
+            article_keywords.withColumn("processed_at", current_timestamp())
+            .selectExpr("provider as article_provider", "url as article_url", "keyword", "keyword_count", "processed_at"),
+            "stg_keywords", jdbc_url, jdbc_props,
+        )
+        upsert_from_staging_keywords()
+
+        # keyword_trends (windowed aggregation)
         keyword_trends = (
             article_keywords.groupBy(
                 col("provider"),
                 window(col("event_time"), settings.keyword_window_duration),
                 col("keyword"),
             )
-            .agg(expr("sum(keyword_count) as count"))
+            .agg(expr("sum(keyword_count) as keyword_count"))
             .withColumn("processed_at", current_timestamp())
             .selectExpr(
                 "provider",
                 "window.start as window_start",
                 "window.end as window_end",
                 "keyword",
-                "count",
+                "keyword_count",
                 "processed_at",
             )
         )
+        _jdbc_write(keyword_trends, "stg_keyword_trends", jdbc_url, jdbc_props)
+        upsert_from_staging_keyword_trends()
 
-        trend_rows = [row.asDict() for row in keyword_trends.collect()]
-        if trend_rows:
-            logger.info("Persisting %s keyword trend rows from batch %s", len(trend_rows), batch_id)
-            insert_keyword_trends(trend_rows)
-
+        # keyword_relations (co-occurrence pairs)
         article_window = Window.partitionBy("provider", "url", "event_time").orderBy(
             col("keyword_count").desc(),
             col("keyword").asc(),
@@ -130,7 +140,6 @@ def run_streaming_job() -> None:
             article_keywords.withColumn("keyword_rank", row_number().over(article_window))
             .filter(col("keyword_rank") <= settings.relation_keyword_limit)
         )
-
         left = representative_keywords.alias("left")
         right = representative_keywords.alias("right")
         relation_pairs = (
@@ -148,7 +157,6 @@ def run_streaming_job() -> None:
                 col("right.keyword").alias("keyword_b"),
             )
         )
-
         relation_trends = (
             relation_pairs.groupBy(
                 col("provider"),
@@ -156,7 +164,7 @@ def run_streaming_job() -> None:
                 "keyword_a",
                 "keyword_b",
             )
-            .count()
+            .agg(spark_count("*").alias("cooccurrence_count"))
             .withColumn("processed_at", current_timestamp())
             .selectExpr(
                 "provider",
@@ -164,15 +172,12 @@ def run_streaming_job() -> None:
                 "window.end as window_end",
                 "keyword_a",
                 "keyword_b",
-                "count",
+                "cooccurrence_count",
                 "processed_at",
             )
         )
-
-        relation_rows = [row.asDict() for row in relation_trends.collect()]
-        if relation_rows:
-            logger.info("Persisting %s keyword relation rows from batch %s", len(relation_rows), batch_id)
-            insert_keyword_relations(relation_rows)
+        _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
+        upsert_from_staging_keyword_relations()
 
     query = (
         parsed.writeStream.outputMode("append")
