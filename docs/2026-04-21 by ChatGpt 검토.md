@@ -72,3 +72,7 @@ upsert 추가
 staging
 keywords 테이블
 unique key
+결론
+
+Spark 결과를 Python으로 모으지 말고
+DB에 직접 bulk write + upsert로 처리해야 한다.
