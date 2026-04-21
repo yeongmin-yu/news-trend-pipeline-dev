@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$BuildImages
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -45,6 +47,11 @@ function Restore-GitKeep {
 
 Assert-ProjectRoot
 
+$composeUpArgs = @("compose", "up", "-d")
+if ($BuildImages) {
+    $composeUpArgs += "--build"
+}
+
 Write-Host "[1/4] docker compose down -v --remove-orphans"
 Push-Location $projectRoot
 try {
@@ -63,8 +70,8 @@ try {
         Restore-GitKeep -Path $dir
     }
 
-    Write-Host "[3/4] docker compose up -d --build"
-    docker compose up -d --build
+    Write-Host "[3/4] docker compose up -d$(if ($BuildImages) { ' --build' })"
+    & docker @composeUpArgs
 
     Write-Host "[4/4] docker compose ps"
     docker compose ps
@@ -76,3 +83,6 @@ finally {
 Write-Host ""
 Write-Host "Full reset complete."
 Write-Host "Note: app-postgres and airflow-postgres volumes were removed, so dictionary tables were also reset."
+if (-not $BuildImages) {
+    Write-Host "Tip: use -BuildImages when Dockerfile or requirements changed."
+}

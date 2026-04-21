@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$BuildImages
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -83,6 +85,11 @@ function Wait-ForContainerHealthy {
 
 Assert-ProjectRoot
 
+$composeUpArgs = @("compose", "up", "-d")
+if ($BuildImages) {
+    $composeUpArgs += "--build"
+}
+
 Write-Host "[1/6] docker compose down --remove-orphans"
 Push-Location $projectRoot
 try {
@@ -104,8 +111,14 @@ try {
         Restore-GitKeep -Path $dir
     }
 
-    Write-Host "[4/6] start PostgreSQL services"
-    docker compose up -d --build $appPostgresService $airflowPostgresService
+    $dbUpArgs = @("compose", "up", "-d")
+    if ($BuildImages) {
+        $dbUpArgs += "--build"
+    }
+    $dbUpArgs += @($appPostgresService, $airflowPostgresService)
+
+    Write-Host "[4/6] start PostgreSQL services$(if ($BuildImages) { ' --build' })"
+    & docker @dbUpArgs
     Wait-ForContainerHealthy -ServiceName $appPostgresService
 
     Write-Host "[5/6] truncate article and aggregate tables, preserve dictionaries"
@@ -123,8 +136,8 @@ RESTART IDENTITY;
 "@
     $truncateSql | docker compose exec -T $appPostgresService psql -U postgres -d news_pipeline
 
-    Write-Host "[6/6] docker compose up -d --build"
-    docker compose up -d --build
+    Write-Host "[6/6] docker compose up -d$(if ($BuildImages) { ' --build' })"
+    & docker @composeUpArgs
 
     Write-Host "[done] docker compose ps"
     docker compose ps
@@ -136,3 +149,6 @@ finally {
 Write-Host ""
 Write-Host "Reset complete."
 Write-Host "Note: dictionary tables were preserved, but article/aggregate tables and Airflow metadata were reset."
+if (-not $BuildImages) {
+    Write-Host "Tip: use -BuildImages when Dockerfile or requirements changed."
+}

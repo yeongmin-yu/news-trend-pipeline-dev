@@ -155,6 +155,70 @@ docker compose up -d --build
 docker compose ps
 ```
 
+## PowerShell 자동화 스크립트
+
+반복 작업을 줄이기 위해 `scripts/` 아래에 두 가지 PowerShell 스크립트를 제공한다.
+
+### 1. 완전 초기화
+
+- 파일: [reset_full_rebootstrap.ps1](../scripts/reset_full_rebootstrap.ps1)
+- 동작:
+  - `docker compose down -v --remove-orphans`
+  - runtime 디렉터리 정리
+  - 재기동
+  - 사전 테이블 포함 전체 초기화
+
+기본 실행:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1"
+```
+
+이미지까지 다시 빌드:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1" -BuildImages
+```
+
+### 2. 사전 유지 초기화
+
+- 파일: [reset_keep_dictionary_rebootstrap.ps1](../scripts/reset_keep_dictionary_rebootstrap.ps1)
+- 동작:
+  - `docker compose down --remove-orphans`
+  - `airflow-postgres` 메타데이터만 초기화
+  - runtime 디렉터리 정리
+  - `news_raw`, `keywords`, `keyword_trends`, `keyword_relations`, `stg_*`만 비움
+  - `compound_noun_dict`, `compound_noun_candidates`, `stopword_dict`는 유지
+
+기본 실행:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1"
+```
+
+이미지까지 다시 빌드:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1" -BuildImages
+```
+
+### 3. `-BuildImages` 옵션 사용 기준
+
+기본 동작은 `docker compose up -d` 이다. 아래 경우에만 `-BuildImages`를 붙인다.
+
+- `infra/spark/Dockerfile.spark` 변경
+- `infra/airflow/Dockerfile.airflow` 변경
+- `requirements/requirements-spark.txt` 변경
+- `requirements/requirements-ingestion.txt` 변경
+
+반대로 아래만 바뀐 경우에는 보통 `-BuildImages` 없이 충분하다.
+
+- `src/`
+- `airflow/dags/`
+- `scripts/`
+- `runtime/`
+- `.env`
+
 ## 문제 상황별 체크포인트
 
 ### 1. Spark가 예전 데이터 기준으로 다시 꼬이는 경우
