@@ -14,6 +14,15 @@ from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.core.logger import get_logger
 from news_trend_pipeline.processing.preprocessing import tokenize
 
+_STOPWORD_SEED: tuple[str, ...] = (
+    "기자", "뉴스", "이번", "지난", "통해", "대한", "관련", "위해",
+    "대해", "경우", "이후", "이날", "오전", "오후", "사진", "정도",
+    "가장", "때문", "지난해", "올해", "기사", "제공", "사용", "진행",
+    "기준", "중심", "사업", "기업", "서비스", "시장", "기술", "최근",
+    "예정", "대표", "이상", "이하", "모든", "부분", "현장", "내용",
+    "결과", "발표", "계획", "설명",
+)
+
 
 logger = get_logger(__name__)
 
@@ -35,6 +44,7 @@ def initialize_database() -> None:
         with conn.cursor() as cursor:
             cursor.execute(schema_sql)
     logger.info("Database schema initialized")
+    seed_initial_data()
 
 
 def safe_initialize_database() -> None:
@@ -42,6 +52,125 @@ def safe_initialize_database() -> None:
         initialize_database()
     except Error as exc:
         logger.warning("Database initialization skipped: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# 사전 CRUD
+# ---------------------------------------------------------------------------
+
+def fetch_compound_nouns() -> list[str]:
+    """compound_noun_dict에서 승인된 복합명사 목록을 반환한다."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT word FROM compound_noun_dict ORDER BY word")
+            return [row[0] for row in cursor.fetchall()]
+
+
+def fetch_stopwords(language: str = "ko") -> set[str]:
+    """stopword_dict에서 불용어 집합을 반환한다."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT word FROM stopword_dict WHERE language = %s",
+                (language,),
+            )
+            return {row[0] for row in cursor.fetchall()}
+
+
+def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict[str, Any]]:
+    """복합명사 후보 추출용 기사 목록을 ingested_at 범위로 조회한다."""
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT title, description, content
+                FROM news_raw
+                WHERE ingested_at >= %s AND ingested_at < %s
+                ORDER BY ingested_at ASC
+                """,
+                (since, until),
+            )
+            return list(cursor.fetchall())
+
+
+def upsert_compound_candidates(candidates: dict[str, tuple[int, int]]) -> tuple[int, int]:
+    """복합명사 후보를 upsert한다.
+
+    신규 단어는 INSERT, 이미 pending 상태인 단어는 frequency/doc_count 누적.
+    approved/rejected 단어는 건드리지 않는다.
+    Returns (new_count, updated_count).
+    """
+    if not candidates:
+        return 0, 0
+
+    now = datetime.now(timezone.utc)
+    new_count = 0
+    updated_count = 0
+
+    insert_sql = """
+        INSERT INTO compound_noun_candidates (word, frequency, doc_count, first_seen_at, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (word) DO NOTHING
+    """
+    update_sql = """
+        UPDATE compound_noun_candidates
+        SET frequency    = frequency + %s,
+            doc_count    = doc_count + %s,
+            last_seen_at = %s
+        WHERE word = %s AND status = 'pending'
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            for word, (freq, doc_cnt) in candidates.items():
+                cursor.execute(insert_sql, (word, freq, doc_cnt, now, now))
+                if cursor.rowcount > 0:
+                    new_count += 1
+                else:
+                    cursor.execute(update_sql, (freq, doc_cnt, now, word))
+                    if cursor.rowcount > 0:
+                        updated_count += 1
+
+    return new_count, updated_count
+
+
+def seed_initial_data() -> None:
+    """초기 사전 데이터를 DB에 적재한다 (이미 존재하면 건너뜀).
+
+    - compound_noun_dict: korean_user_dict.txt 내 단어
+    - stopword_dict: 기본 한국어 불용어 목록
+    """
+    _seed_compound_nouns_from_file()
+    _seed_stopwords()
+
+
+def _seed_compound_nouns_from_file() -> None:
+    dict_path = Path(__file__).resolve().parents[1] / "core" / "korean_user_dict.txt"
+    if not dict_path.exists():
+        return
+    words = [
+        line.strip()
+        for line in dict_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    if not words:
+        return
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO compound_noun_dict (word, source) VALUES (%s, 'manual') ON CONFLICT (word) DO NOTHING",
+                [(w,) for w in words],
+            )
+    logger.info("Seeded %d compound nouns from user dict file", len(words))
+
+
+def _seed_stopwords() -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO stopword_dict (word, language) VALUES (%s, 'ko') ON CONFLICT (word, language) DO NOTHING",
+                [(w,) for w in _STOPWORD_SEED],
+            )
+    logger.info("Seeded %d Korean stopwords", len(_STOPWORD_SEED))
 
 
 def insert_news_raw(articles: list[dict[str, Any]]) -> None:
@@ -65,7 +194,7 @@ def insert_news_raw(articles: list[dict[str, Any]]) -> None:
     """
     rows = [
         (
-            article.get("provider", "newsapi"),
+            article.get("provider"),
             article.get("source"),
             article.get("author"),
             article.get("title"),
@@ -96,7 +225,7 @@ def insert_keyword_trends(rows: list[dict[str, Any]]) -> None:
     """
     values = [
         (
-            row.get("provider", "newsapi"),
+            row.get("provider"),
             row["window_start"],
             row["window_end"],
             row["keyword"],
@@ -128,7 +257,7 @@ def insert_keyword_relations(rows: list[dict[str, Any]]) -> None:
     """
     values = [
         (
-            row.get("provider", "newsapi"),
+            row.get("provider"),
             row["window_start"],
             row["window_end"],
             row["keyword_a"],
@@ -171,7 +300,7 @@ def replace_keyword_trends(rows: list[dict[str, Any]], *, window_start: datetime
     """
     values = [
         (
-            row.get("provider", provider or "newsapi"),
+            row.get("provider", provider),
             row["window_start"],
             row["window_end"],
             row["keyword"],
@@ -198,7 +327,7 @@ def rebuild_keywords_for_date(target_date: date, provider: str | None = None) ->
     processed_at = datetime.now(timezone.utc)
     rows: list[tuple[str, str, str, int, datetime]] = []
     article_keys = [
-        (article.get("provider", "newsapi"), article["url"])
+        (article.get("provider"), article["url"])
         for article in articles
         if article.get("url")
     ]
@@ -210,10 +339,10 @@ def rebuild_keywords_for_date(target_date: date, provider: str | None = None) ->
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        counts = Counter(tokenize(article_text, provider=article.get("provider")))
+        counts = Counter(tokenize(article_text))
         rows.extend(
             (
-                article.get("provider", "newsapi"),
+                article.get("provider"),
                 article_url,
                 keyword,
                 count,
@@ -260,8 +389,8 @@ def rebuild_keyword_trends_for_date(target_date: date, provider: str | None = No
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        for keyword, count in Counter(tokenize(article_text, provider=article.get("provider"))).items():
-            window_counts[(article.get("provider", "newsapi"), window_start, window_end, keyword)] += count
+        for keyword, count in Counter(tokenize(article_text)).items():
+            window_counts[(article.get("provider"), window_start, window_end, keyword)] += count
 
     rows = [
         {
@@ -297,14 +426,14 @@ def rebuild_keyword_relations_for_date(target_date: date, provider: str | None =
         article_text = " ".join(
             part for part in [article.get("title"), article.get("description"), article.get("content")] if part
         )
-        keyword_counts = Counter(tokenize(article_text, provider=article.get("provider")))
+        keyword_counts = Counter(tokenize(article_text))
         representative_keywords = [
             keyword
             for keyword, _ in sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[: settings.relation_keyword_limit]
         ]
         for idx, keyword_a in enumerate(representative_keywords):
             for keyword_b in representative_keywords[idx + 1 :]:
-                relation_counts[(article.get("provider", "newsapi"), window_start, window_end, keyword_a, keyword_b)] += 1
+                relation_counts[(article.get("provider"), window_start, window_end, keyword_a, keyword_b)] += 1
 
     rows = [
         {

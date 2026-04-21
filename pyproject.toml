@@ -25,7 +25,6 @@ dev = [
 ]
 processing = [
     "kiwipiepy>=0.18",
-    "spacy==3.8.7",
 ]
 
 [tool.setuptools.packages.find]

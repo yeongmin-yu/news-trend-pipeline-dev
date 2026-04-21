@@ -4,13 +4,11 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf
 from pyspark.sql.functions import (
     col,
-    coalesce,
     count as spark_count,
     current_timestamp,
     expr,
     explode,
     from_json,
-    lit,
     to_timestamp,
     window,
 )
@@ -36,8 +34,8 @@ logger = get_logger(__name__)
 ARTICLE_SCHEMA = NormalizedNewsArticle.spark_schema()
 
 
-def extract_tokens(text: str | None, provider: str | None) -> list[str]:
-    return tokenize(text, provider=provider)
+def extract_tokens(text: str | None) -> list[str]:
+    return tokenize(text)
 
 
 def build_spark_session() -> SparkSession:
@@ -67,10 +65,9 @@ def run_streaming_job() -> None:
         raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
         .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
         .select("data.*")
-        .withColumn("provider", coalesce(col("provider"), lit("newsapi")))
         .withColumn("event_time", to_timestamp("published_at"))
         .withColumn("article_text", expr("concat_ws(' ', title, description, content)"))
-        .withColumn("tokens", tokenize_udf(col("article_text"), col("provider")))
+        .withColumn("tokens", tokenize_udf(col("article_text")))
         .dropna(subset=["event_time", "url"])
     )
 
