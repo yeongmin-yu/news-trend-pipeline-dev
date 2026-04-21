@@ -19,6 +19,10 @@ runtime/state/*
 !runtime/state/.gitkeep
 runtime/logs/*
 !runtime/logs/.gitkeep
+runtime/checkpoints/*
+!runtime/checkpoints/.gitkeep
+runtime/spark-events/*
+!runtime/spark-events/.gitkeep
 
 # packaging
 build/

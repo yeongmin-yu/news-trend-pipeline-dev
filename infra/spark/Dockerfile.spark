@@ -1,0 +1,29 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/opt/news-trend-pipeline/src
+ENV SPARK_HOME=/opt/spark
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=/opt/spark/bin:/opt/spark/sbin:$PATH
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
+
+WORKDIR /opt
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl openjdk-17-jre-headless procps tini \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://archive.apache.org/dist/spark/spark-3.5.7/spark-3.5.7-bin-hadoop3.tgz -o /tmp/spark.tgz \
+    && tar -xzf /tmp/spark.tgz -C /opt \
+    && mv /opt/spark-3.5.7-bin-hadoop3 /opt/spark \
+    && rm /tmp/spark.tgz
+
+WORKDIR /opt/news-trend-pipeline
+
+COPY requirements/requirements-spark.txt /tmp/requirements-spark.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r /tmp/requirements-spark.txt
+
+COPY . /opt/news-trend-pipeline

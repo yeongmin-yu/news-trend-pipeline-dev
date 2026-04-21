@@ -22,7 +22,12 @@ from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.core.logger import get_logger
 from news_trend_pipeline.core.schemas import NormalizedNewsArticle
 from news_trend_pipeline.processing.preprocessing import tokenize
-from news_trend_pipeline.storage.db import insert_keyword_relations, insert_keyword_trends, safe_initialize_database
+from news_trend_pipeline.storage.db import (
+    insert_keyword_relations,
+    insert_keyword_trends,
+    insert_news_raw,
+    safe_initialize_database,
+)
 
 
 logger = get_logger(__name__)
@@ -72,6 +77,24 @@ def run_streaming_job() -> None:
     def write_to_sinks(batch_df, batch_id: int) -> None:
         if batch_df.isEmpty():
             return
+
+        raw_rows = [
+            row.asDict()
+            for row in batch_df.select(
+                "provider",
+                "source",
+                "author",
+                "title",
+                "description",
+                "content",
+                "url",
+                "published_at",
+                "ingested_at",
+            ).collect()
+        ]
+        if raw_rows:
+            logger.info("Persisting %s raw article rows from batch %s", len(raw_rows), batch_id)
+            insert_news_raw(raw_rows)
 
         article_keywords = (
             batch_df.select("provider", "url", "event_time", explode(col("tokens")).alias("keyword"))
