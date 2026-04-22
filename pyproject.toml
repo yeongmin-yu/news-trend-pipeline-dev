@@ -16,6 +16,8 @@ dependencies = [
     "filelock>=3.13",
     "psycopg2-binary==2.9.9",
     "pyspark==3.5.2",
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
 ]
 
 [project.optional-dependencies]

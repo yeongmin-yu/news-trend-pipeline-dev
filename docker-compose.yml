@@ -114,6 +114,46 @@ services:
     networks:
       - dev-network
 
+  api-server:
+    build:
+      context: .
+      dockerfile: infra/api/Dockerfile.api
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      POSTGRES_HOST: app-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-news_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PYTHONPATH: /app/src
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      spark-master:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    networks:
+      - dev-network
+
+  frontend-server:
+    build:
+      context: .
+      dockerfile: infra/frontend/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - api-server
+    ports:
+      - "3000:80"
+    networks:
+      - dev-network
+
   airflow-postgres:
     image: postgres:16
     restart: unless-stopped
