@@ -17,7 +17,8 @@
 11. [라이브러리 소개](#11-라이브러리-소개)
 12. [Fallback 전략](#12-fallback-전략)
 13. [Spark에서의 전처리 연결](#13-spark에서의-전처리-연결)
-14. [현재 한계 및 개선 방향](#14-현재-한계-및-개선-방향)
+14. [연관 키워드 집계 방식](#14-연관-키워드-집계-방식)
+15. [현재 한계 및 개선 방향](#15-현재-한계-및-개선-방향)
 
 ---
 
@@ -488,7 +489,172 @@ parsed = (
 
 ---
 
-## 14. 현재 한계 및 개선 방향
+## 14. 연관 키워드 집계 방식
+
+전처리 문서에서 토큰화까지만 설명하면 `keyword_relations`가 어떻게 만들어지는지 흐름이 끊길 수 있다. 현재 구현에서 연관 키워드는 **같은 기사 안에서 함께 등장한 상위 키워드 쌍을 시간 윈도우별로 누적 집계**하는 방식으로 생성된다.
+
+### 처리 흐름
+
+`tokenize()` 결과는 먼저 기사별 키워드 빈도(`article_keywords`)로 집계되고, 그 다음 연관 키워드 계산에 사용된다.
+
+```text
+title + summary
+    -> tokenize()
+    -> article_keywords (기사별 keyword_count)
+    -> 기사별 상위 키워드 선택
+    -> 같은 기사 내 키워드 쌍 생성
+    -> 10분 window 기준 co-occurrence 집계
+    -> keyword_relations 저장
+```
+
+### 1. 기사별 키워드 빈도 생성
+
+Spark는 토큰 배열을 `explode()`로 펼친 뒤, 기사 단위로 키워드 빈도를 먼저 계산한다.
+
+```python
+article_keywords = (
+    batch_df.select("provider", "url", "event_time", explode(col("tokens")).alias("keyword"))
+    .groupBy("provider", "url", "event_time", "keyword")
+    .agg(spark_count("*").alias("keyword_count"))
+)
+```
+
+이 단계 결과는 아래와 같은 형태다.
+
+| provider | url | event_time | keyword | keyword_count |
+|------|------|------------|---------|---------------|
+| naver | article-1 | 01:10 | 검색 | 2 |
+| naver | article-1 | 01:10 | 네이버 | 2 |
+| naver | article-1 | 01:10 | 생성형 | 2 |
+
+### 2. 기사별 대표 키워드 선택
+
+연관 키워드는 모든 토큰 조합을 다 만들지 않고, 기사별 상위 키워드만 대상으로 만든다. 현재 구현은 기사 내부에서:
+
+1. `keyword_count` 내림차순
+2. 같은 빈도면 `keyword` 오름차순
+
+으로 정렬한 뒤, `RELATION_KEYWORD_LIMIT` 개수만 남긴다.
+
+```python
+article_window = Window.partitionBy("provider", "url", "event_time").orderBy(
+    col("keyword_count").desc(),
+    col("keyword").asc(),
+)
+
+representative_keywords = (
+    article_keywords.withColumn("keyword_rank", row_number().over(article_window))
+    .filter(col("keyword_rank") <= settings.relation_keyword_limit)
+)
+```
+
+기본값은 `RELATION_KEYWORD_LIMIT=8` 이다. 이 제한을 두는 이유는 기사 하나에서 토큰 수가 많아질수록 조합 수가 급격히 늘어나는 것을 막기 위해서다.
+
+### 3. 같은 기사 안에서 키워드 쌍 생성
+
+대표 키워드를 자기 자신과 self join 해서, 같은 기사 안에서 함께 등장한 키워드 쌍만 만든다.
+
+```python
+relation_pairs = (
+    left.join(
+        right,
+        (col("left.provider") == col("right.provider"))
+        & (col("left.url") == col("right.url"))
+        & (col("left.event_time") == col("right.event_time"))
+        & (col("left.keyword_rank") < col("right.keyword_rank")),
+    )
+    .select(
+        col("left.provider").alias("provider"),
+        col("left.event_time").alias("event_time"),
+        col("left.keyword").alias("keyword_a"),
+        col("right.keyword").alias("keyword_b"),
+    )
+)
+```
+
+여기서 `left.keyword_rank < right.keyword_rank` 조건을 써서:
+
+- 자기 자신과의 조합은 제외하고
+- `(A, B)` 와 `(B, A)` 중복 생성을 막는다.
+
+예를 들어 기사 1건의 대표 키워드가 아래와 같다면:
+
+```text
+["네이버", "검색", "생성형", "기술"]
+```
+
+생성되는 연관 키워드 쌍은 다음과 같다.
+
+```text
+("네이버", "검색")
+("네이버", "생성형")
+("네이버", "기술")
+("검색", "생성형")
+("검색", "기술")
+("생성형", "기술")
+```
+
+### 4. 시간 윈도우 기준으로 co-occurrence 집계
+
+생성된 키워드 쌍은 다시 `event_time` 기준 10분 윈도우로 묶어서 `cooccurrence_count`를 계산한다.
+
+```python
+relation_trends = (
+    relation_pairs.groupBy(
+        col("provider"),
+        window(col("event_time"), settings.keyword_window_duration),
+        "keyword_a",
+        "keyword_b",
+    )
+    .agg(spark_count("*").alias("cooccurrence_count"))
+)
+```
+
+즉, `cooccurrence_count`는 "해당 시간 구간 안에서 이 두 키워드가 같은 기사에 몇 번 함께 등장했는가"를 의미한다.
+
+### 5. 저장 방식
+
+집계 결과는 `stg_keyword_relations`에 먼저 적재한 뒤 `keyword_relations`로 upsert 한다.
+
+```python
+_jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
+upsert_from_staging_keyword_relations()
+```
+
+DB에서는 아래 unique 기준으로 누적 저장된다.
+
+- `provider`
+- `window_start`
+- `window_end`
+- `keyword_a`
+- `keyword_b`
+
+동일 윈도우와 동일 키워드 쌍이 다시 들어오면 `cooccurrence_count`를 더하는 방식으로 누적한다.
+
+### 예시
+
+두 기사에서 같은 시간대에 아래 대표 키워드가 추출되었다고 가정하면:
+
+```text
+기사 A: ["네이버", "검색", "생성형"]
+기사 B: ["네이버", "검색", "광고"]
+```
+
+10분 윈도우 집계 결과는 다음처럼 저장될 수 있다.
+
+| keyword_a | keyword_b | cooccurrence_count |
+|------|------|--------------------|
+| 네이버 | 검색 | 2 |
+| 네이버 | 생성형 | 1 |
+| 검색 | 생성형 | 1 |
+| 네이버 | 광고 | 1 |
+| 검색 | 광고 | 1 |
+
+즉, 연관 키워드는 의미 기반 모델로 직접 계산하는 것이 아니라, **전처리된 대표 키워드의 기사 내 동시 출현 빈도**를 기준으로 만든다.
+
+---
+
+## 15. 현재 한계 및 개선 방향
 
 ### 단기 개선
 
