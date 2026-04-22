@@ -1,289 +1,463 @@
 # Step 2 처리 계층 구현 정리
 
-## 개요
+> Step 1에서 Kafka로 적재된 뉴스 메시지를 Spark로 전처리하고 PostgreSQL에 저장하는 Step 2 구현 문서이다.
 
-Step 2는 Kafka에 적재된 뉴스 기사를 읽어 전처리하고, `news_raw`, 키워드 트렌드, 연관 키워드, 복합명사 후보를 PostgreSQL에 저장하는 처리 계층이다.
+## 1. 파이프라인 구성도
 
-이번 단계에서 정리한 범위는 아래와 같다.
+### 1-1. Step 1 + Step 2 통합 파이프라인
 
-- Spark 스트리밍 처리 진입점 구성
-- 한국어(Naver) 전용 기사 텍스트 전처리 및 키워드 추출 로직 정리
-- PostgreSQL 스키마 및 저장 계층 추가
-- 복합명사·불용어 사전 DB화 및 후보 자동 추출 배치 구성
-- collect() 제거 → JDBC staging 테이블 upsert 방식으로 전환
-- 정규화된 뉴스 기사 스키마 클래스 도입
-- Spark/PostgreSQL 실행용 인프라 구성 추가
+`STEP1_KAFKA_2`의 수집 구조 위에 Step 2 처리 계층을 연결하면 전체 흐름은 아래와 같다.
 
-## 설계 방향
+```mermaid
+flowchart LR
+    A["Airflow Scheduler"] --> B["news_ingest_dag"]
+    B --> C["produce_naver"]
+    C --> D["Naver Theme Keywords<br/>AI, GPT, LLM ..."]
+    D --> E["URL dedup"]
+    E --> F["Kafka: news_topic<br/>(partition key = URL)"]
+    F --> G["Spark Structured Streaming"]
+    G --> H["JSON Parsing / Schema Validation"]
+    H --> I["Text Preprocessing<br/>title + summary → tokenize()"]
+    I --> J["Window Aggregation<br/>keyword trends / relations"]
+    J --> K["JDBC Staging Tables"]
+    K --> L["PostgreSQL Upsert"]
 
-### 1. 패키지 배치
+    L --> M["news_raw"]
+    L --> N["keywords"]
+    L --> O["keyword_trends"]
+    L --> P["keyword_relations"]
 
-Step 2 책임은 아래 계층으로 나누었다.
-
-- `src/news_trend_pipeline/processing/`
-  - `preprocessing.py` — 텍스트 정제, 형태소 분석, 키워드 추출
-  - `spark_job.py` — Spark Structured Streaming 진입점
-- `src/news_trend_pipeline/storage/`
-  - `db.py` — PostgreSQL 접속, 스키마 초기화, CRUD, upsert 함수
-  - `models.sql` — 테이블 정의, 인덱스, staging 테이블
-- `src/news_trend_pipeline/analytics/`
-  - `compound_extractor.py` — 복합명사 후보 자동 추출 배치
-- `airflow/dags/`
-  - `compound_extraction_dag.py` — 매일 새벽 3시 배치 스케줄
-
-### 2. 설정 관리
-
-Step 2에서 필요한 실행 설정은 모두 `core/config.py`에 모았다.
-
-주요 설정은 아래와 같다.
-
-- Spark 실행
-  - `SPARK_MASTER`
-  - `SPARK_APP_NAME`
-  - `SPARK_CHECKPOINT_DIR`
-  - `SPARK_SHUFFLE_PARTITIONS`
-  - `SPARK_STARTING_OFFSETS`
-- 집계 동작
-  - `KEYWORD_WINDOW_DURATION`
-  - `RELATION_KEYWORD_LIMIT`
-- PostgreSQL 연결
-  - `POSTGRES_HOST` / `POSTGRES_PORT` / `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD`
-  - `postgres_dsn` property (psycopg2용)
-  - `spark_jdbc_url` property (JDBC용: `jdbc:postgresql://host:port/db`)
-- 복합명사 후보 추출
-  - `COMPOUND_EXTRACTION_WINDOW_DAYS` (기본 1)
-  - `COMPOUND_EXTRACTION_MIN_FREQUENCY` (기본 3)
-  - `COMPOUND_EXTRACTION_MIN_CHAR_LENGTH` (기본 4)
-  - `COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT` (기본 4)
-- 사전 반영
-  - `DICTIONARY_REFRESH_INTERVAL_SECONDS` (기본 60)
-
-### 3. 처리 흐름
-
-현재 구현한 기본 처리 흐름은 아래와 같다.
-
-1. Kafka 토픽에서 기사 메시지를 읽는다.
-2. 정규화 기사 스키마에 맞는 구조로 파싱한다.
-3. `news_raw` 컬럼을 `stg_news_raw`에 JDBC bulk write한다.
-4. `upsert_from_staging_news_raw()` 호출 → `news_raw`에 upsert, staging TRUNCATE.
-5. `title + summary`를 합쳐 분석용 본문을 만든다.
-6. 한국어 전처리(Kiwi 형태소 분석 + 복합명사 병합 + 불용어 제거)로 토큰을 추출한다.
-7. 기사별 키워드 빈도를 `stg_keywords`에 JDBC write → `keywords` 테이블 upsert.
-8. event time 기준 10분 윈도우로 키워드 빈도를 집계 → `stg_keyword_trends` → upsert.
-9. 기사별 상위 키워드 조합으로 연관 키워드를 계산 → `stg_keyword_relations` → upsert.
-
-### 4. JDBC staging 테이블 방식
-
-`foreachBatch`에서 `collect()`로 전체 결과를 드라이버에 모으는 대신 JDBC bulk write를 사용한다.
-
-```
-Spark DataFrame
-    → _jdbc_write(stg_* 테이블, mode=append)  ← Spark executor가 직접 DB write
-    → upsert_from_staging_*()                 ← PostgreSQL 내부에서 INSERT ... ON CONFLICT
-    → staging TRUNCATE                         ← 동일 트랜잭션 내
+    Q["compound_noun_extraction DAG<br/>daily 03:00 UTC"] --> R["compound_noun_candidates"]
+    R --> S["compound_noun_dict / stopword_dict"]
+    S -. reload check .-> I
 ```
 
-이 방식을 선택한 이유는 아래와 같다.
+### 1-2. 단계별 책임
 
-- `collect()`는 모든 데이터를 드라이버 JVM 메모리에 올리므로 배치 크기에 비례해 드라이버 병목 발생.
-- JDBC write는 executor가 직접 DB에 쓰므로 분산 이점을 유지할 수 있다.
-- staging → main upsert를 같은 트랜잭션에서 처리하므로 부분 실패 시 staging이 남아 재처리 가능.
-- `keyword_trends` / `keyword_relations`는 `ON CONFLICT DO UPDATE`로 누적 집계하므로 스트리밍 재처리 시 중복 없이 값이 더해진다.
+| 단계 | 역할 |
+| --- | --- |
+| Step 1 Ingestion | Naver 기사 수집, URL 기준 dedup, Kafka 발행 |
+| Step 2 Processing | Kafka 메시지 파싱, 전처리, 키워드/연관어 집계 |
+| Storage | PostgreSQL에 원문/집계 결과 저장 |
+| Dictionary Batch | 복합명사 후보 추출 및 사전 반영 |
 
-### 5. `news_raw` 저장 정책
+## 2. Spark 전처리 설계
 
-`news_raw`는 ingestion 단계가 아니라 Step 2에서 저장하도록 정리했다.
+### 2-a. 처리 방식 선택 및 이유
 
-- Kafka에 적재된 실제 처리 기준 메시지를 그대로 원문 저장 대상으로 삼을 수 있다.
-- Processing 단계 진입 시점에 스키마 검증을 거친 뒤 저장하므로 저장 데이터 일관성이 좋아진다.
-- `news_raw`와 집계 결과가 같은 처리 경계에서 생성되므로 재처리 정책을 맞추기 쉽다.
+#### 선택: Streaming
 
-현재 `news_raw`의 canonical 컬럼은 아래와 같다.
+현재 구현은 `spark.readStream(...).foreachBatch(...)` 기반의 **Spark Structured Streaming**이다.
 
-- `provider`
-- `source`
-- `title`
-- `summary`
-- `url`
-- `published_at`
-- `ingested_at`
-
-Naver 응답에는 작성자(`author`)와 기사 본문(`content`)이 안정적으로 제공되지 않으므로 저장 스키마에서 제거했다. 기존 `description`은 의미를 더 분명히 하기 위해 `summary`로 통일했다.
-
-## DB 스키마
-
-### 주요 테이블
-
-| 테이블 | 설명 |
-|--------|------|
-| `news_raw` | Naver 정규화 기사 원문 (`provider`, `url` unique) |
-| `keywords` | 기사별 키워드 빈도 (article_provider, article_url, keyword unique) |
-| `keyword_trends` | 윈도우 집계 키워드 빈도 (provider, window_start, window_end, keyword unique) |
-| `keyword_relations` | 윈도우 집계 연관 키워드 (provider, window_start, window_end, keyword_a, keyword_b unique) |
-| `compound_noun_dict` | 승인된 복합명사 사전 |
-| `compound_noun_candidates` | 자동 추출된 복합명사 후보 (pending / approved / rejected) |
-| `stopword_dict` | 불용어 사전 (언어별) |
-| `dictionary_versions` | 사전 버전 메타데이터 (hot reload 감지용) |
-
-### Staging 테이블
-
-Spark JDBC bulk write 전용 임시 테이블. upsert 후 TRUNCATE.
-
-| 테이블 | 대상 |
-|--------|------|
-| `stg_news_raw` | → `news_raw` |
-| `stg_keywords` | → `keywords` |
-| `stg_keyword_trends` | → `keyword_trends` |
-| `stg_keyword_relations` | → `keyword_relations` |
-
-### Upsert 정책
-
-| 테이블 | ON CONFLICT 처리 |
-|--------|-----------------|
-| `news_raw` | DO NOTHING (중복 기사 무시) |
-| `keywords` | DO UPDATE keyword_count, processed_at (최신 값으로 덮어씀) |
-| `keyword_trends` | DO UPDATE keyword_count += EXCLUDED (누적 합산) |
-| `keyword_relations` | DO UPDATE cooccurrence_count += EXCLUDED (누적 합산) |
-
-## 복합명사·불용어 사전 DB화
-
-### 사전 라이프사이클
-
-```
-자동 추출 배치 (Airflow, 매일 03:00)
-    └─ compound_extractor.py
-        └─ Kiwi (사용자 사전 없이) 형태소 분석
-        └─ 인접 명사 n-gram 조합 (span 연속성 검사)
-        └─ compound_noun_candidates 테이블에 upsert (pending 상태로 누적)
-
-관리자 검토 (추후 Web/API)
-    └─ pending → approved : compound_noun_dict에 반영
-    └─ pending → rejected : 후보에서 제외
-    └─ 변경 시 dictionary_versions.version 증가
-
-Spark 스트리밍 처리 중
-    └─ preprocessing.py가 일정 주기마다 dictionary_versions 조회
-    └─ 버전 변경 감지 시 lru_cache 초기화
-    └─ 다음 토큰화부터 compound_noun_dict / stopword_dict 재로딩
+```python
+raw_stream = (
+    spark.readStream.format("kafka")
+    .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
+    .option("subscribe", settings.kafka_topic)
+    .option("startingOffsets", settings.spark_starting_offsets)
+    .load()
+)
 ```
 
-### DB 우선 로딩 전략
+#### Streaming을 선택한 이유
 
-전처리 계층(`preprocessing.py`)은 Spark executor 프로세스에서 첫 UDF 호출 시 DB에서 사전을 로드하고, 이후에는 사전 버전 메타데이터를 기준으로 변경을 감지한다.
+1. Step 1이 Kafka로 지속적으로 메시지를 발행하므로 소비 계층도 이벤트 기반으로 바로 이어지는 구조가 자연스럽다.
+2. 키워드 트렌드와 연관 키워드는 시계열 집계이므로 배치보다 near real-time 집계가 더 적합하다.
+3. Spark 체크포인트를 통해 오프셋과 상태를 관리할 수 있어 재시작 시 복구가 쉽다.
+4. `foreachBatch`를 사용하면 스트리밍 입력과 관계형 DB upsert를 함께 가져갈 수 있다.
 
+#### 처리 주기
+
+- 처리 모델: 연속 실행되는 micro-batch
+- 트리거: 코드에서 별도 `trigger(processingTime=...)`를 지정하지 않았으므로 Spark 기본 micro-batch 주기를 사용
+- 집계 윈도우: `KEYWORD_WINDOW_DURATION=10 minutes`
+- 사전 갱신 확인 주기: `DICTIONARY_REFRESH_INTERVAL_SECONDS=60`
+
+즉, 실행 단위는 스트리밍이지만 집계 결과는 10분 윈도우 기준으로 누적 저장한다.
+
+### 2-b. 데이터 처리 흐름
+
+#### 1. Kafka에서 데이터를 읽어오는 방식
+
+Spark는 Kafka 토픽 `news_topic`을 구독하고, 각 메시지의 `value`를 JSON 문자열로 읽어 기사 스키마로 파싱한다.
+
+```python
+parsed = (
+    raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
+    .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
+    .select("data.*")
+    .withColumn("summary", coalesce(col("summary"), col("description"), col("content")))
+    .withColumn("published_at", to_timestamp("published_at"))
+    .withColumn("ingested_at", to_timestamp("ingested_at"))
+    .withColumn("event_time", col("published_at"))
+)
 ```
-get_user_dictionary()  → compound_noun_dict (DB)   → 실패 시 korean_user_dict.txt (파일)
-_get_stopwords()       → stopword_dict (DB)         → 실패 시 _KOREAN_STOPWORDS_DEFAULT (코드 내 기본값)
-fetch_dictionary_versions() → dictionary_versions (DB) → 캐시 무효화 여부 판단
+
+읽기 방식의 특징은 다음과 같다.
+
+- Kafka 원문 payload를 Spark 쪽에서 다시 스키마 검증한다.
+- `summary`가 비어 있으면 `description`, `content`를 fallback으로 사용한다.
+- 집계 기준 시각은 `published_at`을 `event_time`으로 사용한다.
+- `url`, `event_time`이 없는 레코드는 이후 `dropna`로 제외한다.
+
+#### 2. 전처리/변환 로직
+
+전처리는 `title + summary`를 하나의 분석 문자열로 합친 뒤 `tokenize()` UDF를 적용하는 방식이다.
+
+```python
+.withColumn("article_text", expr("concat_ws(' ', title, summary)"))
+.withColumn("tokens", tokenize_udf(col("article_text")))
+.dropna(subset=["event_time", "url"])
 ```
 
-`@lru_cache(maxsize=1)`로 실제 사전 본문은 캐시하되, `DICTIONARY_REFRESH_INTERVAL_SECONDS` 주기마다 버전만 확인한다. 버전이 바뀌면 관련 캐시를 비우고 다음 토큰화부터 새 사전을 다시 로드한다.
+`tokenize()` 내부 흐름은 아래와 같다.
 
-## 인프라 구성
+1. `clean_text()`
+2. Kiwi 형태소 분석
+3. 명사(`NNG`, `NNP`)만 추출
+4. `compound_noun_dict` 기반 복합명사 병합
+5. `stopword_dict` 기반 불용어 제거
+6. 길이 1 이하 토큰 제거
 
-### 1. Docker Compose 서비스
+그 결과를 바탕으로 Spark는 세 종류의 결과를 만든다.
 
-- `app-postgres` — 기사 원문과 집계 결과 저장용 PostgreSQL
-- `spark-master` — Spark 클러스터 마스터
-- `spark-worker-1` / `spark-worker-2` — Spark 워커
-- `spark-history` — Spark 히스토리 서버
-- `spark-streaming` — `scripts/run_processing.py`를 `spark-submit`으로 실행하는 처리 서비스
+| 결과 | 설명 |
+| --- | --- |
+| `news_raw` | 기사 원문 저장 |
+| `keywords` | 기사별 키워드 빈도 |
+| `keyword_trends` | 10분 윈도우 기준 키워드 트렌드 |
+| `keyword_relations` | 기사 내 상위 키워드 동시 출현 관계 |
 
-### 2. Spark 이미지
+#### 3. Error handling 전략
 
-`infra/spark/Dockerfile.spark` 기반 `news-trend-spark-runtime:latest` 이미지.
+현재 구현의 예외/복구 전략은 다음과 같다.
 
-포함 내용:
-- Java 17 런타임
-- Spark 3.5.7 (Hadoop 3)
-- Python 처리 의존성 (`requirements/requirements-spark.txt`)
-- **PostgreSQL JDBC 드라이버** (`postgresql-42.7.3.jar`) — JDBC staging write에 필요
-- 프로젝트 소스 코드
+| 구간 | 전략 |
+| --- | --- |
+| DB 초기화 | `safe_initialize_database()`로 시도 후 실패 시 경고 로그만 남김 |
+| 스트리밍 재시작 | `checkpointLocation` 기반으로 Kafka offset 복구 |
+| DB write | Spark executor가 staging table에 append 후 DB 내부 upsert 실행 |
+| 중복 데이터 | `ON CONFLICT`와 unique index로 방지 |
+| 사전 조회 실패 | DB 실패 시 파일/기본 불용어로 fallback |
+| 비정상 메시지 | 스키마 파싱 후 `url` 또는 `event_time`이 없으면 drop |
 
-`spark-submit` 실행 시 `--packages`로 Kafka 커넥터와 JDBC 드라이버를 추가 로드한다.
+추가로 저장 단계는 모두 **staging table → upsert → truncate** 순서로 처리한다.
 
-### 3. 실행 흐름
+```text
+Spark batch
+  -> stg_news_raw / stg_keywords / stg_keyword_trends / stg_keyword_relations
+  -> INSERT ... ON CONFLICT ...
+  -> TRUNCATE staging table
+```
 
-`docker compose up -d` 만으로 `spark-streaming` 컨테이너가 자동으로 `spark-submit`을 실행한다. 별도 수동 실행 불필요.
+이 방식을 택한 이유는 다음과 같다.
 
-로그 확인:
+1. `collect()` 없이 executor가 직접 JDBC write를 수행해 driver 메모리 병목을 줄인다.
+2. upsert를 DB 내부에서 수행하므로 재처리 시 멱등성 확보가 쉽다.
+3. window 집계 결과는 `DO UPDATE SET count = old + excluded` 방식으로 누적 가능하다.
+
+단, 현재 Spark 처리 단계에는 별도 DLQ나 malformed JSON 전용 저장소는 없다. 잘못된 메시지는 사실상 집계 대상에서 제외되는 구조다.
+
+### 2-c. 처리 전/후 데이터 예시
+
+#### 처리 전: Kafka 메시지 예시
+
+```json
+{
+  "provider": "naver",
+  "source": "it.chosun.com",
+  "title": "네이버, 생성형 AI 기반 검색 고도화",
+  "summary": "네이버가 생성형 AI와 LLM 기술을 활용해 검색 품질을 높인다.",
+  "url": "https://example.com/news/1",
+  "published_at": "2026-04-22T01:10:00+00:00",
+  "ingested_at": "2026-04-22T01:10:30+00:00",
+  "metadata": {
+    "source": "naver",
+    "version": "v1",
+    "query": "생성형AI"
+  }
+}
+```
+
+#### 전처리 중간 결과 예시
+
+```text
+article_text
+= "네이버, 생성형 AI 기반 검색 고도화 네이버가 생성형 AI와 LLM 기술을 활용해 검색 품질을 높인다."
+
+clean_text(article_text)
+= "네이버 생성형 기반 검색 고도화 네이버가 생성형 와 기술을 활용해 검색 품질을 높인다"
+
+tokenize(article_text)
+= ["네이버", "생성형", "기반", "검색", "고도화", "네이버", "생성형", "기술", "활용", "검색", "품질"]
+```
+
+주의할 점은 현재 `clean_text()`가 영문과 숫자를 제거하므로 `AI`, `LLM`, `GPT` 같은 영문 토큰은 직접 남지 않는다.
+
+#### 처리 후: 기사별 키워드 예시
+
+```json
+{
+  "article_provider": "naver",
+  "article_url": "https://example.com/news/1",
+  "keyword": "검색",
+  "keyword_count": 2,
+  "processed_at": "2026-04-22T01:11:00+00:00"
+}
+```
+
+#### 처리 후: 10분 윈도우 트렌드 예시
+
+```json
+{
+  "provider": "naver",
+  "window_start": "2026-04-22T01:10:00+00:00",
+  "window_end": "2026-04-22T01:20:00+00:00",
+  "keyword": "검색",
+  "keyword_count": 17,
+  "processed_at": "2026-04-22T01:11:00+00:00"
+}
+```
+
+#### 처리 후: 연관 키워드 예시
+
+```json
+{
+  "provider": "naver",
+  "window_start": "2026-04-22T01:10:00+00:00",
+  "window_end": "2026-04-22T01:20:00+00:00",
+  "keyword_a": "네이버",
+  "keyword_b": "검색",
+  "cooccurrence_count": 6,
+  "processed_at": "2026-04-22T01:11:00+00:00"
+}
+```
+
+## 3. 저장소 설계
+
+### 3-a. 저장소 선택
+
+#### 선택: PostgreSQL
+
+저장소는 PostgreSQL을 사용한다.
+
+선택 이유는 다음과 같다.
+
+1. 원문 기사와 집계 결과를 함께 관리하기 쉽다.
+2. `INSERT ... ON CONFLICT` 기반 upsert가 안정적이다.
+3. Spark JDBC 연동이 단순하고 운영 부담이 낮다.
+4. 사전 테이블(`compound_noun_dict`, `stopword_dict`)과 분석 결과를 같은 저장소에서 관리할 수 있다.
+
+#### 저장 주기 및 방식
+
+| 대상 | 저장 주기 | 저장 방식 |
+| --- | --- | --- |
+| `news_raw` | Spark micro-batch마다 | `stg_news_raw` append 후 upsert |
+| `keywords` | Spark micro-batch마다 | `stg_keywords` append 후 upsert |
+| `keyword_trends` | Spark micro-batch마다 | `stg_keyword_trends` append 후 누적 upsert |
+| `keyword_relations` | Spark micro-batch마다 | `stg_keyword_relations` append 후 누적 upsert |
+| 사전 후보 | 매일 03:00 UTC | Airflow 배치로 upsert |
+
+### 3-b. 테이블 스키마
+
+#### 핵심 테이블
+
+| 테이블 | 목적 | 주요 컬럼 |
+| --- | --- | --- |
+| `news_raw` | 기사 원문 저장 | `provider`, `source`, `title`, `summary`, `url`, `published_at`, `ingested_at` |
+| `keywords` | 기사별 키워드 빈도 | `article_provider`, `article_url`, `keyword`, `keyword_count`, `processed_at` |
+| `keyword_trends` | 10분 윈도우 키워드 집계 | `provider`, `window_start`, `window_end`, `keyword`, `keyword_count` |
+| `keyword_relations` | 10분 윈도우 연관 키워드 집계 | `provider`, `window_start`, `window_end`, `keyword_a`, `keyword_b`, `cooccurrence_count` |
+
+#### 인덱스 설계와 이유
+
+| 인덱스 | 이유 |
+| --- | --- |
+| `idx_news_raw_provider_url` unique | 동일 기사 중복 저장 방지 |
+| `idx_news_raw_provider_published_at` | 기간별 기사 조회 최적화 |
+| `idx_keywords_unique` unique | 기사별 동일 키워드 upsert 보장 |
+| `idx_keywords_keyword` | 특정 키워드 조회 성능 보완 |
+| `idx_keyword_trends_unique` unique | 윈도우별 키워드 누적 upsert 기준 |
+| `idx_keyword_trends_window` | 시간대별 트렌드 조회 최적화 |
+| `idx_keyword_trends_provider_window` | provider + window 조건 조회 최적화 |
+| `idx_keyword_relations_unique` unique | 윈도우별 연관 키워드 누적 upsert 기준 |
+| `idx_keyword_relations_window` | 시간대별 관계 조회 최적화 |
+| `idx_keyword_relations_provider_window` | provider + 시간 조건 조회 최적화 |
+| `idx_keyword_relations_keywords` | 특정 키워드 쌍 검색 보완 |
+
+핵심 원칙은 다음 두 가지다.
+
+1. **upsert 기준 컬럼은 반드시 unique index로 보장한다.**
+2. **조회 패턴은 시간(window)과 provider 중심으로 맞춘다.**
+
+#### 테이블 파티셔닝 적용 여부
+
+현재 구현에는 **PostgreSQL table partitioning을 적용하지 않았다.**
+
+적용하지 않은 이유는 다음과 같다.
+
+1. 현재 데이터 규모에서는 일반 인덱스만으로도 운영 복잡도 대비 효익이 크지 않다.
+2. upsert와 staging truncate 구조를 먼저 안정화하는 것이 우선이었다.
+3. 파티셔닝을 도입하면 DDL, 인덱스, 유지보수 전략이 함께 복잡해진다.
+
+#### 향후 파티셔닝을 적용한다면
+
+가장 유력한 후보는 아래와 같다.
+
+| 테이블 | 후보 파티션 키 |
+| --- | --- |
+| `news_raw` | `published_at` 월 단위 range partition |
+| `keyword_trends` | `window_start` 일/월 단위 range partition |
+| `keyword_relations` | `window_start` 일/월 단위 range partition |
+
+즉, 현재는 미적용이지만 시간 기반 시계열 테이블이므로 추후 `published_at`, `window_start`가 파티션 키 후보가 된다.
+
+### 3-c. Spark Configuration 설명
+
+현재 코드와 실행 환경에서 중요한 Spark 관련 설정은 아래와 같다.
+
+| 설정 | 현재 값 | 선택 이유 |
+| --- | --- | --- |
+| `SPARK_MASTER` | `local[*]` 또는 `spark://spark-master:7077` | 로컬 개발과 compose 클러스터 실행을 모두 지원 |
+| `SPARK_APP_NAME` | `news-trend-pipeline` | Spark UI와 로그에서 잡 식별 용이 |
+| `SPARK_CHECKPOINT_DIR` | `./runtime/checkpoints` | 스트리밍 offset/state 복구용 |
+| `SPARK_SHUFFLE_PARTITIONS` | `2` | 현재 Kafka 토픽 partition 수와 작은 개발 클러스터 규모에 맞춘 최소 수준 |
+| `SPARK_STARTING_OFFSETS` | `latest` | 새로 유입되는 메시지부터 처리해 초기 적재 부담 축소 |
+| `KEYWORD_WINDOW_DURATION` | `10 minutes` | 너무 짧지 않게 트렌드 변화를 보면서도 near real-time 성격 유지 |
+| `RELATION_KEYWORD_LIMIT` | `8` | 기사당 상위 키워드만 사용해 조합 폭발 방지 |
+| `DICTIONARY_REFRESH_INTERVAL_SECONDS` | `60` | 매 토큰화 호출마다 DB를 보지 않으면서 사전 변경을 비교적 빠르게 반영 |
+
+#### 추가 런타임 설정
+
+Spark 실행 시 아래 패키지를 함께 로드한다.
+
 ```bash
-docker logs -f news-trend-develop-spark-streaming-1
+--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4
 ```
 
-### 4. Airflow 배치
+- Kafka connector: Spark Structured Streaming이 Kafka를 직접 읽기 위해 필요
+- PostgreSQL JDBC driver: staging table write를 위해 필요
 
-`airflow/dags/compound_extraction_dag.py`가 매일 03:00에 `compound_extractor.run_extraction_job()`을 실행한다.
+또한 Spark 런타임 이미지는 다음 기준으로 구성했다.
 
-- `catchup=False`, `max_active_runs=1`
-- `data_interval_end`를 `until` 파라미터로 사용 → 재실행 멱등성 보장
+| 항목 | 이유 |
+| --- | --- |
+| Java 17 | Spark 3.5 실행 환경 |
+| Spark 3.5.7 | 최신 구조 유지와 Kafka connector 호환성 |
+| Python 3.12 | 프로젝트 Python 런타임 통일 |
+| `kiwipiepy`, `psycopg2` 등 | 전처리와 PostgreSQL 연동에 필요 |
 
-## 구현 파일
+## 5. 실행 가능 코드
 
-- `docker-compose.yml`
-- `infra/spark/Dockerfile.spark`
-- `requirements/requirements-spark.txt`
-- `scripts/run_processing.py`
-- `src/news_trend_pipeline/core/config.py`
-- `src/news_trend_pipeline/core/schemas.py`
-- `src/news_trend_pipeline/core/korean_user_dict.txt`
-- `src/news_trend_pipeline/processing/preprocessing.py`
+### 5-1. 엔트리포인트
+
+Spark 처리 잡 실행 엔트리포인트는 [`scripts/run_processing.py`](../scripts/run_processing.py) 이다.
+
+```python
+from news_trend_pipeline.processing.spark_job import run_streaming_job
+
+if __name__ == "__main__":
+    run_streaming_job()
+```
+
+### 5-2. 로컬/단일 노드 실행 예시
+
+```bash
+python scripts/run_processing.py
+```
+
+이 경우 `SPARK_MASTER=local[*]` 설정으로 로컬 Spark에서 동작한다.
+
+### 5-3. Docker Compose 기반 실행 예시
+
+```bash
+docker compose up -d
+```
+
+`spark-streaming` 서비스가 자동으로 아래 명령을 수행한다.
+
+```bash
+/opt/spark/bin/spark-submit \
+  --master spark://spark-master:7077 \
+  --conf spark.jars.ivy=/tmp/.ivy2 \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4 \
+  /opt/news-trend-pipeline/scripts/run_processing.py
+```
+
+### 5-4. 핵심 실행 코드
+
+#### Kafka 읽기 + 전처리
+
+```python
+parsed = (
+    raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
+    .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
+    .select("data.*")
+    .withColumn("summary", coalesce(col("summary"), col("description"), col("content")))
+    .withColumn("published_at", to_timestamp("published_at"))
+    .withColumn("ingested_at", to_timestamp("ingested_at"))
+    .withColumn("event_time", col("published_at"))
+    .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
+    .withColumn("tokens", tokenize_udf(col("article_text")))
+    .dropna(subset=["event_time", "url"])
+)
+```
+
+#### JDBC staging write
+
+```python
+def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
+    df.write.jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
+```
+
+#### 기사 원문 upsert
+
+```python
+_jdbc_write(
+    batch_df.select("provider", "source", "title", "summary", "url", "published_at", "ingested_at"),
+    "stg_news_raw",
+    jdbc_url,
+    jdbc_props,
+)
+upsert_from_staging_news_raw()
+```
+
+#### 키워드 트렌드 집계
+
+```python
+keyword_trends = (
+    article_keywords.groupBy(
+        col("provider"),
+        window(col("event_time"), settings.keyword_window_duration),
+        col("keyword"),
+    )
+    .agg(expr("sum(keyword_count) as keyword_count"))
+)
+```
+
+#### 연관 키워드 집계
+
+```python
+representative_keywords = (
+    article_keywords.withColumn("keyword_rank", row_number().over(article_window))
+    .filter(col("keyword_rank") <= settings.relation_keyword_limit)
+)
+```
+
+## 6. 구현 파일 목록
+
 - `src/news_trend_pipeline/processing/spark_job.py`
+- `src/news_trend_pipeline/processing/preprocessing.py`
 - `src/news_trend_pipeline/storage/db.py`
 - `src/news_trend_pipeline/storage/models.sql`
-- `src/news_trend_pipeline/analytics/compound_extractor.py`
+- `src/news_trend_pipeline/core/config.py`
+- `scripts/run_processing.py`
+- `infra/spark/Dockerfile.spark`
+- `docker-compose.yml`
 - `airflow/dags/compound_extraction_dag.py`
-- `tests/unit/test_processing_preprocessing.py`
-- `tests/unit/test_core_schemas.py`
+- `src/news_trend_pipeline/analytics/compound_extractor.py`
 
-## 개발 내역
+## 7. 관련 문서
 
-### 1. NewsAPI·영어 전처리 제거
-
-NewsAPI 연동과 spaCy 기반 영어 전처리 경로를 완전히 제거했다.
-
-- 제거: `spacy` 의존성, `ENGLISH_STOPWORDS`, `ENGLISH_NOUN_TAGS`, `get_spacy_nlp()`, `clean_text(provider=)` 파라미터
-- 결과: 전처리 계층이 한국어(Naver) 전용으로 단순화됨
-
-### 2. 전처리 계층 정리
-
-`processing/preprocessing.py`에 한국어 전처리 로직을 구성했다.
-
-- Kiwi 기반 형태소 분석
-- DB 우선 복합명사 사전 로드 (`lru_cache` 적용)
-- DB 우선 불용어 로드 (fallback: 코드 내 기본값)
-- Kiwi 미설치 환경에서도 동작 가능한 정규식 fallback 유지
-
-### 3. Spark 저장 방식 전환 (collect() → JDBC staging)
-
-`processing/spark_job.py`의 `foreachBatch`에서 3회 `collect()` 호출을 제거하고 JDBC staging 방식으로 전환했다.
-
-- `_jdbc_write()` 헬퍼 함수 추가
-- `stg_*` 테이블에 bulk write 후 `upsert_from_staging_*()` 함수 호출
-- `keywords` 테이블 활성화 (기존에는 `article_keywords` DataFrame이 집계만 하고 저장되지 않았음)
-- 컬럼명 통일: `count` → `keyword_count` / `cooccurrence_count`
-
-### 4. 사전 DB화 및 복합명사 후보 자동 추출
-
-- `models.sql`에 `compound_noun_dict`, `compound_noun_candidates`, `stopword_dict` 테이블 추가
-- `db.py`에 `fetch_compound_nouns()`, `fetch_stopwords()`, `upsert_compound_candidates()`, `seed_initial_data()` 추가
-- `analytics/compound_extractor.py` 신규 추가 — Kiwi 무사전 분석 + span 연속성 검사로 후보 추출
-- Airflow DAG으로 매일 03:00 배치 실행
-
-### 5. 저장 계층 upsert 강화
-
-- `models.sql`에 unique index 3개 추가 (`keyword_trends`, `keyword_relations`, `keywords`)
-- `models.sql`에 staging 테이블 4개 추가
-- `db.py`에 `upsert_from_staging_*()` 함수 4개 추가
-
-## 관련 문서
-
-- [전처리 상세 문서](./STEP2_PREPROCESSING.md) — 텍스트 정제·토큰화·복합명사 병합·불용어·라이브러리·개선 방향
-
-## 남은 작업
-
-1. analytics 계층에서 급상승 키워드 탐지 로직 추가
-2. API 계층에서 집계 결과 조회 기능 추가
-3. dashboard 계층에서 시각화 화면 추가
-4. 복합명사 후보 검토·승인용 Web/Admin API 구현
-5. PostgreSQL/Spark가 실제 올라온 상태에서 통합 테스트 보강
+- [Step 1 Kafka 수집 구조](./STEP1_KAFKA_2.md)
+- [Step 2 전처리 상세](./STEP2_PREPROCESSING.md)
