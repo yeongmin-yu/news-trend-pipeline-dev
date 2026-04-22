@@ -121,10 +121,13 @@ news-trend-pipeline/
 ├─ scripts/                   # dev mount -> /opt/news-trend-pipeline/scripts
 ├─ docs/
 │  ├─ DIRECTION.md
+│  ├─ DISASTER_RECOVERY.md
+│  ├─ FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md
+│  ├─ FULL_RESET_AND_REBOOTSTRAP_GUIDE.md
 │  ├─ STEP1_KAFKA.md
 │  ├─ STEP1_KAFKA_2.md
-│  ├─ DISASTER_RECOVERY.md
-│  └─ FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md
+│  ├─ STEP2_PREPROCESSING.md
+│  └─ STEP2_SPARK.md
 ├─ requirements/              # Docker 빌드에서 사용
 ├─ pyproject.toml             # setuptools src layout 패키지 설정
 ├─ docker-compose.yml
@@ -253,6 +256,11 @@ python -m news_trend_pipeline.ingestion.producer
 
 ## 문서
 
+- [방향 전환 배경](./docs/DIRECTION.md) - 도메인 기반 뉴스 트렌드 분석으로 방향을 전환한 이유
 - [단계 1: Kafka 수집](./docs/STEP1_KAFKA.md) - 뉴스 API 수집, Kafka 적재, 적재 결과 확인
 - [단계 1: Kafka 수집 Rev.2](./docs/STEP1_KAFKA_2.md) - Naver 병렬 호출, URL partition key, src layout 구조 리팩토링
-- [단계 1: 장애 대응 및 복구](./docs/DISASTER_RECOVERY.md) - Dead Letter 처리, 자동/수동 재처리, 모니터링 가이드
+- [단계 2: Spark 처리 계층](./docs/STEP2_SPARK.md) - Kafka 이후 Spark 처리, 저장소 설계, 실행 코드
+- [단계 2: 전처리 상세](./docs/STEP2_PREPROCESSING.md) - 텍스트 정제, 토큰화, 복합명사, 연관 키워드 집계
+- [장애 대응 및 복구](./docs/DISASTER_RECOVERY.md) - Dead Letter 처리, 자동/수동 재처리, 모니터링 가이드
+- [운영 전환 체크리스트](./docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md) - bind mount 축소와 이미지 중심 운영 전환 체크리스트
+- [전체 초기화/재부트스트랩 가이드](./docs/FULL_RESET_AND_REBOOTSTRAP_GUIDE.md) - 로컬 환경을 처음부터 다시 세팅하는 절차
