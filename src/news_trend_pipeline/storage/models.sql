@@ -1,47 +1,47 @@
+CREATE TABLE IF NOT EXISTS domain_catalog (
+    domain_id   VARCHAR(50) PRIMARY KEY,
+    label       VARCHAR(100) NOT NULL,
+    sort_order  INTEGER NOT NULL,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS query_keywords (
+    id          SERIAL PRIMARY KEY,
+    provider    VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain_id   VARCHAR(50) NOT NULL REFERENCES domain_catalog(domain_id),
+    query       VARCHAR(100) NOT NULL,
+    sort_order  INTEGER NOT NULL,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_query_keywords_provider_domain_query UNIQUE (provider, domain_id, query)
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_keywords_active
+    ON query_keywords(provider, domain_id, is_active, sort_order);
+
 CREATE TABLE IF NOT EXISTS news_raw (
-    id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
-    source VARCHAR(255),
-    title TEXT NOT NULL,
-    summary TEXT,
-    url TEXT NOT NULL,
+    id           BIGSERIAL PRIMARY KEY,
+    provider     VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain       VARCHAR(50) NOT NULL DEFAULT 'ai_tech',
+    query        VARCHAR(100),
+    source       VARCHAR(255),
+    title        TEXT NOT NULL,
+    summary      TEXT,
+    url          TEXT NOT NULL,
     published_at TIMESTAMPTZ,
-    ingested_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS keywords (
-    id BIGSERIAL PRIMARY KEY,
-    article_provider VARCHAR(50) NOT NULL DEFAULT 'naver',
-    article_url TEXT NOT NULL,
-    keyword VARCHAR(255) NOT NULL,
-    keyword_count INTEGER NOT NULL DEFAULT 1,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS keyword_trends (
-    id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
-    window_start TIMESTAMPTZ NOT NULL,
-    window_end TIMESTAMPTZ NOT NULL,
-    keyword VARCHAR(255) NOT NULL,
-    keyword_count INTEGER NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS keyword_relations (
-    id BIGSERIAL PRIMARY KEY,
-    provider VARCHAR(50) NOT NULL DEFAULT 'naver',
-    window_start TIMESTAMPTZ NOT NULL,
-    window_end TIMESTAMPTZ NOT NULL,
-    keyword_a VARCHAR(255) NOT NULL,
-    keyword_b VARCHAR(255) NOT NULL,
-    cooccurrence_count INTEGER NOT NULL,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE news_raw DROP CONSTRAINT IF EXISTS news_raw_url_key;
-ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
-ALTER TABLE news_raw ALTER COLUMN provider SET DEFAULT 'naver';
+DROP INDEX IF EXISTS idx_news_raw_provider_url;
+DROP INDEX IF EXISTS idx_keyword_trends_unique;
+DROP INDEX IF EXISTS idx_keyword_relations_unique;
+DROP INDEX IF EXISTS idx_keywords_unique;
+ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'ai_tech';
+ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS query VARCHAR(100);
+ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
 
 DO $$
 BEGIN
@@ -58,42 +58,91 @@ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE news_raw DROP COLUMN IF EXISTS author;
 ALTER TABLE news_raw DROP COLUMN IF EXISTS content;
-ALTER TABLE keywords ADD COLUMN IF NOT EXISTS article_provider VARCHAR(50) NOT NULL DEFAULT 'naver';
-ALTER TABLE keywords ALTER COLUMN article_provider SET DEFAULT 'naver';
-ALTER TABLE keyword_trends ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
-ALTER TABLE keyword_trends ALTER COLUMN provider SET DEFAULT 'naver';
-ALTER TABLE keyword_relations ADD COLUMN IF NOT EXISTS provider VARCHAR(50) NOT NULL DEFAULT 'naver';
-ALTER TABLE keyword_relations ALTER COLUMN provider SET DEFAULT 'naver';
 
-CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
-CREATE INDEX IF NOT EXISTS idx_keyword_trends_window ON keyword_trends(window_start, window_end);
-CREATE INDEX IF NOT EXISTS idx_keyword_relations_window ON keyword_relations(window_start, window_end);
-CREATE INDEX IF NOT EXISTS idx_keyword_relations_keywords ON keyword_relations(keyword_a, keyword_b);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_news_raw_provider_url ON news_raw(provider, url);
-CREATE INDEX IF NOT EXISTS idx_news_raw_provider_published_at ON news_raw(provider, published_at);
-CREATE INDEX IF NOT EXISTS idx_keyword_trends_provider_window ON keyword_trends(provider, window_start, window_end);
-CREATE INDEX IF NOT EXISTS idx_keyword_relations_provider_window ON keyword_relations(provider, window_start, window_end);
+CREATE TABLE IF NOT EXISTS keywords (
+    id                BIGSERIAL PRIMARY KEY,
+    article_provider  VARCHAR(50) NOT NULL DEFAULT 'naver',
+    article_domain    VARCHAR(50) NOT NULL DEFAULT 'ai_tech',
+    article_url       TEXT NOT NULL,
+    keyword           VARCHAR(255) NOT NULL,
+    keyword_count     INTEGER NOT NULL DEFAULT 1,
+    processed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
--- 복합명사 사전 (승인된 단어)
+ALTER TABLE keywords ADD COLUMN IF NOT EXISTS article_domain VARCHAR(50) NOT NULL DEFAULT 'ai_tech';
+
+CREATE TABLE IF NOT EXISTS keyword_trends (
+    id            BIGSERIAL PRIMARY KEY,
+    provider      VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain        VARCHAR(50) NOT NULL DEFAULT 'ai_tech',
+    window_start  TIMESTAMPTZ NOT NULL,
+    window_end    TIMESTAMPTZ NOT NULL,
+    keyword       VARCHAR(255) NOT NULL,
+    keyword_count INTEGER NOT NULL,
+    processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE keyword_trends ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'ai_tech';
+
+CREATE TABLE IF NOT EXISTS keyword_relations (
+    id                  BIGSERIAL PRIMARY KEY,
+    provider            VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain              VARCHAR(50) NOT NULL DEFAULT 'ai_tech',
+    window_start        TIMESTAMPTZ NOT NULL,
+    window_end          TIMESTAMPTZ NOT NULL,
+    keyword_a           VARCHAR(255) NOT NULL,
+    keyword_b           VARCHAR(255) NOT NULL,
+    cooccurrence_count  INTEGER NOT NULL,
+    processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE keyword_relations ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'ai_tech';
+
+CREATE INDEX IF NOT EXISTS idx_news_raw_provider_domain_published_at
+    ON news_raw(provider, domain, published_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_news_raw_provider_domain_url
+    ON news_raw(provider, domain, url);
+
+CREATE INDEX IF NOT EXISTS idx_keywords_keyword
+    ON keywords(keyword);
+CREATE INDEX IF NOT EXISTS idx_keywords_domain_keyword
+    ON keywords(article_domain, keyword);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_unique
+    ON keywords(article_provider, article_domain, article_url, keyword);
+
+CREATE INDEX IF NOT EXISTS idx_keyword_trends_window
+    ON keyword_trends(window_start, window_end);
+CREATE INDEX IF NOT EXISTS idx_keyword_trends_provider_domain_window
+    ON keyword_trends(provider, domain, window_start, window_end);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_trends_unique
+    ON keyword_trends(provider, domain, window_start, window_end, keyword);
+
+CREATE INDEX IF NOT EXISTS idx_keyword_relations_window
+    ON keyword_relations(window_start, window_end);
+CREATE INDEX IF NOT EXISTS idx_keyword_relations_keywords
+    ON keyword_relations(keyword_a, keyword_b);
+CREATE INDEX IF NOT EXISTS idx_keyword_relations_provider_domain_window
+    ON keyword_relations(provider, domain, window_start, window_end);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_relations_unique
+    ON keyword_relations(provider, domain, window_start, window_end, keyword_a, keyword_b);
+
 CREATE TABLE IF NOT EXISTS compound_noun_dict (
     id         SERIAL PRIMARY KEY,
-    word       VARCHAR(50)  NOT NULL,
-    source     VARCHAR(20)  NOT NULL DEFAULT 'manual',
-    created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    word       VARCHAR(50) NOT NULL,
+    source     VARCHAR(20) NOT NULL DEFAULT 'manual',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_compound_noun_dict_word UNIQUE (word)
 );
 
--- 복합명사 후보 (자동 추출, 관리자 승인 대기)
 CREATE TABLE IF NOT EXISTS compound_noun_candidates (
-    id            SERIAL      PRIMARY KEY,
+    id            SERIAL PRIMARY KEY,
     word          VARCHAR(50) NOT NULL,
-    frequency     INTEGER     NOT NULL DEFAULT 1,
-    doc_count     INTEGER     NOT NULL DEFAULT 1,
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    frequency     INTEGER NOT NULL DEFAULT 1,
+    doc_count     INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status        VARCHAR(20) NOT NULL DEFAULT 'pending',
     reviewed_at   TIMESTAMPTZ,
     reviewed_by   VARCHAR(100),
@@ -101,24 +150,25 @@ CREATE TABLE IF NOT EXISTS compound_noun_candidates (
     CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('pending', 'approved', 'rejected'))
 );
 
--- 불용어 사전
 CREATE TABLE IF NOT EXISTS stopword_dict (
-    id         SERIAL      PRIMARY KEY,
+    id         SERIAL PRIMARY KEY,
     word       VARCHAR(50) NOT NULL,
     language   VARCHAR(10) NOT NULL DEFAULT 'ko',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_stopword_dict_word_lang UNIQUE (word, language)
 );
 
-CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status ON compound_noun_candidates(status);
-CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency ON compound_noun_candidates(frequency DESC);
-CREATE INDEX IF NOT EXISTS idx_stopword_dict_language ON stopword_dict(language);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status
+    ON compound_noun_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency
+    ON compound_noun_candidates(frequency DESC);
+CREATE INDEX IF NOT EXISTS idx_stopword_dict_language
+    ON stopword_dict(language);
 
--- 사전 버전 메타데이터 (hot reload 감지용)
 CREATE TABLE IF NOT EXISTS dictionary_versions (
     dict_name   VARCHAR(50) PRIMARY KEY,
-    version     BIGINT      NOT NULL DEFAULT 1,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    version     BIGINT NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 INSERT INTO dictionary_versions (dict_name, version)
@@ -130,11 +180,11 @@ ON CONFLICT (dict_name) DO NOTHING;
 CREATE OR REPLACE FUNCTION bump_dictionary_version() RETURNS TRIGGER AS $$
 BEGIN
     INSERT INTO dictionary_versions (dict_name, version, updated_at)
-    VALUES (TG_TABLE_NAME, 2, now())
+    VALUES (TG_TABLE_NAME, 2, NOW())
     ON CONFLICT (dict_name)
     DO UPDATE SET
         version = dictionary_versions.version + 1,
-        updated_at = now();
+        updated_at = NOW();
 
     RETURN COALESCE(NEW, OLD);
 END;
@@ -152,37 +202,44 @@ AFTER INSERT OR UPDATE OR DELETE ON stopword_dict
 FOR EACH ROW
 EXECUTE FUNCTION bump_dictionary_version();
 
--- Unique indexes for upsert correctness (streaming 재처리 대비)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_trends_unique
-    ON keyword_trends(provider, window_start, window_end, keyword);
+CREATE TABLE IF NOT EXISTS stg_news_raw (
+    provider     VARCHAR(50),
+    domain       VARCHAR(50),
+    query        VARCHAR(100),
+    source       VARCHAR(255),
+    title        TEXT,
+    summary      TEXT,
+    url          TEXT,
+    published_at TIMESTAMPTZ,
+    ingested_at  TIMESTAMPTZ
+);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_relations_unique
-    ON keyword_relations(provider, window_start, window_end, keyword_a, keyword_b);
+CREATE TABLE IF NOT EXISTS stg_keywords (
+    article_provider  VARCHAR(50),
+    article_domain    VARCHAR(50),
+    article_url       TEXT,
+    keyword           VARCHAR(255),
+    keyword_count     INTEGER,
+    processed_at      TIMESTAMPTZ
+);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_unique
-    ON keywords(article_provider, article_url, keyword);
+CREATE TABLE IF NOT EXISTS stg_keyword_trends (
+    provider      VARCHAR(50),
+    domain        VARCHAR(50),
+    window_start  TIMESTAMPTZ,
+    window_end    TIMESTAMPTZ,
+    keyword       VARCHAR(255),
+    keyword_count INTEGER,
+    processed_at  TIMESTAMPTZ
+);
 
--- Staging tables: Spark JDBC bulk write 대상 (upsert 후 TRUNCATE)
-CREATE TABLE IF NOT EXISTS stg_news_raw (LIKE news_raw INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
-CREATE TABLE IF NOT EXISTS stg_keywords (LIKE keywords INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
-CREATE TABLE IF NOT EXISTS stg_keyword_trends (LIKE keyword_trends INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
-CREATE TABLE IF NOT EXISTS stg_keyword_relations (LIKE keyword_relations INCLUDING DEFAULTS EXCLUDING CONSTRAINTS);
-
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'stg_news_raw' AND column_name = 'description'
-    ) AND NOT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'stg_news_raw' AND column_name = 'summary'
-    ) THEN
-        EXECUTE 'ALTER TABLE stg_news_raw RENAME COLUMN description TO summary';
-    END IF;
-END $$;
-
-ALTER TABLE stg_news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
-ALTER TABLE stg_news_raw DROP COLUMN IF EXISTS author;
-ALTER TABLE stg_news_raw DROP COLUMN IF EXISTS content;
+CREATE TABLE IF NOT EXISTS stg_keyword_relations (
+    provider            VARCHAR(50),
+    domain              VARCHAR(50),
+    window_start        TIMESTAMPTZ,
+    window_end          TIMESTAMPTZ,
+    keyword_a           VARCHAR(255),
+    keyword_b           VARCHAR(255),
+    cooccurrence_count  INTEGER,
+    processed_at        TIMESTAMPTZ
+);

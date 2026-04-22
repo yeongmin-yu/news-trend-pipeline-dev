@@ -101,21 +101,28 @@ def run_streaming_job() -> None:
 
         # news_raw
         _jdbc_write(
-            batch_df.select("provider", "source", "title", "summary", "url", "published_at", "ingested_at"),
+            batch_df.select("provider", "domain", "query", "source", "title", "summary", "url", "published_at", "ingested_at"),
             "stg_news_raw", jdbc_url, jdbc_props,
         )
         upsert_from_staging_news_raw()
 
         article_keywords = (
-            batch_df.select("provider", "url", "event_time", explode(col("tokens")).alias("keyword"))
-            .groupBy("provider", "url", "event_time", "keyword")
+            batch_df.select("provider", "domain", "url", "event_time", explode(col("tokens")).alias("keyword"))
+            .groupBy("provider", "domain", "url", "event_time", "keyword")
             .agg(spark_count("*").alias("keyword_count"))
         )
 
         # keywords (per-article)
         _jdbc_write(
             article_keywords.withColumn("processed_at", current_timestamp())
-            .selectExpr("provider as article_provider", "url as article_url", "keyword", "keyword_count", "processed_at"),
+            .selectExpr(
+                "provider as article_provider",
+                "domain as article_domain",
+                "url as article_url",
+                "keyword",
+                "keyword_count",
+                "processed_at",
+            ),
             "stg_keywords", jdbc_url, jdbc_props,
         )
         upsert_from_staging_keywords()
@@ -124,6 +131,7 @@ def run_streaming_job() -> None:
         keyword_trends = (
             article_keywords.groupBy(
                 col("provider"),
+                col("domain"),
                 window(col("event_time"), settings.keyword_window_duration),
                 col("keyword"),
             )
@@ -131,6 +139,7 @@ def run_streaming_job() -> None:
             .withColumn("processed_at", current_timestamp())
             .selectExpr(
                 "provider",
+                "domain",
                 "window.start as window_start",
                 "window.end as window_end",
                 "keyword",
@@ -142,7 +151,7 @@ def run_streaming_job() -> None:
         upsert_from_staging_keyword_trends()
 
         # keyword_relations (co-occurrence pairs)
-        article_window = Window.partitionBy("provider", "url", "event_time").orderBy(
+        article_window = Window.partitionBy("provider", "domain", "url", "event_time").orderBy(
             col("keyword_count").desc(),
             col("keyword").asc(),
         )
@@ -156,12 +165,14 @@ def run_streaming_job() -> None:
             left.join(
                 right,
                 (col("left.provider") == col("right.provider"))
+                & (col("left.domain") == col("right.domain"))
                 & (col("left.url") == col("right.url"))
                 & (col("left.event_time") == col("right.event_time"))
                 & (col("left.keyword_rank") < col("right.keyword_rank")),
             )
             .select(
                 col("left.provider").alias("provider"),
+                col("left.domain").alias("domain"),
                 col("left.event_time").alias("event_time"),
                 col("left.keyword").alias("keyword_a"),
                 col("right.keyword").alias("keyword_b"),
@@ -170,6 +181,7 @@ def run_streaming_job() -> None:
         relation_trends = (
             relation_pairs.groupBy(
                 col("provider"),
+                col("domain"),
                 window(col("event_time"), settings.keyword_window_duration),
                 "keyword_a",
                 "keyword_b",
@@ -178,6 +190,7 @@ def run_streaming_job() -> None:
             .withColumn("processed_at", current_timestamp())
             .selectExpr(
                 "provider",
+                "domain",
                 "window.start as window_start",
                 "window.end as window_end",
                 "keyword_a",

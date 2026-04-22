@@ -92,6 +92,7 @@ export interface ArticleItem {
   summary: string;
   publisher: string;
   source: string;
+  domain?: string;
   publishedAt: string | null;
   minutesAgo: number | null;
   keywords: string[];
@@ -169,23 +170,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   filters: () => request<FiltersResponse>("/meta/filters"),
-  kpis: (source: SourceId, range: RangeId) =>
-    request<KpiSummary>(`/dashboard/kpis?source=${source}&range=${range}`),
-  keywords: (source: SourceId, range: RangeId, search: string, limit: number) =>
+  kpis: (source: SourceId, domain: string, range: RangeId) =>
+    request<KpiSummary>(`/dashboard/kpis?source=${source}&domain=${domain}&range=${range}`),
+  keywords: (source: SourceId, domain: string, range: RangeId, search: string, limit: number) =>
     request<KeywordSummary[]>(
-      `/dashboard/keywords?source=${source}&range=${range}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`,
+      `/dashboard/keywords?source=${source}&domain=${domain}&range=${range}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`,
     ),
-  trend: (source: SourceId, range: RangeId, keyword: string) =>
-    request<TrendResponse>(`/dashboard/trend?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}`),
-  spikes: (source: SourceId, range: RangeId) =>
-    request<SpikeResponse>(`/dashboard/spikes?source=${source}&range=${range}`),
-  related: (source: SourceId, range: RangeId, keyword: string) =>
+  trend: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
+    request<TrendResponse>(`/dashboard/trend?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}`),
+  spikes: (source: SourceId, domain: string, range: RangeId) =>
+    request<SpikeResponse>(`/dashboard/spikes?source=${source}&domain=${domain}&range=${range}`),
+  related: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
     request<RelatedKeyword[]>(
-      `/dashboard/related?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
+      `/dashboard/related?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
     ),
-  articles: (source: SourceId, range: RangeId, keyword: string, sort: "latest" | "relevance") =>
+  articles: (source: SourceId, domain: string, range: RangeId, keyword: string, sort: "latest" | "relevance") =>
     request<ArticleItem[]>(
-      `/dashboard/articles?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}&sort=${sort}`,
+      `/dashboard/articles?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}&sort=${sort}`,
     ),
   system: () => request<SystemStatusResponse>("/dashboard/system"),
   dictionary: () => request<DictionaryOverview>("/dictionary"),

@@ -139,13 +139,14 @@ export default function App() {
   }, []);
 
   const filters = useAsyncData(() => api.filters(), []);
-  const kpis = useAsyncData(() => api.kpis(source, range), [source, range]);
-  const keywords = useAsyncData(() => api.keywords(source, range, search, 30), [source, range, search]);
-  const spikes = useAsyncData(() => api.spikes(source, range), [source, range]);
+  const kpis = useAsyncData(() => api.kpis(source, domain, range), [source, domain, range]);
+  const keywords = useAsyncData(() => api.keywords(source, domain, range, search, 30), [source, domain, range, search]);
+  const spikes = useAsyncData(() => api.spikes(source, domain, range), [source, domain, range]);
   const system = useAsyncData(() => api.system(), []);
 
   useEffect(() => {
-    if (!selectedKeyword && keywords.data?.length) {
+    if (!keywords.data?.length) return;
+    if (!selectedKeyword || !keywords.data.some((item) => item.keyword === selectedKeyword)) {
       setSelectedKeyword(keywords.data[0].keyword);
     }
   }, [selectedKeyword, keywords.data]);
@@ -153,17 +154,17 @@ export default function App() {
   const trend = useAsyncData(
     () =>
       selectedKeyword
-        ? api.trend(source, range, selectedKeyword)
+        ? api.trend(source, domain, range, selectedKeyword)
         : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
-    [source, range, selectedKeyword],
+    [source, domain, range, selectedKeyword],
   );
   const related = useAsyncData(
-    () => (selectedKeyword ? api.related(source, range, selectedKeyword) : Promise.resolve([] as RelatedKeyword[])),
-    [source, range, selectedKeyword],
+    () => (selectedKeyword ? api.related(source, domain, range, selectedKeyword) : Promise.resolve([] as RelatedKeyword[])),
+    [source, domain, range, selectedKeyword],
   );
   const articles = useAsyncData(
-    () => (selectedKeyword ? api.articles(source, range, selectedKeyword, articleSort) : Promise.resolve([] as ArticleItem[])),
-    [source, range, selectedKeyword, articleSort],
+    () => (selectedKeyword ? api.articles(source, domain, range, selectedKeyword, articleSort) : Promise.resolve([] as ArticleItem[])),
+    [source, domain, range, selectedKeyword, articleSort],
   );
 
   const activeFilters = filters.data ?? DEFAULT_FILTERS;

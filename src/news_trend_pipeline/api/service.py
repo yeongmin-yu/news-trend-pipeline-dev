@@ -11,7 +11,11 @@ import requests
 from psycopg2.extras import RealDictCursor
 
 from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.storage.db import fetch_dictionary_versions, get_connection
+from news_trend_pipeline.storage.db import (
+    fetch_dictionary_versions,
+    fetch_domain_catalog,
+    get_connection,
+)
 
 
 @dataclass(frozen=True)
@@ -37,15 +41,8 @@ RANGES: dict[str, RangeSpec] = {
 
 SOURCES = [
     {"id": "all", "label": "전체", "color": "#7dd3fc"},
-    {"id": "naver", "label": "네이버", "color": "#34d399"},
-    {"id": "global", "label": "글로벌", "color": "#f59e0b"},
-]
-
-DOMAINS = [
-    {"id": "ai_tech", "label": "AI · 테크", "available": True},
-    {"id": "economy", "label": "경제 · 금융", "available": False},
-    {"id": "politics", "label": "정치 · 정책", "available": False},
-    {"id": "entertainment", "label": "엔터 · 문화", "available": False},
+    {"id": "naver", "label": "네이버 뉴스", "color": "#34d399"},
+    {"id": "global", "label": "글로벌 뉴스", "color": "#f59e0b"},
 ]
 
 PALETTE = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa", "#a78bfa"]
@@ -53,6 +50,10 @@ PALETTE = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa", "#a78bfa"]
 
 def _provider_filter(source: str) -> str | None:
     return None if source == "all" else source
+
+
+def _domain_filter(domain: str) -> str | None:
+    return None if domain == "all" else domain
 
 
 def _now_utc() -> datetime:
@@ -94,8 +95,10 @@ def _score_keyword(current: int, growth: float) -> tuple[bool, int]:
 
 
 def get_filters() -> dict[str, Any]:
+    domains = [{"id": "all", "label": "전체", "available": True}]
+    domains.extend(fetch_domain_catalog())
     return {
-        "domains": DOMAINS,
+        "domains": domains,
         "sources": SOURCES,
         "ranges": [
             {
@@ -109,9 +112,10 @@ def get_filters() -> dict[str, Any]:
     }
 
 
-def get_kpis(source: str, range_id: str) -> dict[str, Any]:
+def get_kpis(source: str, domain: str, range_id: str) -> dict[str, Any]:
     _, start_at, end_at, prev_start_at = _range_bounds(range_id)
     provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -128,12 +132,14 @@ def get_kpis(source: str, range_id: str) -> dict[str, Any]:
                     MAX(COALESCE(published_at, ingested_at)) AS last_update
                 FROM news_raw
                 WHERE (%(provider)s IS NULL OR provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR domain = %(domain)s)
                 """,
                 {
                     "start_at": start_at,
                     "end_at": end_at,
                     "prev_start_at": prev_start_at,
                     "provider": provider,
+                    "domain": domain_filter,
                 },
             )
             article_row = cursor.fetchone() or {}
@@ -144,11 +150,17 @@ def get_kpis(source: str, range_id: str) -> dict[str, Any]:
                 WHERE window_start >= %(start_at)s
                   AND window_start < %(end_at)s
                   AND (%(provider)s IS NULL OR provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR domain = %(domain)s)
                 """,
-                {"start_at": start_at, "end_at": end_at, "provider": provider},
+                {
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "provider": provider,
+                    "domain": domain_filter,
+                },
             )
             unique_row = cursor.fetchone() or {}
-            keywords = get_top_keywords(source=source, range_id=range_id, limit=100, search=None)
+            keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=100, search=None)
     spike_count = sum(1 for item in keywords if item["spike"])
     growth = _safe_growth(article_row.get("current_articles") or 0, article_row.get("prev_articles") or 0)
     last_update = article_row.get("last_update")
@@ -162,14 +174,22 @@ def get_kpis(source: str, range_id: str) -> dict[str, Any]:
     }
 
 
-def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | None = None) -> list[dict[str, Any]]:
+def get_top_keywords(
+    source: str,
+    domain: str,
+    range_id: str,
+    limit: int = 30,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
     _, start_at, end_at, prev_start_at = _range_bounds(range_id)
     provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
     params = {
         "start_at": start_at,
         "end_at": end_at,
         "prev_start_at": prev_start_at,
         "provider": provider,
+        "domain": domain_filter,
         "search": f"%{search.strip()}%" if search else None,
         "limit": limit,
     }
@@ -183,6 +203,7 @@ def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | 
                     WHERE window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
                     GROUP BY keyword
                 ),
                 prev_counts AS (
@@ -191,6 +212,7 @@ def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | 
                     WHERE window_start >= %(prev_start_at)s
                       AND window_start < %(start_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
                     GROUP BY keyword
                 ),
                 article_counts AS (
@@ -199,20 +221,25 @@ def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | 
                     JOIN news_raw n
                       ON n.url = k.article_url
                      AND n.provider = k.article_provider
+                     AND n.domain = k.article_domain
                     WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
                       AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
                       AND (%(provider)s IS NULL OR n.provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
                     GROUP BY k.keyword
                 ),
                 source_counts AS (
-                    SELECT keyword, article_provider AS provider_name, SUM(keyword_count) AS provider_mentions
+                    SELECT k.keyword, k.article_provider AS provider_name, SUM(k.keyword_count) AS provider_mentions
                     FROM keywords k
                     JOIN news_raw n
                       ON n.url = k.article_url
                      AND n.provider = k.article_provider
+                     AND n.domain = k.article_domain
                     WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
                       AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
-                    GROUP BY keyword, article_provider
+                      AND (%(provider)s IS NULL OR n.provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                    GROUP BY k.keyword, k.article_provider
                 )
                 SELECT
                     c.keyword,
@@ -233,6 +260,7 @@ def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | 
                 params,
             )
             rows = list(cursor.fetchall())
+
     result: list[dict[str, Any]] = []
     for row in rows:
         mentions = int(row["mentions"] or 0)
@@ -257,21 +285,18 @@ def get_top_keywords(source: str, range_id: str, limit: int = 30, search: str | 
     return result
 
 
-def get_trend_series(source: str, range_id: str, keyword: str, compare_limit: int = 4) -> dict[str, Any]:
+def get_trend_series(source: str, domain: str, range_id: str, keyword: str, compare_limit: int = 4) -> dict[str, Any]:
     spec, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
-    top_keywords = get_top_keywords(source=source, range_id=range_id, limit=max(compare_limit * 2, 20))
+    domain_filter = _domain_filter(domain)
+    top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=max(compare_limit * 2, 20))
     compare_keywords = [keyword]
-    compare_keywords.extend(
-        item["keyword"]
-        for item in top_keywords
-        if item["keyword"] != keyword
-    )
+    compare_keywords.extend(item["keyword"] for item in top_keywords if item["keyword"] != keyword)
     compare_keywords = compare_keywords[:compare_limit]
-    bucket_edges = [start_at + timedelta(minutes=spec.bucket_min * idx) for idx in range(spec.buckets + 1)]
-    bucket_map = {idx: bucket_edges[idx] for idx in range(spec.buckets)}
+    bucket_edges = [start_at + timedelta(minutes=spec.bucket_min * index) for index in range(spec.buckets + 1)]
+    bucket_map = {index: bucket_edges[index] for index in range(spec.buckets)}
     series_lookup = {
-        name: [{"bucket": idx, "timestamp": bucket_map[idx], "value": 0} for idx in range(spec.buckets)]
+        name: [{"bucket": index, "timestamp": bucket_map[index], "value": 0} for index in range(spec.buckets)]
         for name in compare_keywords
     }
     if compare_keywords:
@@ -285,6 +310,7 @@ def get_trend_series(source: str, range_id: str, keyword: str, compare_limit: in
                       AND window_start < %(end_at)s
                       AND keyword = ANY(%(keywords)s)
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
                     GROUP BY keyword, window_start
                     ORDER BY window_start ASC
                     """,
@@ -293,6 +319,7 @@ def get_trend_series(source: str, range_id: str, keyword: str, compare_limit: in
                         "end_at": end_at,
                         "keywords": compare_keywords,
                         "provider": provider,
+                        "domain": domain_filter,
                     },
                 )
                 for row in cursor.fetchall():
@@ -304,11 +331,11 @@ def get_trend_series(source: str, range_id: str, keyword: str, compare_limit: in
         "series": [
             {
                 "name": name,
-                "color": PALETTE[idx % len(PALETTE)],
+                "color": PALETTE[index % len(PALETTE)],
                 "spike": bool(summary_lookup.get(name, {}).get("spike", False)),
                 "points": points,
             }
-            for idx, (name, points) in enumerate(series_lookup.items())
+            for index, (name, points) in enumerate(series_lookup.items())
         ],
         "range": {
             "id": spec.id,
@@ -319,11 +346,13 @@ def get_trend_series(source: str, range_id: str, keyword: str, compare_limit: in
     }
 
 
-def get_spike_events(source: str, range_id: str, limit: int = 32) -> dict[str, Any]:
-    trend = get_trend_series(source=source, range_id=range_id, keyword=get_top_keywords(source, range_id, limit=1)[0]["keyword"] if get_top_keywords(source, range_id, limit=1) else "", compare_limit=1)
-    # Reuse raw rows for all keywords rather than only the selected one.
+def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -> dict[str, Any]:
     spec, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
+    top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit)
+    selected_keyword = top_keywords[0]["keyword"] if top_keywords else ""
+    trend = get_trend_series(source=source, domain=domain, range_id=range_id, keyword=selected_keyword, compare_limit=1) if selected_keyword else {"series": []}
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -333,10 +362,16 @@ def get_spike_events(source: str, range_id: str, limit: int = 32) -> dict[str, A
                 WHERE window_start >= %(start_at)s
                   AND window_start < %(end_at)s
                   AND (%(provider)s IS NULL OR provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR domain = %(domain)s)
                 GROUP BY keyword, window_start
                 ORDER BY keyword ASC, window_start ASC
                 """,
-                {"start_at": start_at, "end_at": end_at, "provider": provider},
+                {
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "provider": provider,
+                    "domain": domain_filter,
+                },
             )
             rows = list(cursor.fetchall())
     per_keyword: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -344,30 +379,29 @@ def get_spike_events(source: str, range_id: str, limit: int = 32) -> dict[str, A
         bucket_index = int((row["window_start"] - start_at).total_seconds() // (spec.bucket_min * 60))
         if 0 <= bucket_index < spec.buckets:
             per_keyword[row["keyword"]].append((bucket_index, int(row["keyword_count"] or 0)))
-    top_keywords = get_top_keywords(source=source, range_id=range_id, limit=limit)
     top_lookup = {item["keyword"]: item for item in top_keywords}
     events: list[dict[str, Any]] = []
-    for keyword, values in per_keyword.items():
+    for keyword_name, values in per_keyword.items():
         values.sort(key=lambda item: item[0])
-        prev = 0
+        previous = 0
         for bucket_index, count in values:
             if count <= 0:
                 continue
-            growth = _safe_growth(count, prev)
+            growth = _safe_growth(count, previous)
             if growth >= 0.35 and count >= 3:
-                summary = top_lookup.get(keyword)
+                summary = top_lookup.get(keyword_name)
                 naver_share = float(summary["sourceShareNaver"]) if summary else 0.5
                 events.append(
                     {
                         "bucket": bucket_index,
-                        "keyword": keyword,
+                        "keyword": keyword_name,
                         "intensity": min(1.0, max(0.12, growth)),
                         "source": "naver" if naver_share >= 0.5 else "global",
                         "growth": growth,
                         "score": int(summary["eventScore"]) if summary else 0,
                     }
                 )
-            prev = count
+            previous = count
     events.sort(key=lambda item: (item["score"], item["growth"]), reverse=True)
     return {
         "topKeywords": [item["keyword"] for item in top_keywords if item["spike"]][:8] or [item["keyword"] for item in top_keywords[:8]],
@@ -382,9 +416,10 @@ def get_spike_events(source: str, range_id: str, limit: int = 32) -> dict[str, A
     }
 
 
-def get_related_keywords(source: str, range_id: str, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
+def get_related_keywords(source: str, domain: str, range_id: str, keyword: str, limit: int = 10) -> list[dict[str, Any]]:
     _, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -396,6 +431,7 @@ def get_related_keywords(source: str, range_id: str, keyword: str, limit: int = 
                       AND window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
                     GROUP BY keyword_b
                     UNION ALL
                     SELECT keyword_a AS related_keyword, SUM(cooccurrence_count) AS weight
@@ -404,6 +440,7 @@ def get_related_keywords(source: str, range_id: str, keyword: str, limit: int = 
                       AND window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
                     GROUP BY keyword_a
                 )
                 SELECT related_keyword, SUM(weight) AS weight
@@ -417,6 +454,7 @@ def get_related_keywords(source: str, range_id: str, keyword: str, limit: int = 
                     "start_at": start_at,
                     "end_at": end_at,
                     "provider": provider,
+                    "domain": domain_filter,
                     "limit": limit,
                 },
             )
@@ -424,15 +462,20 @@ def get_related_keywords(source: str, range_id: str, keyword: str, limit: int = 
     if not rows:
         return []
     max_weight = max(float(row["weight"] or 0.0) for row in rows) or 1.0
-    return [
-        {"keyword": row["related_keyword"], "weight": round(float(row["weight"] or 0.0) / max_weight, 4)}
-        for row in rows
-    ]
+    return [{"keyword": row["related_keyword"], "weight": round(float(row["weight"] or 0.0) / max_weight, 4)} for row in rows]
 
 
-def get_articles(source: str, range_id: str, keyword: str | None = None, limit: int = 30, sort: str = "latest") -> list[dict[str, Any]]:
+def get_articles(
+    source: str,
+    domain: str,
+    range_id: str,
+    keyword: str | None = None,
+    limit: int = 30,
+    sort: str = "latest",
+) -> list[dict[str, Any]]:
     _, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
     order_clause = "article_time DESC" if sort == "latest" else "keyword_match DESC, article_time DESC"
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -441,17 +484,19 @@ def get_articles(source: str, range_id: str, keyword: str | None = None, limit: 
                 WITH article_keywords AS (
                     SELECT
                         k.article_provider,
+                        k.article_domain,
                         k.article_url,
                         ARRAY_AGG(k.keyword ORDER BY k.keyword_count DESC, k.keyword ASC) AS keywords
                     FROM keywords k
-                    GROUP BY k.article_provider, k.article_url
+                    GROUP BY k.article_provider, k.article_domain, k.article_url
                 )
                 SELECT
-                    CONCAT(n.provider, ':', n.url) AS id,
+                    CONCAT(n.provider, ':', n.domain, ':', n.url) AS id,
                     n.title,
                     COALESCE(n.summary, '') AS summary,
                     COALESCE(NULLIF(n.source, ''), n.provider) AS publisher,
                     n.provider AS source,
+                    n.domain,
                     COALESCE(n.published_at, n.ingested_at) AS article_time,
                     ak.keywords,
                     CASE WHEN %(keyword)s IS NOT NULL AND ak.keywords IS NOT NULL AND %(keyword)s = ANY(ak.keywords) THEN 1 ELSE 0 END AS keyword_match,
@@ -459,10 +504,12 @@ def get_articles(source: str, range_id: str, keyword: str | None = None, limit: 
                 FROM news_raw n
                 LEFT JOIN article_keywords ak
                   ON ak.article_provider = n.provider
+                 AND ak.article_domain = n.domain
                  AND ak.article_url = n.url
                 WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
                   AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
                   AND (%(provider)s IS NULL OR n.provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR n.domain = %(domain)s)
                   AND (%(keyword)s IS NULL OR (%(keyword)s = ANY(COALESCE(ak.keywords, ARRAY[]::varchar[]))))
                 ORDER BY {order_clause}
                 LIMIT %(limit)s
@@ -471,6 +518,7 @@ def get_articles(source: str, range_id: str, keyword: str | None = None, limit: 
                     "start_at": start_at,
                     "end_at": end_at,
                     "provider": provider,
+                    "domain": domain_filter,
                     "keyword": keyword,
                     "limit": limit,
                 },
@@ -484,6 +532,7 @@ def get_articles(source: str, range_id: str, keyword: str | None = None, limit: 
             "summary": row["summary"],
             "publisher": row["publisher"],
             "source": row["source"],
+            "domain": row["domain"],
             "publishedAt": row["article_time"],
             "minutesAgo": int(max(0, (now - row["article_time"].astimezone(UTC)).total_seconds() // 60)) if row["article_time"] else None,
             "keywords": row["keywords"] or [],
@@ -520,14 +569,13 @@ def get_system_status() -> dict[str, Any]:
     kafka_status, kafka_detail = _probe_tcp("kafka", 29092)
     spark_status, spark_detail = _probe_http("http://spark-master:8080")
     airflow_status, airflow_detail = _probe_http("http://airflow-apiserver:8080/api/v2/version")
-    parsed = urlparse(f"http://localhost")
-    api_status, api_detail = "ok", parsed.hostname or "self"
+    parsed = urlparse("http://localhost")
     return {
         "services": [
             {"key": "kafka", "label": "Kafka ingest", "status": kafka_status, "detail": kafka_detail},
             {"key": "spark", "label": "Spark", "status": spark_status, "detail": spark_detail},
             {"key": "airflow", "label": "Airflow", "status": airflow_status, "detail": airflow_detail},
-            {"key": "api", "label": "API", "status": api_status, "detail": api_detail},
+            {"key": "api", "label": "API", "status": "ok", "detail": parsed.hostname or "self"},
             {"key": "db", "label": "PostgreSQL", "status": "ok", "detail": settings.postgres_host},
         ]
     }

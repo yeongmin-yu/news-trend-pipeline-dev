@@ -49,58 +49,67 @@ def filters() -> dict:
 
 
 @app.get("/api/v1/dashboard/kpis")
-def dashboard_kpis(source: str = Query(default="all"), range_id: str = Query(default="1h", alias="range")) -> dict:
-    return get_kpis(source=source, range_id=range_id)
+def dashboard_kpis(
+    source: str = Query(default="all"),
+    domain: str = Query(default="all"),
+    range_id: str = Query(default="1h", alias="range"),
+) -> dict:
+    return get_kpis(source=source, domain=domain, range_id=range_id)
 
 
 @app.get("/api/v1/dashboard/keywords")
 def dashboard_keywords(
     source: str = Query(default="all"),
+    domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=30, ge=1, le=100),
     search: str | None = Query(default=None),
 ) -> list[dict]:
-    return get_top_keywords(source=source, range_id=range_id, limit=limit, search=search)
+    return get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit, search=search)
 
 
 @app.get("/api/v1/dashboard/trend")
 def dashboard_trend(
     keyword: str,
     source: str = Query(default="all"),
+    domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     compare_limit: int = Query(default=4, ge=1, le=5, alias="compareLimit"),
 ) -> dict:
-    return get_trend_series(source=source, range_id=range_id, keyword=keyword, compare_limit=compare_limit)
+    return get_trend_series(source=source, domain=domain, range_id=range_id, keyword=keyword, compare_limit=compare_limit)
 
 
 @app.get("/api/v1/dashboard/spikes")
 def dashboard_spikes(
     source: str = Query(default="all"),
+    domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=32, ge=1, le=100),
 ) -> dict:
-    return get_spike_events(source=source, range_id=range_id, limit=limit)
+    return get_spike_events(source=source, domain=domain, range_id=range_id, limit=limit)
 
 
 @app.get("/api/v1/dashboard/related")
 def dashboard_related(
     keyword: str,
     source: str = Query(default="all"),
+    domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[dict]:
-    return get_related_keywords(source=source, range_id=range_id, keyword=keyword, limit=limit)
+    return get_related_keywords(source=source, domain=domain, range_id=range_id, keyword=keyword, limit=limit)
 
 
 @app.get("/api/v1/dashboard/articles")
 def dashboard_articles(
     source: str = Query(default="all"),
+    domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     keyword: str | None = Query(default=None),
     limit: int = Query(default=30, ge=1, le=100),
     sort: str = Query(default="latest"),
 ) -> list[dict]:
-    return get_articles(source=source, range_id=range_id, keyword=keyword, limit=limit, sort=sort)
+    return get_articles(source=source, domain=domain, range_id=range_id, keyword=keyword, limit=limit, sort=sort)
 
 
 @app.get("/api/v1/dashboard/system")

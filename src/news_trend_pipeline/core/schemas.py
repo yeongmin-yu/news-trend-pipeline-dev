@@ -60,6 +60,7 @@ class ArticleMetadata:
 @dataclass(frozen=True)
 class NormalizedNewsArticle:
     provider: str
+    domain: str
     source: str | None
     title: str
     summary: str | None
@@ -78,6 +79,7 @@ class NormalizedNewsArticle:
 
         return cls(
             provider=_normalize_required_text(payload.get("provider", "unknown"), "provider"),
+            domain=_normalize_required_text(payload.get("domain", "ai_tech"), "domain"),
             source=_normalize_optional_text(payload.get("source")),
             title=_normalize_required_text(payload.get("title"), "title"),
             # Legacy payloads may still provide description/content instead of summary.
@@ -104,6 +106,7 @@ class NormalizedNewsArticle:
     def to_dict(self, *, include_internal: bool = False, include_metadata: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "provider": self.provider,
+            "domain": self.domain,
             "source": self.source,
             "title": self.title,
             "summary": self.summary,
@@ -135,6 +138,7 @@ class NormalizedNewsArticle:
         return StructType(
             [
                 StructField("provider", StringType()),
+                StructField("domain", StringType()),
                 StructField("source", StringType()),
                 StructField("title", StringType()),
                 StructField("summary", StringType()),
