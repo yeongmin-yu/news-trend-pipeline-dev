@@ -4,35 +4,44 @@
 
 ## 1. 파이프라인 구성도
 
-### 1-1. Step 1 + Step 2 통합 파이프라인
+### 1-1. Step 1 파이프라인
 
-`STEP1_KAFKA_2`의 수집 구조 위에 Step 2 처리 계층을 연결하면 전체 흐름은 아래와 같다.
+`Kafka` 적재 전까지의 Step 1 수집 흐름은 아래와 같다.
 
 ```mermaid
 flowchart LR
     A["Airflow Scheduler"] --> B["news_ingest_dag"]
     B --> C["produce_naver"]
     C --> D["Naver Theme Keywords<br/>AI, GPT, LLM ..."]
-    D --> E["URL dedup"]
-    E --> F["Kafka: news_topic<br/>(partition key = URL)"]
-    F --> G["Spark Structured Streaming"]
-    G --> H["JSON Parsing / Schema Validation"]
-    H --> I["Text Preprocessing<br/>title + summary → tokenize()"]
-    I --> J["Window Aggregation<br/>keyword trends / relations"]
-    J --> K["JDBC Staging Tables"]
-    K --> L["PostgreSQL Upsert"]
-
-    L --> M["news_raw"]
-    L --> N["keywords"]
-    L --> O["keyword_trends"]
-    L --> P["keyword_relations"]
-
-    Q["compound_noun_extraction DAG<br/>daily 03:00 UTC"] --> R["compound_noun_candidates"]
-    R --> S["compound_noun_dict / stopword_dict"]
-    S -. reload check .-> I
+    D --> E["Naver API Calls"]
+    E --> F["URL dedup"]
+    F --> G["Kafka: news_topic<br/>(partition key = URL)"]
 ```
 
-### 1-2. 단계별 책임
+### 1-2. Step 2 파이프라인
+
+`Kafka` 이후 Step 2 처리 및 저장 흐름은 아래와 같다.
+
+```mermaid
+flowchart LR
+    A["Kafka: news_topic"] --> B["Spark Structured Streaming"]
+    B --> C["JSON Parsing / Schema Validation"]
+    C --> D["Text Preprocessing<br/>title + summary → tokenize()"]
+    D --> E["Window Aggregation<br/>keyword trends / relations"]
+    E --> F["JDBC Staging Tables"]
+    F --> G["PostgreSQL Upsert"]
+
+    G --> H["news_raw"]
+    G --> I["keywords"]
+    G --> J["keyword_trends"]
+    G --> K["keyword_relations"]
+
+    L["compound_noun_extraction DAG<br/>daily 03:00 UTC"] --> M["compound_noun_candidates"]
+    M --> N["compound_noun_dict / stopword_dict"]
+    N -. reload check .-> D
+```
+
+### 1-3. 단계별 책임
 
 | 단계 | 역할 |
 | --- | --- |
