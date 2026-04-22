@@ -10,12 +10,12 @@
 
 ```mermaid
 flowchart LR
-    A["Airflow Scheduler"] --> B["news_ingest_dag"]
-    B --> C["produce_naver"]
-    C --> D["Naver Theme Keywords<br/>AI, GPT, LLM ..."]
-    D --> E["Naver API Calls"]
-    E --> F["URL dedup"]
-    F --> G["Kafka: news_topic<br/>(partition key = URL)"]
+    A["Airflow Scheduler<br/>수집 스케줄 실행"] --> B["news_ingest_dag<br/>수집 DAG"]
+    B --> C["produce_naver<br/>네이버 기사 수집"]
+    C --> D["Naver Theme Keywords<br/>주제 키워드 목록"]
+    D --> E["Naver API Calls<br/>뉴스 API 호출"]
+    E --> F["URL dedup<br/>중복 기사 제거"]
+    F --> G["Kafka: news_topic<br/>기사 메시지 적재"]
 ```
 
 ### 1-2. Step 2 파이프라인
@@ -24,21 +24,21 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["Kafka: news_topic"] --> B["Spark Structured Streaming"]
-    B --> C["JSON Parsing / Schema Validation"]
-    C --> D["Text Preprocessing<br/>title + summary → tokenize()"]
-    D --> E["Window Aggregation<br/>keyword trends / relations"]
-    E --> F["JDBC Staging Tables"]
-    F --> G["PostgreSQL Upsert"]
+    A["Kafka: news_topic<br/>기사 메시지 읽기"] --> B["Spark Structured Streaming<br/>실시간 처리"]
+    B --> C["JSON Parsing / Schema Validation<br/>메시지 파싱 및 검증"]
+    C --> D["Text Preprocessing<br/>전처리 및 토큰화"]
+    D --> E["Window Aggregation<br/>트렌드·연관어 집계"]
+    E --> F["JDBC Staging Tables<br/>임시 적재"]
+    F --> G["PostgreSQL Upsert<br/>최종 반영"]
 
-    G --> H["news_raw"]
-    G --> I["keywords"]
-    G --> J["keyword_trends"]
-    G --> K["keyword_relations"]
+    G --> H["news_raw<br/>원문 기사"]
+    G --> I["keywords<br/>기사별 키워드"]
+    G --> J["keyword_trends<br/>시간대별 트렌드"]
+    G --> K["keyword_relations<br/>연관 키워드"]
 
-    L["compound_noun_extraction DAG<br/>daily 03:00 UTC"] --> M["compound_noun_candidates"]
-    M --> N["compound_noun_dict / stopword_dict"]
-    N -. reload check .-> D
+    L["compound_noun_extraction DAG<br/>복합명사 후보 추출"] --> M["compound_noun_candidates<br/>후보 저장"]
+    M --> N["compound_noun_dict / stopword_dict<br/>사전 반영"]
+    N -. reload check / 사전 재확인 .-> D
 ```
 
 ### 1-3. 단계별 책임
