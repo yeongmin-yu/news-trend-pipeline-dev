@@ -21,6 +21,19 @@ CREATE TABLE IF NOT EXISTS query_keywords (
 CREATE INDEX IF NOT EXISTS idx_query_keywords_active
     ON query_keywords(provider, domain_id, is_active, sort_order);
 
+CREATE TABLE IF NOT EXISTS query_keyword_audit_logs (
+    id               BIGSERIAL PRIMARY KEY,
+    query_keyword_id INTEGER,
+    action           VARCHAR(50) NOT NULL,
+    before_json      JSONB,
+    after_json       JSONB,
+    actor            VARCHAR(100) NOT NULL DEFAULT 'system',
+    acted_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_keyword_audit_logs_query_keyword
+    ON query_keyword_audit_logs(query_keyword_id, acted_at DESC);
+
 CREATE TABLE IF NOT EXISTS news_raw (
     id           BIGSERIAL PRIMARY KEY,
     provider     VARCHAR(50) NOT NULL DEFAULT 'naver',
@@ -164,6 +177,60 @@ CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency
     ON compound_noun_candidates(frequency DESC);
 CREATE INDEX IF NOT EXISTS idx_stopword_dict_language
     ON stopword_dict(language);
+
+CREATE TABLE IF NOT EXISTS dictionary_audit_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    entity_type VARCHAR(50) NOT NULL,
+    entity_id   INTEGER,
+    action      VARCHAR(50) NOT NULL,
+    before_json JSONB,
+    after_json  JSONB,
+    actor       VARCHAR(100) NOT NULL DEFAULT 'system',
+    acted_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dictionary_audit_logs_entity
+    ON dictionary_audit_logs(entity_type, entity_id, acted_at DESC);
+
+CREATE TABLE IF NOT EXISTS collection_metrics (
+    id              BIGSERIAL PRIMARY KEY,
+    provider        VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain          VARCHAR(50) NOT NULL,
+    query           VARCHAR(100) NOT NULL,
+    window_start    TIMESTAMPTZ NOT NULL,
+    window_end      TIMESTAMPTZ NOT NULL,
+    request_count   INTEGER NOT NULL DEFAULT 0,
+    success_count   INTEGER NOT NULL DEFAULT 0,
+    article_count   INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    publish_count   INTEGER NOT NULL DEFAULT 0,
+    error_count     INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_metrics_window
+    ON collection_metrics(provider, domain, window_start DESC, query);
+
+CREATE TABLE IF NOT EXISTS keyword_events (
+    id               BIGSERIAL PRIMARY KEY,
+    provider         VARCHAR(50) NOT NULL DEFAULT 'naver',
+    domain           VARCHAR(50) NOT NULL,
+    keyword          VARCHAR(255) NOT NULL,
+    event_time       TIMESTAMPTZ NOT NULL,
+    window_start     TIMESTAMPTZ NOT NULL,
+    window_end       TIMESTAMPTZ NOT NULL,
+    current_mentions INTEGER NOT NULL DEFAULT 0,
+    prev_mentions    INTEGER NOT NULL DEFAULT 0,
+    growth           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    event_score      INTEGER NOT NULL DEFAULT 0,
+    is_spike         BOOLEAN NOT NULL DEFAULT FALSE,
+    detected_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_events_unique
+    ON keyword_events(provider, domain, keyword, window_start);
+CREATE INDEX IF NOT EXISTS idx_keyword_events_lookup
+    ON keyword_events(provider, domain, event_time DESC, event_score DESC);
 
 CREATE TABLE IF NOT EXISTS dictionary_versions (
     dict_name   VARCHAR(50) PRIMARY KEY,

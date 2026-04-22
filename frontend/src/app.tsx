@@ -22,6 +22,7 @@ import {
 } from "./data";
 import { RelatedNetwork, SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
 import { DictionaryApiModal } from "./dictionary-modal";
+import { QueryKeywordModal } from "./query-keyword-modal";
 import { EmptyState, fmtAgo, fmtNum, fmtPct, Icon, LoadingState, StatusChip } from "./ui";
 
 type AsyncState<T> = {
@@ -116,6 +117,7 @@ export default function App() {
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [dictionaryOpen, setDictionaryOpen] = useState(false);
+  const [queryKeywordOpen, setQueryKeywordOpen] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("ntp_watchlist") ?? "[]");
@@ -239,6 +241,10 @@ export default function App() {
           <div className="nav-item" style={{ cursor: "pointer" }} onClick={() => setDictionaryOpen(true)}>
             <Icon.Settings />
             용어 사전
+          </div>
+          <div className="nav-item" style={{ cursor: "pointer" }} onClick={() => setQueryKeywordOpen(true)}>
+            <Icon.Hash />
+            도메인 키워드 관리
           </div>
         </div>
         <div className="header-spacer" />
@@ -844,6 +850,7 @@ export default function App() {
       )}
 
       {dictionaryOpen ? <DictionaryApiModal onClose={() => setDictionaryOpen(false)} /> : null}
+      {queryKeywordOpen ? <QueryKeywordModal onClose={() => setQueryKeywordOpen(false)} /> : null}
     </div>
   );
 }

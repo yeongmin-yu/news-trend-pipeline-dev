@@ -12,9 +12,21 @@ from psycopg2.extras import RealDictCursor
 
 from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.storage.db import (
+    create_query_keyword as db_create_query_keyword,
+    delete_query_keyword as db_delete_query_keyword,
+    fetch_all_query_keywords,
+    fetch_collection_metrics_summary,
+    fetch_compound_candidate_item,
+    fetch_compound_noun_item,
+    fetch_dictionary_audit_logs,
     fetch_dictionary_versions,
     fetch_domain_catalog,
+    fetch_keyword_event_rows,
+    fetch_query_keyword_audit_logs,
+    fetch_stopword_item,
     get_connection,
+    log_dictionary_audit,
+    update_query_keyword as db_update_query_keyword,
 )
 
 
@@ -353,55 +365,78 @@ def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -
     top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit)
     selected_keyword = top_keywords[0]["keyword"] if top_keywords else ""
     trend = get_trend_series(source=source, domain=domain, range_id=range_id, keyword=selected_keyword, compare_limit=1) if selected_keyword else {"series": []}
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT keyword, window_start, SUM(keyword_count) AS keyword_count
-                FROM keyword_trends
-                WHERE window_start >= %(start_at)s
-                  AND window_start < %(end_at)s
-                  AND (%(provider)s IS NULL OR provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR domain = %(domain)s)
-                GROUP BY keyword, window_start
-                ORDER BY keyword ASC, window_start ASC
-                """,
-                {
-                    "start_at": start_at,
-                    "end_at": end_at,
-                    "provider": provider,
-                    "domain": domain_filter,
-                },
-            )
-            rows = list(cursor.fetchall())
-    per_keyword: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for row in rows:
-        bucket_index = int((row["window_start"] - start_at).total_seconds() // (spec.bucket_min * 60))
-        if 0 <= bucket_index < spec.buckets:
-            per_keyword[row["keyword"]].append((bucket_index, int(row["keyword_count"] or 0)))
+    event_rows = fetch_keyword_event_rows(
+        start_at=start_at,
+        end_at=end_at,
+        provider=provider,
+        domain=domain_filter,
+    )
     top_lookup = {item["keyword"]: item for item in top_keywords}
     events: list[dict[str, Any]] = []
-    for keyword_name, values in per_keyword.items():
-        values.sort(key=lambda item: item[0])
-        previous = 0
-        for bucket_index, count in values:
-            if count <= 0:
-                continue
-            growth = _safe_growth(count, previous)
-            if growth >= 0.35 and count >= 3:
-                summary = top_lookup.get(keyword_name)
+    if event_rows:
+        for row in event_rows:
+            bucket_index = int((row["window_start"] - start_at).total_seconds() // (spec.bucket_min * 60))
+            if 0 <= bucket_index < spec.buckets:
+                summary = top_lookup.get(row["keyword"])
                 naver_share = float(summary["sourceShareNaver"]) if summary else 0.5
                 events.append(
                     {
                         "bucket": bucket_index,
-                        "keyword": keyword_name,
-                        "intensity": min(1.0, max(0.12, growth)),
+                        "keyword": row["keyword"],
+                        "intensity": min(1.0, max(0.12, float(row["growth"] or 0.0))),
                         "source": "naver" if naver_share >= 0.5 else "global",
-                        "growth": growth,
-                        "score": int(summary["eventScore"]) if summary else 0,
+                        "growth": float(row["growth"] or 0.0),
+                        "score": int(row["event_score"] or 0),
                     }
                 )
-            previous = count
+    else:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT keyword, window_start, SUM(keyword_count) AS keyword_count
+                    FROM keyword_trends
+                    WHERE window_start >= %(start_at)s
+                      AND window_start < %(end_at)s
+                      AND (%(provider)s IS NULL OR provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                    GROUP BY keyword, window_start
+                    ORDER BY keyword ASC, window_start ASC
+                    """,
+                    {
+                        "start_at": start_at,
+                        "end_at": end_at,
+                        "provider": provider,
+                        "domain": domain_filter,
+                    },
+                )
+                rows = list(cursor.fetchall())
+        per_keyword: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for row in rows:
+            bucket_index = int((row["window_start"] - start_at).total_seconds() // (spec.bucket_min * 60))
+            if 0 <= bucket_index < spec.buckets:
+                per_keyword[row["keyword"]].append((bucket_index, int(row["keyword_count"] or 0)))
+        for keyword_name, values in per_keyword.items():
+            values.sort(key=lambda item: item[0])
+            previous = 0
+            for bucket_index, count in values:
+                if count <= 0:
+                    continue
+                growth = _safe_growth(count, previous)
+                if growth >= 0.35 and count >= 3:
+                    summary = top_lookup.get(keyword_name)
+                    naver_share = float(summary["sourceShareNaver"]) if summary else 0.5
+                    events.append(
+                        {
+                            "bucket": bucket_index,
+                            "keyword": keyword_name,
+                            "intensity": min(1.0, max(0.12, growth)),
+                            "source": "naver" if naver_share >= 0.5 else "global",
+                            "growth": growth,
+                            "score": int(summary["eventScore"]) if summary else 0,
+                        }
+                    )
+                previous = count
     events.sort(key=lambda item: (item["score"], item["growth"]), reverse=True)
     return {
         "topKeywords": [item["keyword"] for item in top_keywords if item["spike"]][:8] or [item["keyword"] for item in top_keywords[:8]],
@@ -613,6 +648,7 @@ def get_dictionary_overview() -> dict[str, Any]:
         "compoundNouns": compound_nouns,
         "compoundCandidates": compound_candidates,
         "stopwords": stopwords,
+        "auditLogs": fetch_dictionary_audit_logs(limit=100),
         "versions": {
             "compoundNounDict": int(versions.get("compound_noun_dict", 0)),
             "stopwordDict": int(versions.get("stopword_dict", 0)),
@@ -620,26 +656,59 @@ def get_dictionary_overview() -> dict[str, Any]:
     }
 
 
-def create_compound_noun(word: str, source: str) -> None:
+def get_query_keyword_admin_overview() -> dict[str, Any]:
+    return {
+        "domains": fetch_domain_catalog(),
+        "queryKeywords": fetch_all_query_keywords(provider="naver"),
+        "auditLogs": fetch_query_keyword_audit_logs(limit=100),
+        "collectionMetrics": fetch_collection_metrics_summary(hours=24, provider="naver"),
+    }
+
+
+def get_collection_metrics_overview(hours: int = 24) -> dict[str, Any]:
+    return {"items": fetch_collection_metrics_summary(hours=hours, provider="naver")}
+
+
+def create_compound_noun(word: str, source: str, actor: str = "dashboard-admin") -> None:
     with get_connection() as conn:
-        with conn.cursor() as cursor:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
                 INSERT INTO compound_noun_dict (word, source)
                 VALUES (%s, %s)
                 ON CONFLICT (word) DO UPDATE SET source = EXCLUDED.source
+                RETURNING id, word, source, created_at
                 """,
                 (word, source),
             )
+            after = cursor.fetchone()
+    log_dictionary_audit(
+        entity_type="compound_noun",
+        entity_id=int(after["id"]) if after else None,
+        action="upsert",
+        before=None,
+        after=after,
+        actor=actor,
+    )
 
 
-def delete_compound_noun(item_id: int) -> None:
+def delete_compound_noun(item_id: int, actor: str = "dashboard-admin") -> None:
+    before = fetch_compound_noun_item(item_id)
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM compound_noun_dict WHERE id = %s", (item_id,))
+    log_dictionary_audit(
+        entity_type="compound_noun",
+        entity_id=item_id,
+        action="delete",
+        before=before,
+        after=None,
+        actor=actor,
+    )
 
 
 def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) -> None:
+    before = fetch_compound_candidate_item(candidate_id)
     reviewed_at = _now_utc()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -648,7 +717,7 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
                 UPDATE compound_noun_candidates
                 SET status = %s, reviewed_at = %s, reviewed_by = %s
                 WHERE id = %s
-                RETURNING word
+                RETURNING id, word, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
                 """,
                 (action, reviewed_at, reviewed_by, candidate_id),
             )
@@ -662,22 +731,74 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
                     """,
                     (row["word"],),
                 )
+    log_dictionary_audit(
+        entity_type="compound_candidate",
+        entity_id=candidate_id,
+        action=action,
+        before=before,
+        after=row,
+        actor=reviewed_by,
+    )
 
 
-def create_stopword(word: str, language: str) -> None:
+def create_stopword(word: str, language: str, actor: str = "dashboard-admin") -> None:
     with get_connection() as conn:
-        with conn.cursor() as cursor:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
                 INSERT INTO stopword_dict (word, language)
                 VALUES (%s, %s)
-                ON CONFLICT (word, language) DO NOTHING
+                ON CONFLICT (word, language) DO UPDATE SET language = EXCLUDED.language
+                RETURNING id, word, language, created_at
                 """,
                 (word, language),
             )
+            after = cursor.fetchone()
+    log_dictionary_audit(
+        entity_type="stopword",
+        entity_id=int(after["id"]) if after else None,
+        action="upsert",
+        before=None,
+        after=after,
+        actor=actor,
+    )
 
 
-def delete_stopword(item_id: int) -> None:
+def delete_stopword(item_id: int, actor: str = "dashboard-admin") -> None:
+    before = fetch_stopword_item(item_id)
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("DELETE FROM stopword_dict WHERE id = %s", (item_id,))
+    log_dictionary_audit(
+        entity_type="stopword",
+        entity_id=item_id,
+        action="delete",
+        before=before,
+        after=None,
+        actor=actor,
+    )
+
+
+def create_query_keyword(domain_id: str, query: str, sort_order: int, actor: str) -> dict[str, Any]:
+    return db_create_query_keyword(
+        provider="naver",
+        domain_id=domain_id,
+        query=query,
+        sort_order=sort_order,
+        actor=actor,
+    )
+
+
+def update_query_keyword(item_id: int, domain_id: str, query: str, sort_order: int, is_active: bool, actor: str) -> dict[str, Any]:
+    return db_update_query_keyword(
+        item_id=item_id,
+        domain_id=domain_id,
+        query=query,
+        sort_order=sort_order,
+        is_active=is_active,
+        actor=actor,
+    )
+
+
+def delete_query_keyword(item_id: int, actor: str) -> None:
+    db_delete_query_keyword(item_id=item_id, actor=actor)

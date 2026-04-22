@@ -142,10 +142,62 @@ export interface DictionaryOverview {
   compoundNouns: CompoundNounItem[];
   compoundCandidates: CompoundCandidateItem[];
   stopwords: StopwordItem[];
+  auditLogs?: Array<{
+    id: number;
+    entity_type: string;
+    entity_id: number | null;
+    action: string;
+    before_json: Record<string, unknown> | null;
+    after_json: Record<string, unknown> | null;
+    actor: string;
+    acted_at: string;
+  }>;
   versions: {
     compoundNounDict: number;
     stopwordDict: number;
   };
+}
+
+export interface QueryKeywordItem {
+  id: number;
+  provider: string;
+  domain_id: string;
+  domain_label: string;
+  query: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QueryKeywordAuditLog {
+  id: number;
+  query_keyword_id: number | null;
+  action: string;
+  before_json: Record<string, unknown> | null;
+  after_json: Record<string, unknown> | null;
+  actor: string;
+  acted_at: string;
+}
+
+export interface CollectionMetricItem {
+  provider: string;
+  domain: string;
+  query: string;
+  request_count: number;
+  success_count: number;
+  article_count: number;
+  duplicate_count: number;
+  publish_count: number;
+  error_count: number;
+  last_seen_at: string;
+}
+
+export interface QueryKeywordAdminOverview {
+  domains: DomainOption[];
+  queryKeywords: QueryKeywordItem[];
+  auditLogs: QueryKeywordAuditLog[];
+  collectionMetrics: CollectionMetricItem[];
 }
 
 const API_BASE = "/api/v1";
@@ -190,10 +242,11 @@ export const api = {
     ),
   system: () => request<SystemStatusResponse>("/dashboard/system"),
   dictionary: () => request<DictionaryOverview>("/dictionary"),
+  queryKeywordAdmin: () => request<QueryKeywordAdminOverview>("/admin/query-keywords"),
   createCompound: (word: string) =>
     request("/dictionary/compound-nouns", {
       method: "POST",
-      body: JSON.stringify({ word, source: "manual" }),
+      body: JSON.stringify({ word, source: "manual", actor: "dashboard-admin" }),
     }),
   deleteCompound: (id: number) =>
     request(`/dictionary/compound-nouns/${id}`, { method: "DELETE" }),
@@ -210,8 +263,32 @@ export const api = {
   createStopword: (word: string) =>
     request("/dictionary/stopwords", {
       method: "POST",
-      body: JSON.stringify({ word, language: "ko" }),
+      body: JSON.stringify({ word, language: "ko", actor: "dashboard-admin" }),
     }),
   deleteStopword: (id: number) =>
     request(`/dictionary/stopwords/${id}`, { method: "DELETE" }),
+  createQueryKeyword: (payload: { domainId: string; query: string; sortOrder: number; isActive?: boolean }) =>
+    request<QueryKeywordItem>("/admin/query-keywords", {
+      method: "POST",
+      body: JSON.stringify({
+        domainId: payload.domainId,
+        query: payload.query,
+        sortOrder: payload.sortOrder,
+        isActive: payload.isActive ?? true,
+        actor: "dashboard-admin",
+      }),
+    }),
+  updateQueryKeyword: (id: number, payload: { domainId: string; query: string; sortOrder: number; isActive: boolean }) =>
+    request<QueryKeywordItem>(`/admin/query-keywords/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        domainId: payload.domainId,
+        query: payload.query,
+        sortOrder: payload.sortOrder,
+        isActive: payload.isActive,
+        actor: "dashboard-admin",
+      }),
+    }),
+  deleteQueryKeyword: (id: number) =>
+    request(`/admin/query-keywords/${id}?actor=dashboard-admin`, { method: "DELETE" }),
 };

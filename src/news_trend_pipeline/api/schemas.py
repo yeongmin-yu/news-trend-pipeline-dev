@@ -150,13 +150,23 @@ class DictionaryOverviewResponse(BaseModel):
 class UpsertCompoundNounRequest(BaseModel):
     word: str
     source: str = "manual"
+    actor: str = "dashboard-admin"
 
 
 class UpsertStopwordRequest(BaseModel):
     word: str
     language: str = "ko"
+    actor: str = "dashboard-admin"
 
 
 class ReviewCandidateRequest(BaseModel):
-    reviewed_by: str = Field(default="admin", serialization_alias="reviewedBy")
+    reviewed_by: str = Field(default="admin", alias="reviewedBy")
+
+
+class UpsertQueryKeywordRequest(BaseModel):
+    domain_id: str = Field(alias="domainId")
+    query: str
+    sort_order: int = Field(default=1, alias="sortOrder")
+    is_active: bool = Field(default=True, alias="isActive")
+    actor: str = "dashboard-admin"
 

@@ -3,22 +3,32 @@ from __future__ import annotations
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from news_trend_pipeline.api.schemas import ReviewCandidateRequest, UpsertCompoundNounRequest, UpsertStopwordRequest
+from news_trend_pipeline.api.schemas import (
+    ReviewCandidateRequest,
+    UpsertCompoundNounRequest,
+    UpsertQueryKeywordRequest,
+    UpsertStopwordRequest,
+)
 from news_trend_pipeline.api.service import (
+    create_query_keyword,
     create_compound_noun,
     create_stopword,
+    delete_query_keyword,
     delete_compound_noun,
     delete_stopword,
     get_articles,
+    get_collection_metrics_overview,
     get_dictionary_overview,
     get_filters,
     get_kpis,
+    get_query_keyword_admin_overview,
     get_related_keywords,
     get_spike_events,
     get_system_status,
     get_top_keywords,
     get_trend_series,
     review_compound_candidate,
+    update_query_keyword,
 )
 from news_trend_pipeline.storage.db import safe_initialize_database
 
@@ -122,9 +132,19 @@ def dictionary_overview() -> dict:
     return get_dictionary_overview()
 
 
+@app.get("/api/v1/dictionary/history")
+def dictionary_history(limit: int = Query(default=100, ge=1, le=500)) -> dict:
+    overview = get_dictionary_overview()
+    return {"items": overview.get("auditLogs", [])[:limit]}
+
+
 @app.post("/api/v1/dictionary/compound-nouns", status_code=201)
 def dictionary_create_compound_noun(payload: UpsertCompoundNounRequest) -> dict[str, str]:
-    create_compound_noun(word=payload.word.strip(), source=payload.source.strip() or "manual")
+    create_compound_noun(
+        word=payload.word.strip(),
+        source=payload.source.strip() or "manual",
+        actor=payload.actor.strip() or "dashboard-admin",
+    )
     return {"status": "ok"}
 
 
@@ -146,11 +166,53 @@ def dictionary_reject_candidate(candidate_id: int, payload: ReviewCandidateReque
 
 @app.post("/api/v1/dictionary/stopwords", status_code=201)
 def dictionary_create_stopword(payload: UpsertStopwordRequest) -> dict[str, str]:
-    create_stopword(word=payload.word.strip(), language=payload.language.strip() or "ko")
+    create_stopword(
+        word=payload.word.strip(),
+        language=payload.language.strip() or "ko",
+        actor=payload.actor.strip() or "dashboard-admin",
+    )
     return {"status": "ok"}
 
 
 @app.delete("/api/v1/dictionary/stopwords/{item_id}")
 def dictionary_delete_stopword(item_id: int) -> dict[str, str]:
     delete_stopword(item_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/admin/query-keywords")
+def admin_query_keywords() -> dict:
+    return get_query_keyword_admin_overview()
+
+
+@app.get("/api/v1/admin/collection-metrics")
+def admin_collection_metrics(hours: int = Query(default=24, ge=1, le=168)) -> dict:
+    return get_collection_metrics_overview(hours=hours)
+
+
+@app.post("/api/v1/admin/query-keywords", status_code=201)
+def admin_create_query_keyword(payload: UpsertQueryKeywordRequest) -> dict:
+    return create_query_keyword(
+        domain_id=payload.domain_id,
+        query=payload.query.strip(),
+        sort_order=payload.sort_order,
+        actor=payload.actor.strip() or "dashboard-admin",
+    )
+
+
+@app.patch("/api/v1/admin/query-keywords/{item_id}")
+def admin_update_query_keyword(item_id: int, payload: UpsertQueryKeywordRequest) -> dict:
+    return update_query_keyword(
+        item_id=item_id,
+        domain_id=payload.domain_id,
+        query=payload.query.strip(),
+        sort_order=payload.sort_order,
+        is_active=payload.is_active,
+        actor=payload.actor.strip() or "dashboard-admin",
+    )
+
+
+@app.delete("/api/v1/admin/query-keywords/{item_id}")
+def admin_delete_query_keyword(item_id: int, actor: str = Query(default="dashboard-admin")) -> dict[str, str]:
+    delete_query_keyword(item_id, actor=actor)
     return {"status": "ok"}

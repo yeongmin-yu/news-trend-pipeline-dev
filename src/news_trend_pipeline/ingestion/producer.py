@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -19,7 +20,7 @@ from news_trend_pipeline.core.logger import get_logger
 from news_trend_pipeline.core.schemas import NormalizedNewsArticle
 from news_trend_pipeline.core.utils import ensure_dir, read_json, utc_now_iso
 from news_trend_pipeline.ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient
-from news_trend_pipeline.storage.db import fetch_active_query_keywords, safe_initialize_database
+from news_trend_pipeline.storage.db import fetch_active_query_keywords, insert_collection_metric, safe_initialize_database
 
 
 logger = get_logger(__name__)
@@ -214,6 +215,7 @@ class NewsKafkaProducer:
 
     def run_once(self) -> int:
         run_started_at = utc_now_iso()
+        run_started_dt = datetime.fromisoformat(run_started_at.replace("Z", "+00:00")).astimezone(timezone.utc)
         state = self.load_state()
         provider_states: dict[str, Any] = state.setdefault("providers", {})
         published_count = 0
@@ -240,22 +242,45 @@ class NewsKafkaProducer:
 
             for query, (articles, ok) in results.items():
                 fetch_count += len(articles)
+                query_duplicate_count = 0
+                query_publish_count = 0
+                state_key = state_keys.get(query, query)
+                query_domain = articles[0].get("domain", "ai_tech") if articles else (
+                    state_key.split("::", 1)[0] if "::" in state_key else "ai_tech"
+                )
                 for article in articles:
                     url: str | None = article.get("url")
                     unique_key = f"{article.get('provider')}::{article.get('domain')}::{url}"
                     if not url or unique_key in seen_urls:
                         skip_count += 1
+                        query_duplicate_count += 1
                         continue
                     if self._publish(article):
                         seen_urls.add(unique_key)
                         published_count += 1
+                        query_publish_count += 1
 
-                state_key = state_keys.get(query, query)
                 if ok:
                     keyword_timestamps[state_key] = run_started_at
                     advanced_keywords += 1
                 else:
                     failed_keywords += 1
+
+                insert_collection_metric(
+                    {
+                        "provider": client.provider,
+                        "domain": query_domain,
+                        "query": query,
+                        "window_start": run_started_dt,
+                        "window_end": datetime.now(timezone.utc),
+                        "request_count": 1,
+                        "success_count": 1 if ok else 0,
+                        "article_count": len(articles),
+                        "duplicate_count": query_duplicate_count,
+                        "publish_count": query_publish_count,
+                        "error_count": 0 if ok else 1,
+                    }
+                )
 
             active_state_keys = set(state_keys.values())
             stale_keys = [key for key in list(keyword_timestamps.keys()) if key not in active_state_keys and client.provider == "naver"]

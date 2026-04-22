@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 import psycopg2
 from psycopg2 import Error
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 from news_trend_pipeline.core.config import settings
 from news_trend_pipeline.core.domains import DOMAIN_DEFINITIONS
@@ -39,6 +39,16 @@ _STOPWORD_SEED: tuple[str, ...] = (
 )
 
 logger = get_logger(__name__)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 @contextmanager
@@ -140,11 +150,123 @@ def fetch_active_query_keywords(provider: str = "naver") -> list[dict[str, Any]]
             return list(cursor.fetchall())
 
 
+def fetch_all_query_keywords(provider: str = "naver") -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    q.id,
+                    q.provider,
+                    q.domain_id,
+                    d.label AS domain_label,
+                    q.query,
+                    q.sort_order,
+                    q.is_active,
+                    q.created_at,
+                    q.updated_at
+                FROM query_keywords q
+                JOIN domain_catalog d
+                  ON d.domain_id = q.domain_id
+                WHERE q.provider = %s
+                ORDER BY d.sort_order ASC, q.sort_order ASC, q.query ASC
+                """,
+                (provider,),
+            )
+            return list(cursor.fetchall())
+
+
+def fetch_query_keyword_audit_logs(limit: int = 100) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    query_keyword_id,
+                    action,
+                    before_json,
+                    after_json,
+                    actor,
+                    acted_at
+                FROM query_keyword_audit_logs
+                ORDER BY acted_at DESC, id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return list(cursor.fetchall())
+
+
+def fetch_dictionary_audit_logs(limit: int = 100) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    entity_type,
+                    entity_id,
+                    action,
+                    before_json,
+                    after_json,
+                    actor,
+                    acted_at
+                FROM dictionary_audit_logs
+                ORDER BY acted_at DESC, id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return list(cursor.fetchall())
+
+
+def fetch_collection_metrics_summary(hours: int = 24, provider: str = "naver") -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    provider,
+                    domain,
+                    query,
+                    SUM(request_count) AS request_count,
+                    SUM(success_count) AS success_count,
+                    SUM(article_count) AS article_count,
+                    SUM(duplicate_count) AS duplicate_count,
+                    SUM(publish_count) AS publish_count,
+                    SUM(error_count) AS error_count,
+                    MAX(window_end) AS last_seen_at
+                FROM collection_metrics
+                WHERE provider = %s
+                  AND window_end >= NOW() - (%s || ' hours')::interval
+                GROUP BY provider, domain, query
+                ORDER BY domain ASC, article_count DESC, query ASC
+                """,
+                (provider, hours),
+            )
+            return list(cursor.fetchall())
+
+
 def fetch_compound_nouns() -> list[str]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT word FROM compound_noun_dict ORDER BY word")
             return [row[0] for row in cursor.fetchall()]
+
+
+def fetch_compound_noun_item(item_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, word, source, created_at
+                FROM compound_noun_dict
+                WHERE id = %s
+                """,
+                (item_id,),
+            )
+            return cursor.fetchone()
 
 
 def fetch_stopwords(language: str = "ko") -> set[str]:
@@ -155,6 +277,34 @@ def fetch_stopwords(language: str = "ko") -> set[str]:
                 (language,),
             )
             return {row[0] for row in cursor.fetchall()}
+
+
+def fetch_stopword_item(item_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, word, language, created_at
+                FROM stopword_dict
+                WHERE id = %s
+                """,
+                (item_id,),
+            )
+            return cursor.fetchone()
+
+
+def fetch_compound_candidate_item(item_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, word, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
+                FROM compound_noun_candidates
+                WHERE id = %s
+                """,
+                (item_id,),
+            )
+            return cursor.fetchone()
 
 
 def fetch_dictionary_versions() -> dict[str, int]:
@@ -169,6 +319,58 @@ def fetch_dictionary_versions() -> dict[str, int]:
                 """
             )
             return {row[0]: int(row[1]) for row in cursor.fetchall()}
+
+
+def log_dictionary_audit(
+    *,
+    entity_type: str,
+    entity_id: int | None,
+    action: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    actor: str,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO dictionary_audit_logs (entity_type, entity_id, action, before_json, after_json, actor)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    entity_type,
+                    entity_id,
+                    action,
+                    Json(_jsonable(before)) if before is not None else None,
+                    Json(_jsonable(after)) if after is not None else None,
+                    actor,
+                ),
+            )
+
+
+def log_query_keyword_audit(
+    *,
+    query_keyword_id: int | None,
+    action: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+    actor: str,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO query_keyword_audit_logs (query_keyword_id, action, before_json, after_json, actor)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    query_keyword_id,
+                    action,
+                    Json(_jsonable(before)) if before is not None else None,
+                    Json(_jsonable(after)) if after is not None else None,
+                    actor,
+                ),
+            )
 
 
 def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict[str, Any]]:
@@ -218,6 +420,110 @@ def upsert_compound_candidates(candidates: dict[str, tuple[int, int]]) -> tuple[
                         updated_count += 1
 
     return new_count, updated_count
+
+
+def fetch_query_keyword_by_id(item_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    q.id,
+                    q.provider,
+                    q.domain_id,
+                    d.label AS domain_label,
+                    q.query,
+                    q.sort_order,
+                    q.is_active,
+                    q.created_at,
+                    q.updated_at
+                FROM query_keywords q
+                JOIN domain_catalog d
+                  ON d.domain_id = q.domain_id
+                WHERE q.id = %s
+                """,
+                (item_id,),
+            )
+            return cursor.fetchone()
+
+
+def create_query_keyword(
+    *,
+    provider: str,
+    domain_id: str,
+    query: str,
+    sort_order: int,
+    actor: str,
+) -> dict[str, Any]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO query_keywords (provider, domain_id, query, sort_order, is_active, updated_at)
+                VALUES (%s, %s, %s, %s, TRUE, NOW())
+                RETURNING id
+                """,
+                (provider, domain_id, query, sort_order),
+            )
+            row = cursor.fetchone()
+    created = fetch_query_keyword_by_id(int(row["id"]))
+    log_query_keyword_audit(
+        query_keyword_id=int(row["id"]),
+        action="create",
+        before=None,
+        after=created,
+        actor=actor,
+    )
+    return created or {}
+
+
+def update_query_keyword(
+    *,
+    item_id: int,
+    domain_id: str,
+    query: str,
+    sort_order: int,
+    is_active: bool,
+    actor: str,
+) -> dict[str, Any]:
+    before = fetch_query_keyword_by_id(item_id)
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE query_keywords
+                SET domain_id = %s,
+                    query = %s,
+                    sort_order = %s,
+                    is_active = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (domain_id, query, sort_order, is_active, item_id),
+            )
+    after = fetch_query_keyword_by_id(item_id)
+    log_query_keyword_audit(
+        query_keyword_id=item_id,
+        action="update",
+        before=before,
+        after=after,
+        actor=actor,
+    )
+    return after or {}
+
+
+def delete_query_keyword(*, item_id: int, actor: str) -> None:
+    before = fetch_query_keyword_by_id(item_id)
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM query_keywords WHERE id = %s", (item_id,))
+    log_query_keyword_audit(
+        query_keyword_id=item_id,
+        action="delete",
+        before=before,
+        after=None,
+        actor=actor,
+    )
 
 
 def _seed_compound_nouns_from_file() -> None:
@@ -455,6 +761,145 @@ def insert_keyword_relations(rows: list[dict[str, Any]]) -> None:
                     for row in rows
                 ],
             )
+
+
+def insert_collection_metric(row: dict[str, Any]) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO collection_metrics (
+                    provider,
+                    domain,
+                    query,
+                    window_start,
+                    window_end,
+                    request_count,
+                    success_count,
+                    article_count,
+                    duplicate_count,
+                    publish_count,
+                    error_count
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    row["provider"],
+                    row["domain"],
+                    row["query"],
+                    row["window_start"],
+                    row["window_end"],
+                    row.get("request_count", 0),
+                    row.get("success_count", 0),
+                    row.get("article_count", 0),
+                    row.get("duplicate_count", 0),
+                    row.get("publish_count", 0),
+                    row.get("error_count", 0),
+                ),
+            )
+
+
+def replace_keyword_events(
+    rows: list[dict[str, Any]],
+    *,
+    since: datetime,
+    until: datetime,
+    provider: str | None = None,
+    domain: str | None = None,
+) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM keyword_events
+                WHERE event_time >= %s
+                  AND event_time < %s
+                  AND (%s IS NULL OR provider = %s)
+                  AND (%s IS NULL OR domain = %s)
+                """,
+                (since, until, provider, provider, domain, domain),
+            )
+            if rows:
+                cursor.executemany(
+                    """
+                    INSERT INTO keyword_events (
+                        provider,
+                        domain,
+                        keyword,
+                        event_time,
+                        window_start,
+                        window_end,
+                        current_mentions,
+                        prev_mentions,
+                        growth,
+                        event_score,
+                        is_spike,
+                        detected_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (provider, domain, keyword, window_start)
+                    DO UPDATE SET
+                        current_mentions = EXCLUDED.current_mentions,
+                        prev_mentions = EXCLUDED.prev_mentions,
+                        growth = EXCLUDED.growth,
+                        event_score = EXCLUDED.event_score,
+                        is_spike = EXCLUDED.is_spike,
+                        detected_at = EXCLUDED.detected_at
+                    """,
+                    [
+                        (
+                            row["provider"],
+                            row["domain"],
+                            row["keyword"],
+                            row["event_time"],
+                            row["window_start"],
+                            row["window_end"],
+                            row["current_mentions"],
+                            row["prev_mentions"],
+                            row["growth"],
+                            row["event_score"],
+                            row["is_spike"],
+                            row["detected_at"],
+                        )
+                        for row in rows
+                    ],
+                )
+
+
+def fetch_keyword_event_rows(
+    *,
+    start_at: datetime,
+    end_at: datetime,
+    provider: str | None = None,
+    domain: str | None = None,
+) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    provider,
+                    domain,
+                    keyword,
+                    event_time,
+                    window_start,
+                    window_end,
+                    current_mentions,
+                    prev_mentions,
+                    growth,
+                    event_score,
+                    is_spike,
+                    detected_at
+                FROM keyword_events
+                WHERE event_time >= %s
+                  AND event_time < %s
+                  AND (%s IS NULL OR provider = %s)
+                  AND (%s IS NULL OR domain = %s)
+                ORDER BY event_time ASC, event_score DESC, keyword ASC
+                """,
+                (start_at, end_at, provider, provider, domain, domain),
+            )
+            return list(cursor.fetchall())
 
 
 def fetch_news_raw_between(
