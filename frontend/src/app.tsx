@@ -821,7 +821,14 @@ export default function App() {
             ) : (
               <div className="rail-rel" style={{ paddingTop: 4 }}>
                 {(related.data ?? []).slice(0, 12).map((r) => (
-                  <div key={r.keyword} className="rel-row" onClick={() => setSelectedKeyword(r.keyword)}>
+                  <div
+                    key={r.keyword}
+                    className="rel-row"
+                    onClick={() => {
+                      if (r.weight >= 1) setSelectedKeyword(r.keyword);
+                    }}
+                    style={{ cursor: r.weight >= 1 ? "pointer" : "default" }}
+                  >
                     <span className="name">{r.keyword}</span>
                     <span className="meter">
                       <div style={{ width: `${r.weight * 100}%` }} />

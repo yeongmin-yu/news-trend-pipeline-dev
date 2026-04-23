@@ -35,6 +35,7 @@ export function TopKeywords({
           <Icon.Hash size={12} />
           상위 키워드
           <span className="tag mono">TOP {limit}</span>
+          <span className="spike-dot" />급상승
         </div>
         {(onSortChange || onLimitChange) && (
           <div className="panel-tools">
@@ -464,7 +465,13 @@ export function RelatedNetwork({
           {center}
         </text>
         {nodes.map((node) => (
-          <g key={node.keyword} style={{ cursor: "pointer" }} onClick={() => onSelect(node.keyword)}>
+          <g
+            key={node.keyword}
+            style={{ cursor: node.weight >= 1 ? "pointer" : "default" }}
+            onClick={() => {
+              if (node.weight >= 1) onSelect(node.keyword);
+            }}
+          >
             <circle cx={node.x} cy={node.y} r={node.r} fill="var(--bg-2)" stroke="var(--border-hi)" strokeWidth="1" />
             <circle cx={node.x} cy={node.y} r={node.r - 3} fill={`rgba(94, 234, 212, ${0.15 + node.weight * 0.35})`} />
             <text className="network-node-label" x={node.x} y={node.y - node.r - 4} textAnchor="middle">

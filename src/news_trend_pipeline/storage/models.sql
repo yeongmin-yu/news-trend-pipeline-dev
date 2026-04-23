@@ -115,6 +115,12 @@ ALTER TABLE keyword_relations ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NU
 
 CREATE INDEX IF NOT EXISTS idx_news_raw_provider_domain_published_at
     ON news_raw(provider, domain, published_at);
+CREATE INDEX IF NOT EXISTS idx_news_raw_article_time
+    ON news_raw((COALESCE(published_at, ingested_at)));
+CREATE INDEX IF NOT EXISTS idx_news_raw_domain_article_time
+    ON news_raw(domain, (COALESCE(published_at, ingested_at)));
+CREATE INDEX IF NOT EXISTS idx_news_raw_provider_domain_article_time
+    ON news_raw(provider, domain, (COALESCE(published_at, ingested_at)));
 CREATE UNIQUE INDEX IF NOT EXISTS idx_news_raw_provider_domain_url
     ON news_raw(provider, domain, url);
 

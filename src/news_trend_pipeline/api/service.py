@@ -174,14 +174,30 @@ def get_kpis(source: str, domain: str, range_id: str) -> dict[str, Any]:
                 },
             )
             unique_row = cursor.fetchone() or {}
-            keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=100, search=None)
-    spike_count = sum(1 for item in keywords if item["spike"])
+            cursor.execute(
+                """
+                SELECT COUNT(DISTINCT keyword) AS spike_count
+                FROM keyword_events
+                WHERE window_start >= %(start_at)s
+                  AND window_start < %(end_at)s
+                  AND is_spike = TRUE
+                  AND (%(provider)s IS NULL OR provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                """,
+                {
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "provider": provider,
+                    "domain": domain_filter,
+                },
+            )
+            spike_row = cursor.fetchone() or {}
     growth = _safe_growth(article_row.get("current_articles") or 0, article_row.get("prev_articles") or 0)
     last_update = article_row.get("last_update")
     return {
         "totalArticles": int(article_row.get("current_articles") or 0),
         "uniqueKeywords": int(unique_row.get("unique_keywords") or 0),
-        "spikeCount": spike_count,
+        "spikeCount": int(spike_row.get("spike_count") or 0),
         "growth": growth,
         "lastUpdateRelative": _format_relative(last_update),
         "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "데이터 없음",
@@ -241,33 +257,16 @@ def get_top_keywords(
                       AND (%(provider)s IS NULL OR n.provider = %(provider)s)
                       AND (%(domain)s IS NULL OR n.domain = %(domain)s)
                     GROUP BY k.keyword
-                ),
-                source_counts AS (
-                    SELECT k.keyword, k.article_provider AS provider_name, SUM(k.keyword_count) AS provider_mentions
-                    FROM keywords k
-                    JOIN news_raw n
-                      ON n.url = k.article_url
-                     AND n.provider = k.article_provider
-                     AND n.domain = k.article_domain
-                    WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
-                      AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
-                      AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
-                    GROUP BY k.keyword, k.article_provider
                 )
                 SELECT
                     c.keyword,
                     c.mentions,
                     COALESCE(p.mentions, 0) AS prev_mentions,
-                    COALESCE(a.article_count, 0) AS article_count,
-                    COALESCE(SUM(CASE WHEN s.provider_name = 'naver' THEN s.provider_mentions END), 0) AS naver_mentions,
-                    COALESCE(SUM(CASE WHEN s.provider_name = 'global' THEN s.provider_mentions END), 0) AS global_mentions
+                    COALESCE(a.article_count, 0) AS article_count
                 FROM current_counts c
                 LEFT JOIN prev_counts p ON p.keyword = c.keyword
                 LEFT JOIN article_counts a ON a.keyword = c.keyword
-                LEFT JOIN source_counts s ON s.keyword = c.keyword
                 WHERE (%(search)s IS NULL OR c.keyword ILIKE %(search)s)
-                GROUP BY c.keyword, c.mentions, p.mentions, a.article_count
                 ORDER BY c.mentions DESC, c.keyword ASC
                 LIMIT %(limit)s
                 """,
@@ -281,7 +280,12 @@ def get_top_keywords(
         prev_mentions = int(row["prev_mentions"] or 0)
         growth = _safe_growth(mentions, prev_mentions)
         spike, event_score = _score_keyword(mentions, growth)
-        total = int(row["naver_mentions"] or 0) + int(row["global_mentions"] or 0)
+        if source == "naver":
+            source_share_naver, source_share_global = 1.0, 0.0
+        elif source == "global":
+            source_share_naver, source_share_global = 0.0, 1.0
+        else:
+            source_share_naver, source_share_global = 0.5, 0.5
         result.append(
             {
                 "keyword": row["keyword"],
@@ -292,8 +296,8 @@ def get_top_keywords(
                 "spike": spike,
                 "eventScore": event_score,
                 "articleCount": int(row["article_count"] or 0),
-                "sourceShareNaver": (int(row["naver_mentions"] or 0) / total) if total else 0.0,
-                "sourceShareGlobal": (int(row["global_mentions"] or 0) / total) if total else 0.0,
+                "sourceShareNaver": source_share_naver,
+                "sourceShareGlobal": source_share_global,
             }
         )
     return result
@@ -360,13 +364,61 @@ def get_trend_series(source: str, domain: str, range_id: str, keyword: str, comp
     }
 
 
+def _load_single_keyword_series(
+    spec: RangeSpec,
+    start_at: datetime,
+    end_at: datetime,
+    provider: str | None,
+    domain_filter: str | None,
+    keyword: str,
+) -> list[dict[str, Any]]:
+    bucket_edges = [start_at + timedelta(minutes=spec.bucket_min * index) for index in range(spec.buckets + 1)]
+    points = [{"bucket": index, "timestamp": bucket_edges[index], "value": 0} for index in range(spec.buckets)]
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT window_start, SUM(keyword_count) AS keyword_count
+                FROM keyword_trends
+                WHERE window_start >= %(start_at)s
+                  AND window_start < %(end_at)s
+                  AND keyword = %(keyword)s
+                  AND (%(provider)s IS NULL OR provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                GROUP BY window_start
+                ORDER BY window_start ASC
+                """,
+                {
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "keyword": keyword,
+                    "provider": provider,
+                    "domain": domain_filter,
+                },
+            )
+            for row in cursor.fetchall():
+                bucket_index = int((row["window_start"] - start_at).total_seconds() // (spec.bucket_min * 60))
+                if 0 <= bucket_index < spec.buckets:
+                    points[bucket_index]["value"] = int(row["keyword_count"] or 0)
+    return points
+
+
 def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -> dict[str, Any]:
     spec, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
     domain_filter = _domain_filter(domain)
     top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit)
     selected_keyword = top_keywords[0]["keyword"] if top_keywords else ""
-    trend = get_trend_series(source=source, domain=domain, range_id=range_id, keyword=selected_keyword, compare_limit=1) if selected_keyword else {"series": []}
+    sample_series = []
+    if selected_keyword:
+        sample_series = [
+            {
+                "name": selected_keyword,
+                "color": PALETTE[0],
+                "spike": bool(top_keywords[0]["spike"]),
+                "points": _load_single_keyword_series(spec, start_at, end_at, provider, domain_filter, selected_keyword),
+            }
+        ]
     event_rows = fetch_keyword_event_rows(
         start_at=start_at,
         end_at=end_at,
@@ -449,7 +501,7 @@ def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -
             "bucketMin": spec.bucket_min,
             "buckets": spec.buckets,
         },
-        "sampleSeries": trend["series"],
+        "sampleSeries": sample_series,
     }
 
 
@@ -565,36 +617,61 @@ def get_articles(
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 f"""
-                WITH article_keywords AS (
+                WITH filtered_articles AS (
+                    SELECT
+                        n.provider,
+                        n.domain,
+                        n.url,
+                        n.title,
+                        COALESCE(n.summary, '') AS summary,
+                        COALESCE(NULLIF(n.source, ''), n.provider) AS publisher,
+                        COALESCE(n.published_at, n.ingested_at) AS article_time
+                    FROM news_raw n
+                    WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
+                      AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
+                      AND (%(provider)s IS NULL OR n.provider = %(provider)s)
+                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                      AND (
+                        %(keyword)s IS NULL
+                        OR EXISTS (
+                            SELECT 1
+                            FROM keywords kf
+                            WHERE kf.article_provider = n.provider
+                              AND kf.article_domain = n.domain
+                              AND kf.article_url = n.url
+                              AND kf.keyword = %(keyword)s
+                        )
+                      )
+                ),
+                article_keywords AS (
                     SELECT
                         k.article_provider,
                         k.article_domain,
                         k.article_url,
                         ARRAY_AGG(k.keyword ORDER BY k.keyword_count DESC, k.keyword ASC) AS keywords
                     FROM keywords k
+                    JOIN filtered_articles fa
+                      ON fa.provider = k.article_provider
+                     AND fa.domain = k.article_domain
+                     AND fa.url = k.article_url
                     GROUP BY k.article_provider, k.article_domain, k.article_url
                 )
                 SELECT
-                    CONCAT(n.provider, ':', n.domain, ':', n.url) AS id,
-                    n.title,
-                    COALESCE(n.summary, '') AS summary,
-                    COALESCE(NULLIF(n.source, ''), n.provider) AS publisher,
-                    n.provider AS source,
-                    n.domain,
-                    COALESCE(n.published_at, n.ingested_at) AS article_time,
+                    CONCAT(fa.provider, ':', fa.domain, ':', fa.url) AS id,
+                    fa.title,
+                    fa.summary,
+                    fa.publisher,
+                    fa.provider AS source,
+                    fa.domain,
+                    fa.article_time,
                     ak.keywords,
                     CASE WHEN %(keyword)s IS NOT NULL AND ak.keywords IS NOT NULL AND %(keyword)s = ANY(ak.keywords) THEN 1 ELSE 0 END AS keyword_match,
-                    n.url
-                FROM news_raw n
+                    fa.url
+                FROM filtered_articles fa
                 LEFT JOIN article_keywords ak
-                  ON ak.article_provider = n.provider
-                 AND ak.article_domain = n.domain
-                 AND ak.article_url = n.url
-                WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
-                  AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
-                  AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR n.domain = %(domain)s)
-                  AND (%(keyword)s IS NULL OR (%(keyword)s = ANY(COALESCE(ak.keywords, ARRAY[]::varchar[]))))
+                  ON ak.article_provider = fa.provider
+                 AND ak.article_domain = fa.domain
+                 AND ak.article_url = fa.url
                 ORDER BY {order_clause}
                 LIMIT %(limit)s
                 """,
