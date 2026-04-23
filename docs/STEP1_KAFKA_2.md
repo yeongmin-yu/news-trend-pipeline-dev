@@ -87,7 +87,7 @@ flowchart LR
 - `NaverNewsClient`에 병렬 수집 메서드 추가:
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 def fetch_news_parallel(

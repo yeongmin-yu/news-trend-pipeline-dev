@@ -57,7 +57,7 @@ Kafka 메시지
 Spark 스트리밍 잡(`spark_job.py`)에서 전처리를 호출하는 방식은 다음과 같다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # spark_job.py 내 핵심 흐름
@@ -159,7 +159,7 @@ cleaned text
 ### 예시
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 tokens = ["인공", "지능", "반도체"]
@@ -177,7 +177,7 @@ user_dict = frozenset({"인공지능", "반도체"})
 Kiwi 토큰화 경로에서는 `(start, start+len)` 스팬 정보를 함께 넘긴다. 원문에서 실제로 붙어 있던 토큰만 병합해, 공백으로 분리된 다른 어절의 명사들이 잘못 결합되는 문제를 방지한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # spans[j].end == spans[j+1].start → 연속 판정
@@ -215,7 +215,7 @@ txt 파일 로드 (fallback)        _KOREAN_STOPWORDS_DEFAULT (fallback)
 `db.py`는 모듈 상단에서 `preprocessing.py`의 `tokenize`를 import한다. `preprocessing.py`가 `db.py`를 상단에서 import하면 순환 참조가 발생하므로, **함수 내부에서 lazy import**로 처리한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # preprocessing.py
@@ -285,7 +285,7 @@ CREATE TABLE IF NOT EXISTS compound_noun_dict (
 ### Kiwi 등록 방식
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 kiwi.add_user_word(word, "NNP", USER_WORD_SCORE)  # score=5.0
@@ -396,7 +396,7 @@ a. title + summary 합산 → clean_text()
 #### 스팬 연속성 검사 상세
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # i번째 형태소부터 count개가 모두 연속된 경우에만 병합 후보로 인정
@@ -494,7 +494,7 @@ if not contiguous:
 **`kiwi.tokenize()` 반환 토큰 구조**
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 Token(
@@ -562,7 +562,7 @@ Kiwi 사용 가능 → 형태소 분석 + 복합명사 병합
 `spark_job.py`에서 `tokenize()`를 Spark UDF로 등록해 DataFrame 컬럼에 적용한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
@@ -612,7 +612,7 @@ title + summary
 Spark는 토큰 배열을 `explode()`로 펼친 뒤, 기사 단위로 키워드 빈도를 먼저 계산한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 article_keywords = (
@@ -642,7 +642,7 @@ article_keywords = (
 으로 정렬한 뒤, `RELATION_KEYWORD_LIMIT` 개수만 남긴다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 article_window = Window.partitionBy("provider", "url", "event_time").orderBy(
@@ -665,7 +665,7 @@ representative_keywords = (
 대표 키워드를 자기 자신과 self join 해서, 같은 기사 안에서 함께 등장한 키워드 쌍만 만든다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 relation_pairs = (
@@ -724,7 +724,7 @@ relation_pairs = (
 생성된 키워드 쌍은 다시 `event_time` 기준 10분 윈도우로 묶어서 `cooccurrence_count`를 계산한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 relation_trends = (
@@ -747,7 +747,7 @@ relation_trends = (
 집계 결과는 `stg_keyword_relations`에 먼저 적재한 뒤 `keyword_relations`로 upsert 한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
@@ -802,7 +802,7 @@ DB에서는 아래 unique 기준으로 누적 저장된다.
 현재 사전이 업데이트되어도 실행 중인 Spark 잡은 재시작 전까지 반영하지 못한다. `foreachBatch` 내에서 일정 배치 수마다 캐시를 클리어하거나, TTL 기반 캐시로 교체하면 다운타임 없이 사전을 갱신할 수 있다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # 개선안: 일정 배치마다 캐시 클리어
@@ -823,7 +823,7 @@ if batch_id % 100 == 0:
 현재 Row 단위 Python UDF는 직렬화 오버헤드가 크다. Apache Arrow를 활용하는 Pandas UDF로 전환하면 배치 처리 성능이 크게 향상된다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 from pyspark.sql.functions import pandas_udf
@@ -848,7 +848,7 @@ def tokenize_pandas_udf(texts: pd.Series) -> pd.Series:
 현재 한글만 남기기 때문에 영문 고유명사(`AI`, `ChatGPT`, `GPU`)가 모두 제거된다. 한글+영문 혼재 처리 로직 추가를 검토할 수 있다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 # 개선안: 한글 + 영문 대문자(고유명사 후보) 유지

@@ -69,7 +69,7 @@ flowchart LR
 현재 구현은 `spark.readStream(...).foreachBatch(...)` 기반의 **Spark Structured Streaming**이다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 raw_stream = (
@@ -106,7 +106,7 @@ raw_stream = (
 Spark는 Kafka 토픽 `news_topic`을 구독하고, 각 메시지의 `value`를 JSON 문자열로 읽어 기사 스키마로 파싱한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 parsed = (
@@ -134,7 +134,7 @@ parsed = (
 전처리는 `title + summary`를 하나의 분석 문자열로 합친 뒤 `tokenize()` UDF를 적용하는 방식이다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
@@ -423,7 +423,7 @@ Spark 실행 시 아래 패키지를 함께 로드한다.
 Spark 처리 잡 실행 엔트리포인트는 [`scripts/run_processing.py`](../scripts/run_processing.py) 이다.
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 from news_trend_pipeline.processing.spark_job import run_streaming_job
@@ -478,7 +478,7 @@ docker compose up -d
 #### Kafka 읽기 + 전처리
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 parsed = (
@@ -500,7 +500,7 @@ parsed = (
 #### JDBC staging write
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
@@ -512,7 +512,7 @@ def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
 #### 기사 원문 upsert
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 _jdbc_write(
@@ -529,7 +529,7 @@ upsert_from_staging_news_raw()
 #### 키워드 트렌드 집계
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 keyword_trends = (
@@ -547,7 +547,7 @@ keyword_trends = (
 #### 연관 키워드 집계
 
 <details>
-<summary>?? ??</summary>
+<summary>??</summary>
 
 ```python
 representative_keywords = (
