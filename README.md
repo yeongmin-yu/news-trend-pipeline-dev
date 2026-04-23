@@ -82,7 +82,7 @@ flowchart LR
 
 앞으로 구현할 단계입니다.
 
-- Streamlit 대시보드 구현
+- FrontEnd 대시보드 구현
 - 공급원 선택: 글로벌 뉴스(NewsAPI) / 네이버 뉴스
 - 상위 키워드 막대 차트
 - 키워드 트렌드 선 차트
@@ -102,7 +102,7 @@ news-trend-pipeline/
 │     ├─ processing/          # Spark 집계
 │     ├─ analytics/           # 복합명사 / 이벤트 분석
 │     ├─ api/                 # FastAPI 조회 계층
-│     └─ dashboard/           # Streamlit 대시보드
+│     └─ dashboard/           # FrontEnd 대시보드
 ├─ airflow/
 │  └─ dags/                   # dev mount -> /opt/airflow/dags
 ├─ infra/
