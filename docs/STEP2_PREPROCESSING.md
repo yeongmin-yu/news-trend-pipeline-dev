@@ -26,6 +26,9 @@
 
 전처리 계층의 책임은 Kafka에서 읽어 들인 원문 기사 텍스트를 **키워드 집계에 적합한 토큰 리스트**로 변환하는 것이다.
 
+<details>
+<summary>?? ??</summary>
+
 ```
 Kafka 메시지
     └─ parsing (schemas.py)
@@ -35,6 +38,8 @@ Kafka 메시지
                     └─ _get_stopwords()     ← 불용어 제거 (DB 사전 기반)
                         └─ keyword 리스트 → Spark 집계
 ```
+
+</details>
 
 관련 파일:
 
@@ -51,6 +56,9 @@ Kafka 메시지
 
 Spark 스트리밍 잡(`spark_job.py`)에서 전처리를 호출하는 방식은 다음과 같다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 # spark_job.py 내 핵심 흐름
 parsed = (
@@ -59,6 +67,8 @@ parsed = (
     .withColumn("tokens", tokenize_udf(col("article_text")))
 )
 ```
+
+</details>
 
 1. `title + summary`를 하나의 분석용 본문으로 합친다.
 2. `tokenize_udf` 첫 호출 시 워커 프로세스 내 `@lru_cache`가 트리거되어 DB에서 사전을 로드한다.
@@ -101,6 +111,9 @@ parsed = (
 
 `clean_text()` 호출 후 Kiwi 형태소 분석으로 명사를 추출한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```
 cleaned text
     └─ _get_stopwords()         ← DB에서 불용어 로드 (lru_cache)
@@ -111,6 +124,8 @@ cleaned text
                     └─ merge_compound_nouns()   ← DB 사전 기반 병합
                         └─ 길이 > 1 + 불용어 제거
 ```
+
+</details>
 
 - **Kiwi** 형태소 분석기로 명사(NNG=일반명사, NNP=고유명사)만 추출한다.
 - 추출된 명사 시퀀스에 대해 `compound_noun_dict` 기반 복합명사 병합을 수행한다.
@@ -143,6 +158,9 @@ cleaned text
 
 ### 예시
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 tokens = ["인공", "지능", "반도체"]
 user_dict = frozenset({"인공지능", "반도체"})
@@ -152,14 +170,21 @@ user_dict = frozenset({"인공지능", "반도체"})
 # "반도체" → 그대로 유지
 ```
 
+</details>
+
 ### 연속성 검사 (spans)
 
 Kiwi 토큰화 경로에서는 `(start, start+len)` 스팬 정보를 함께 넘긴다. 원문에서 실제로 붙어 있던 토큰만 병합해, 공백으로 분리된 다른 어절의 명사들이 잘못 결합되는 문제를 방지한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 # spans[j].end == spans[j+1].start → 연속 판정
 contiguous = all(spans[j][1] == spans[j + 1][0] for j in range(i, i + window_size - 1))
 ```
+
+</details>
 
 ---
 
@@ -168,6 +193,9 @@ contiguous = all(spans[j][1] == spans[j + 1][0] for j in range(i, i + window_siz
 복합명사 사전과 불용어는 PostgreSQL DB에 저장되며, `@lru_cache`를 통해 프로세스 수명 동안 한 번만 로드된다.
 
 ### 로딩 순서
+
+<details>
+<summary>?? ??</summary>
 
 ```
 get_user_dictionary()           _get_stopwords()
@@ -180,9 +208,14 @@ DB fetch_compound_nouns()       DB fetch_stopwords()
 txt 파일 로드 (fallback)        _KOREAN_STOPWORDS_DEFAULT (fallback)
 ```
 
+</details>
+
 ### Circular Import 방지
 
 `db.py`는 모듈 상단에서 `preprocessing.py`의 `tokenize`를 import한다. `preprocessing.py`가 `db.py`를 상단에서 import하면 순환 참조가 발생하므로, **함수 내부에서 lazy import**로 처리한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 # preprocessing.py
@@ -197,6 +230,8 @@ def get_user_dictionary() -> tuple[str, ...]:
         pass
     return tuple(_load_user_dictionary_from_file())
 ```
+
+</details>
 
 ### 사전 갱신 반영 시점
 
@@ -214,6 +249,9 @@ def get_user_dictionary() -> tuple[str, ...]:
 
 **DB 테이블**: `compound_noun_dict`
 
+<details>
+<summary>?? ??</summary>
+
 ```sql
 CREATE TABLE IF NOT EXISTS compound_noun_dict (
     id         SERIAL PRIMARY KEY,
@@ -224,6 +262,8 @@ CREATE TABLE IF NOT EXISTS compound_noun_dict (
 );
 ```
 
+</details>
+
 ### 역할
 
 1. 복합명사 병합(`merge_compound_nouns`)의 매칭 기준을 제공한다.
@@ -233,15 +273,25 @@ CREATE TABLE IF NOT EXISTS compound_noun_dict (
 
 `initialize_database()` 호출 시 `seed_initial_data()`가 실행되어 `korean_user_dict.txt`의 단어들을 `source='manual'`로 적재한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```
 인공지능, 생성형AI, 머신러닝, 딥러닝, 챗봇, 반도체, 자율주행, 클라우드, 빅데이터
 ```
 
+</details>
+
 ### Kiwi 등록 방식
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 kiwi.add_user_word(word, "NNP", USER_WORD_SCORE)  # score=5.0
 ```
+
+</details>
 
 `USER_WORD_SCORE = 5.0`으로 사전 등재 단어에 높은 가중치를 부여해, Kiwi가 분리 분석보다 복합 인식을 우선하도록 한다.
 
@@ -250,6 +300,9 @@ kiwi.add_user_word(word, "NNP", USER_WORD_SCORE)  # score=5.0
 ## 8. 불용어 사전 (stopword_dict)
 
 **DB 테이블**: `stopword_dict`
+
+<details>
+<summary>?? ??</summary>
 
 ```sql
 CREATE TABLE IF NOT EXISTS stopword_dict (
@@ -260,6 +313,8 @@ CREATE TABLE IF NOT EXISTS stopword_dict (
     CONSTRAINT uq_stopword_dict_word_lang UNIQUE (word, language)
 );
 ```
+
+</details>
 
 ### 초기 데이터 적재
 
@@ -288,6 +343,9 @@ CREATE TABLE IF NOT EXISTS stopword_dict (
 
 ### 후보 DB 테이블 (compound_noun_candidates)
 
+<details>
+<summary>?? ??</summary>
+
 ```sql
 CREATE TABLE IF NOT EXISTS compound_noun_candidates (
     id            SERIAL      PRIMARY KEY,
@@ -304,7 +362,12 @@ CREATE TABLE IF NOT EXISTS compound_noun_candidates (
 );
 ```
 
+</details>
+
 ### 추출 알고리즘
+
+<details>
+<summary>?? ??</summary>
 
 ```
 1. news_raw에서 지정 기간(ingested_at 기준) 기사 조회
@@ -324,11 +387,16 @@ a. title + summary 합산 → clean_text()
    - 기존 approved/rejected: 변경 없음
 ```
 
+</details>
+
 #### Kiwi를 사용자 사전 없이 사용하는 이유
 
 전처리(`get_kiwi`)에서는 승인된 단어를 `add_user_word`로 등록해 복합어를 하나의 토큰으로 인식하지만, 후보 추출에서는 의도적으로 등록하지 않는다. 그래야 "인공지능" 같은 단어가 ["인공", "지능"]으로 분리되어 새 조합으로 탐색된다. 즉, **이미 아는 단어를 제외하고 모르는 복합어를 찾는 구조**다.
 
 #### 스팬 연속성 검사 상세
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 # i번째 형태소부터 count개가 모두 연속된 경우에만 병합 후보로 인정
@@ -339,6 +407,8 @@ contiguous = all(
 if not contiguous:
     break  # 더 긴 window도 같은 gap을 포함하므로 중단
 ```
+
+</details>
 
 #### 추출 파라미터 (config.py / 환경변수)
 
@@ -365,6 +435,9 @@ if not contiguous:
 
 복합명사 사전 항목 하나가 거치는 전체 흐름이다.
 
+<details>
+<summary>?? ??</summary>
+
 ```
 [매일 03:00] compound_noun_extraction DAG
     └─ news_raw 기사 조회 (ingested_at 기준 최근 1일)
@@ -384,7 +457,12 @@ if not contiguous:
         └─ 이후 기사부터 새 복합명사로 토큰화됨
 ```
 
+</details>
+
 ### 상태 전이
+
+<details>
+<summary>?? ??</summary>
 
 ```
 [자동 추출]
@@ -392,6 +470,8 @@ if not contiguous:
         │
         └────── 관리자 거부 ──── rejected
 ```
+
+</details>
 
 - `approved` 단어는 `compound_noun_dict`에 복사 후 전처리에 반영된다.
 - `rejected` 단어는 이후 추출에서 다시 `pending`으로 삽입되지 않는다 (upsert의 WHERE 조건으로 보호).
@@ -413,6 +493,9 @@ if not contiguous:
 
 **`kiwi.tokenize()` 반환 토큰 구조**
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 Token(
     form="인공지능",   # 표면형
@@ -421,6 +504,8 @@ Token(
     len=4,             # 길이
 )
 ```
+
+</details>
 
 **두 가지 사용 방식 비교**
 
@@ -434,6 +519,9 @@ Token(
 ## 12. Fallback 전략
 
 DB·라이브러리 가용성에 따라 3단계 fallback이 작동한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```
 복합명사 로딩 (get_user_dictionary)        불용어 로딩 (_get_stopwords)
@@ -456,6 +544,8 @@ Kiwi 사용 가능 → 형태소 분석 + 복합명사 병합
 공백 분리 + 한글 패턴 필터 + 복합명사 병합
 ```
 
+</details>
+
 **Fallback 품질 비교**
 
 | 경로 | 품질 | 비고 |
@@ -471,6 +561,9 @@ Kiwi 사용 가능 → 형태소 분석 + 복합명사 병합
 
 `spark_job.py`에서 `tokenize()`를 Spark UDF로 등록해 DataFrame 컬럼에 적용한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
 
@@ -480,6 +573,8 @@ parsed = (
     .withColumn("tokens", tokenize_udf(col("article_text")))
 )
 ```
+
+</details>
 
 ### UDF 성능 고려사항
 
@@ -497,6 +592,9 @@ parsed = (
 
 `tokenize()` 결과는 먼저 기사별 키워드 빈도(`article_keywords`)로 집계되고, 그 다음 연관 키워드 계산에 사용된다.
 
+<details>
+<summary>?? ??</summary>
+
 ```text
 title + summary
     -> tokenize()
@@ -507,9 +605,14 @@ title + summary
     -> keyword_relations 저장
 ```
 
+</details>
+
 ### 1. 기사별 키워드 빈도 생성
 
 Spark는 토큰 배열을 `explode()`로 펼친 뒤, 기사 단위로 키워드 빈도를 먼저 계산한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 article_keywords = (
@@ -518,6 +621,8 @@ article_keywords = (
     .agg(spark_count("*").alias("keyword_count"))
 )
 ```
+
+</details>
 
 이 단계 결과는 아래와 같은 형태다.
 
@@ -536,6 +641,9 @@ article_keywords = (
 
 으로 정렬한 뒤, `RELATION_KEYWORD_LIMIT` 개수만 남긴다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 article_window = Window.partitionBy("provider", "url", "event_time").orderBy(
     col("keyword_count").desc(),
@@ -548,11 +656,16 @@ representative_keywords = (
 )
 ```
 
+</details>
+
 기본값은 `RELATION_KEYWORD_LIMIT=8` 이다. 이 제한을 두는 이유는 기사 하나에서 토큰 수가 많아질수록 조합 수가 급격히 늘어나는 것을 막기 위해서다.
 
 ### 3. 같은 기사 안에서 키워드 쌍 생성
 
 대표 키워드를 자기 자신과 self join 해서, 같은 기사 안에서 함께 등장한 키워드 쌍만 만든다.
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 relation_pairs = (
@@ -572,6 +685,8 @@ relation_pairs = (
 )
 ```
 
+</details>
+
 여기서 `left.keyword_rank < right.keyword_rank` 조건을 써서:
 
 - 자기 자신과의 조합은 제외하고
@@ -579,11 +694,19 @@ relation_pairs = (
 
 예를 들어 기사 1건의 대표 키워드가 아래와 같다면:
 
+<details>
+<summary>?? ??</summary>
+
 ```text
 ["네이버", "검색", "생성형", "기술"]
 ```
 
+</details>
+
 생성되는 연관 키워드 쌍은 다음과 같다.
+
+<details>
+<summary>?? ??</summary>
 
 ```text
 ("네이버", "검색")
@@ -594,9 +717,14 @@ relation_pairs = (
 ("생성형", "기술")
 ```
 
+</details>
+
 ### 4. 시간 윈도우 기준으로 co-occurrence 집계
 
 생성된 키워드 쌍은 다시 `event_time` 기준 10분 윈도우로 묶어서 `cooccurrence_count`를 계산한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 relation_trends = (
@@ -610,16 +738,23 @@ relation_trends = (
 )
 ```
 
+</details>
+
 즉, `cooccurrence_count`는 "해당 시간 구간 안에서 이 두 키워드가 같은 기사에 몇 번 함께 등장했는가"를 의미한다.
 
 ### 5. 저장 방식
 
 집계 결과는 `stg_keyword_relations`에 먼저 적재한 뒤 `keyword_relations`로 upsert 한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
 upsert_from_staging_keyword_relations()
 ```
+
+</details>
 
 DB에서는 아래 unique 기준으로 누적 저장된다.
 
@@ -635,10 +770,15 @@ DB에서는 아래 unique 기준으로 누적 저장된다.
 
 두 기사에서 같은 시간대에 아래 대표 키워드가 추출되었다고 가정하면:
 
+<details>
+<summary>?? ??</summary>
+
 ```text
 기사 A: ["네이버", "검색", "생성형"]
 기사 B: ["네이버", "검색", "광고"]
 ```
+
+</details>
 
 10분 윈도우 집계 결과는 다음처럼 저장될 수 있다.
 
@@ -661,6 +801,9 @@ DB에서는 아래 unique 기준으로 누적 저장된다.
 #### lru_cache 무효화 메커니즘
 현재 사전이 업데이트되어도 실행 중인 Spark 잡은 재시작 전까지 반영하지 못한다. `foreachBatch` 내에서 일정 배치 수마다 캐시를 클리어하거나, TTL 기반 캐시로 교체하면 다운타임 없이 사전을 갱신할 수 있다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 # 개선안: 일정 배치마다 캐시 클리어
 if batch_id % 100 == 0:
@@ -668,6 +811,8 @@ if batch_id % 100 == 0:
     get_kiwi.cache_clear()
     _get_stopwords.cache_clear()
 ```
+
+</details>
 
 #### 후보 추출 품질 지표
 현재 `frequency`와 `doc_count`만 기록한다. PMI(Pointwise Mutual Information) 또는 C-value 등 통계 지표를 추가하면 관리자 검토 우선순위 결정에 도움이 된다.
@@ -677,6 +822,9 @@ if batch_id % 100 == 0:
 #### Pandas UDF (Vectorized UDF) 전환
 현재 Row 단위 Python UDF는 직렬화 오버헤드가 크다. Apache Arrow를 활용하는 Pandas UDF로 전환하면 배치 처리 성능이 크게 향상된다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 from pyspark.sql.functions import pandas_udf
 import pandas as pd
@@ -685,6 +833,8 @@ import pandas as pd
 def tokenize_pandas_udf(texts: pd.Series) -> pd.Series:
     return texts.apply(tokenize)
 ```
+
+</details>
 
 #### 전처리 품질 모니터링
 토큰 수 분포, 빈 토큰 비율, fallback 경로 호출 빈도 등을 메트릭으로 수집해 전처리 품질을 모니터링하면 사전 관리 및 불용어 조정에 근거가 생긴다.
@@ -697,10 +847,15 @@ def tokenize_pandas_udf(texts: pd.Series) -> pd.Series:
 #### 영문 고유명사 처리
 현재 한글만 남기기 때문에 영문 고유명사(`AI`, `ChatGPT`, `GPU`)가 모두 제거된다. 한글+영문 혼재 처리 로직 추가를 검토할 수 있다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 # 개선안: 한글 + 영문 대문자(고유명사 후보) 유지
 text = re.sub(r"[^\uAC00-\uD7A3A-Z\s]", " ", text)
 ```
+
+</details>
 
 ---
 

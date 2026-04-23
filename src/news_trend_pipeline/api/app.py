@@ -25,6 +25,7 @@ from news_trend_pipeline.api.service import (
     get_related_keywords,
     get_spike_events,
     get_system_status,
+    get_theme_distribution,
     get_top_keywords,
     get_trend_series,
     review_compound_candidate,
@@ -108,6 +109,15 @@ def dashboard_related(
     limit: int = Query(default=10, ge=1, le=50),
 ) -> list[dict]:
     return get_related_keywords(source=source, domain=domain, range_id=range_id, keyword=keyword, limit=limit)
+
+
+@app.get("/api/v1/dashboard/theme-distribution")
+def dashboard_theme_distribution(
+    keyword: str,
+    source: str = Query(default="all"),
+    range_id: str = Query(default="1h", alias="range"),
+) -> dict:
+    return get_theme_distribution(source=source, range_id=range_id, keyword=keyword)
 
 
 @app.get("/api/v1/dashboard/articles")

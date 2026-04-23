@@ -18,6 +18,7 @@ import {
   type RangeId,
   type RelatedKeyword,
   type SourceId,
+  type ThemeDistributionResponse,
   type TrendResponse,
 } from "./data";
 import { RelatedNetwork, SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
@@ -46,6 +47,19 @@ const DEFAULT_FILTERS: FiltersResponse = {
     { id: "12h", label: "12시간", bucketMin: 60, buckets: 12 },
     { id: "1d", label: "1일", bucketMin: 120, buckets: 12 },
   ],
+};
+
+const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
+  keyword: "",
+  totalMentions: 0,
+  items: [],
+};
+
+const DOMAIN_COLORS: Record<string, string> = {
+  ai_tech: "#5eead4",
+  economy_finance: "#f472b6",
+  politics_policy: "#fbbf24",
+  entertainment_culture: "#60a5fa",
 };
 
 function useAsyncData<T>(factory: () => Promise<T>, deps: unknown[]): AsyncState<T> {
@@ -97,6 +111,11 @@ function KpiCard({
       </div>
     </div>
   );
+}
+
+function getDomainColor(domainId: string, available: boolean): string {
+  if (!available) return "var(--text-4)";
+  return DOMAIN_COLORS[domainId] ?? "var(--accent)";
 }
 
 export default function App() {
@@ -164,6 +183,13 @@ export default function App() {
     () => (selectedKeyword ? api.related(source, domain, range, selectedKeyword) : Promise.resolve([] as RelatedKeyword[])),
     [source, domain, range, selectedKeyword],
   );
+  const themeDistribution = useAsyncData(
+    () =>
+      selectedKeyword
+        ? api.themeDistribution(source, range, selectedKeyword)
+        : Promise.resolve(EMPTY_THEME_DISTRIBUTION),
+    [source, range, selectedKeyword],
+  );
   const articles = useAsyncData(
     () => (selectedKeyword ? api.articles(source, domain, range, selectedKeyword, articleSort) : Promise.resolve([] as ArticleItem[])),
     [source, domain, range, selectedKeyword, articleSort],
@@ -188,6 +214,28 @@ export default function App() {
       : currentKeywords.filter((k) => eventKeywords.has(k.keyword))
     ).slice(0, 12);
   }, [keywords.data, spikes.data, selectedBucket]);
+
+  const themeBarItems = useMemo(() => {
+    const items = themeDistribution.data?.items ?? [];
+    if (!items.length) return [];
+    const visibleItemCount = items.length;
+    const minShare = 0.02;
+    const zeroCount = items.filter((item) => item.share <= 0).length;
+    const reservedShare = Math.min(zeroCount * minShare, 0.24);
+    const positiveItems = items.filter((item) => item.share > 0);
+    const positiveTotal = positiveItems.reduce((sum, item) => sum + item.share, 0);
+
+    if (positiveTotal <= 0) {
+      const equalShare = 1 / visibleItemCount;
+      return items.map((item) => ({ ...item, displayShare: equalShare }));
+    }
+
+    const scale = (1 - reservedShare) / positiveTotal;
+    return items.map((item) => ({
+      ...item,
+      displayShare: item.share > 0 ? item.share * scale : minShare,
+    }));
+  }, [themeDistribution.data]);
 
   // Typeahead matches for search
   const typeaheadMatches = useMemo(() => {
@@ -354,7 +402,7 @@ export default function App() {
               onClick={() => d.available && setDomain(d.id)}
             >
               <span className="label">
-                <span className="dot" style={{ background: d.available ? "var(--accent)" : "var(--text-4)" }} />
+                <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
                 {d.label}
               </span>
               <span className="n">{d.available ? "live" : "plan"}</span>
@@ -710,21 +758,35 @@ export default function App() {
           </div>
 
           <div className="rail-section">
-            <h4>공급원 분포</h4>
-            <div className="src-bar">
-              <div style={{ width: `${(activeKeyword?.sourceShareNaver ?? 0) * 100}%`, background: "var(--up)" }} />
-              <div style={{ width: `${(activeKeyword?.sourceShareGlobal ?? 0) * 100}%`, background: "var(--warn)" }} />
-            </div>
-            <div className="src-legend">
-              <span>
-                <span style={{ color: "var(--up)" }}>■</span> 네이버{" "}
-                {fmtPct(activeKeyword?.sourceShareNaver ?? 0, false)}
-              </span>
-              <span>
-                글로벌 {fmtPct(activeKeyword?.sourceShareGlobal ?? 0, false)}{" "}
-                <span style={{ color: "var(--warn)" }}>■</span>
-              </span>
-            </div>
+            <h4>테마별 분포</h4>
+            {themeDistribution.loading ? (
+              <LoadingState label="테마 분포를 불러오는 중..." />
+            ) : themeBarItems.length ? (
+              <>
+                <div className="src-bar">
+                  {themeBarItems.map((item) => (
+                    <div
+                      key={item.id}
+                      style={{ width: `${item.displayShare * 100}%`, background: item.color ?? "var(--accent)" }}
+                      title={`${item.label} ${fmtPct(item.share, false)}`}
+                    />
+                  ))}
+                </div>
+                <div className="src-legend" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {themeBarItems.map((item) => (
+                    <span key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                      <span>
+                        <span style={{ color: item.color ?? "var(--accent)" }}>■</span>{" "}
+                        {item.label}
+                      </span>
+                      <span>{fmtPct(item.share, false)}</span>
+                    </span>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <EmptyState title="테마 분포 없음" body="선택한 키워드의 테마 분포 데이터를 찾지 못했습니다." />
+            )}
           </div>
 
           <div className="rail-section">

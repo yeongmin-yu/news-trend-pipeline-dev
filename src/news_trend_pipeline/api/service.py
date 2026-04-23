@@ -11,6 +11,7 @@ import requests
 from psycopg2.extras import RealDictCursor
 
 from news_trend_pipeline.core.config import settings
+from news_trend_pipeline.core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
 from news_trend_pipeline.storage.db import (
     create_query_keyword as db_create_query_keyword,
     delete_query_keyword as db_delete_query_keyword,
@@ -58,6 +59,7 @@ SOURCES = [
 ]
 
 PALETTE = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa", "#a78bfa"]
+THEME_COLORS = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa"]
 
 
 def _provider_filter(source: str) -> str | None:
@@ -498,6 +500,53 @@ def get_related_keywords(source: str, domain: str, range_id: str, keyword: str, 
         return []
     max_weight = max(float(row["weight"] or 0.0) for row in rows) or 1.0
     return [{"keyword": row["related_keyword"], "weight": round(float(row["weight"] or 0.0) / max_weight, 4)} for row in rows]
+
+
+def get_theme_distribution(source: str, range_id: str, keyword: str) -> dict[str, Any]:
+    _, start_at, end_at, _ = _range_bounds(range_id)
+    provider = _provider_filter(source)
+    domain_definitions = list(DOMAIN_DEFINITIONS)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT domain, SUM(keyword_count) AS mentions
+                FROM keyword_trends
+                WHERE keyword = %(keyword)s
+                  AND window_start >= %(start_at)s
+                  AND window_start < %(end_at)s
+                  AND (%(provider)s IS NULL OR provider = %(provider)s)
+                GROUP BY domain
+                """,
+                {
+                    "keyword": keyword,
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "provider": provider,
+                },
+            )
+            rows = list(cursor.fetchall())
+
+    mentions_by_domain = {str(row["domain"]): int(row["mentions"] or 0) for row in rows if row.get("domain")}
+    total_mentions = sum(mentions_by_domain.values())
+    items: list[dict[str, Any]] = []
+    for index, domain in enumerate(domain_definitions):
+        mentions = mentions_by_domain.get(domain.id, 0)
+        items.append(
+            {
+                "id": domain.id,
+                "label": DOMAIN_LABELS.get(domain.id, domain.id),
+                "mentions": mentions,
+                "share": (mentions / total_mentions) if total_mentions else 0.0,
+                "color": THEME_COLORS[index % len(THEME_COLORS)],
+            }
+        )
+    items.sort(key=lambda item: (-item["mentions"], item["label"]))
+    return {
+        "keyword": keyword,
+        "totalMentions": total_mentions,
+        "items": items,
+    }
 
 
 def get_articles(

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parents[3]
-load_dotenv(BASE_DIR / ".env", override=True)
+load_dotenv(BASE_DIR / ".env")
 
 
 def _parse_csv(raw: str) -> tuple[str, ...]:

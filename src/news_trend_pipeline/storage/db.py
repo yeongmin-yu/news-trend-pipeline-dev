@@ -39,6 +39,8 @@ _STOPWORD_SEED: tuple[str, ...] = (
 )
 
 logger = get_logger(__name__)
+_SCHEMA_INIT_LOCK_ID = 94721531
+_SCHEMA_INIT_DONE = False
 
 
 def _jsonable(value: Any) -> Any:
@@ -72,8 +74,28 @@ def initialize_database() -> None:
 
 
 def safe_initialize_database() -> None:
+    global _SCHEMA_INIT_DONE
+    if _SCHEMA_INIT_DONE:
+        return
     try:
-        initialize_database()
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(%s)", (_SCHEMA_INIT_LOCK_ID,))
+                acquired = bool(cursor.fetchone()[0])
+                if not acquired:
+                    logger.info("Database initialization skipped: schema lock busy")
+                    return
+                try:
+                    cursor.execute("SET lock_timeout TO '2s'")
+                    cursor.execute("SET statement_timeout TO '60s'")
+                    schema_path = Path(__file__).with_name("models.sql")
+                    schema_sql = schema_path.read_text(encoding="utf-8")
+                    cursor.execute(schema_sql)
+                finally:
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_INIT_LOCK_ID,))
+        logger.info("Database schema initialized")
+        seed_initial_data()
+        _SCHEMA_INIT_DONE = True
     except Error as exc:
         logger.warning("Database initialization skipped: %s", exc)
 

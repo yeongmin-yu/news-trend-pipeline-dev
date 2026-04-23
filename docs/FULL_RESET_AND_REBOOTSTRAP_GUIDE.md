@@ -43,15 +43,25 @@
 
 프로젝트 루트:
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 cd C:\Project\news-trend-pipeline-v2
 ```
 
+</details>
+
 ### 1. 컨테이너 및 볼륨 전체 제거
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 docker compose down -v --remove-orphans
 ```
+
+</details>
 
 설명:
 
@@ -66,6 +76,9 @@ docker compose down -v --remove-orphans
 
 ### 2. 런타임 디렉터리 비우기
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 Remove-Item -LiteralPath .\runtime\checkpoints\* -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath .\runtime\state\* -Recurse -Force -ErrorAction SilentlyContinue
@@ -73,7 +86,12 @@ Remove-Item -LiteralPath .\runtime\spark-events\* -Recurse -Force -ErrorAction S
 Remove-Item -LiteralPath .\runtime\logs\* -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
+</details>
+
 빈 디렉터리 유지가 필요하면 `.gitkeep`를 다시 만들어 둔다.
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 New-Item -ItemType File -Path .\runtime\checkpoints\.gitkeep -Force | Out-Null
@@ -82,11 +100,18 @@ New-Item -ItemType File -Path .\runtime\spark-events\.gitkeep -Force | Out-Null
 New-Item -ItemType File -Path .\runtime\logs\.gitkeep -Force | Out-Null
 ```
 
+</details>
+
 ### 3. 이미지 재빌드 포함 재기동
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 docker compose up -d --build
 ```
+
+</details>
 
 설명:
 
@@ -98,11 +123,19 @@ docker compose up -d --build
 
 컨테이너 상태:
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 docker compose ps
 ```
 
+</details>
+
 주요 로그 확인:
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 docker logs -f news-trend-develop-airflow-apiserver-1
@@ -110,13 +143,23 @@ docker logs -f news-trend-develop-spark-streaming-1
 docker logs -f news-trend-develop-kafka-1
 ```
 
+</details>
+
 DB 확인:
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 docker exec -it news-trend-develop-app-postgres-1 psql -U postgres -d news_pipeline
 ```
 
+</details>
+
 예시 확인 쿼리:
+
+<details>
+<summary>?? ??</summary>
 
 ```sql
 \d news_raw
@@ -125,6 +168,8 @@ SELECT COUNT(*) FROM keywords;
 SELECT COUNT(*) FROM keyword_trends;
 SELECT COUNT(*) FROM keyword_relations;
 ```
+
+</details>
 
 `news_raw` 컬럼이 아래처럼 보이면 새 스키마가 반영된 것이다.
 
@@ -140,6 +185,9 @@ SELECT COUNT(*) FROM keyword_relations;
 
 아래 순서대로 실행하면 된다.
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 cd C:\Project\news-trend-pipeline-v2
 docker compose down -v --remove-orphans
@@ -154,6 +202,8 @@ New-Item -ItemType File -Path .\runtime\logs\.gitkeep -Force | Out-Null
 docker compose up -d --build
 docker compose ps
 ```
+
+</details>
 
 ## PowerShell 자동화 스크립트
 
@@ -170,15 +220,25 @@ docker compose ps
 
 기본 실행:
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1"
 ```
 
+</details>
+
 이미지까지 다시 빌드:
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1" -BuildImages
 ```
+
+</details>
 
 ### 2. 사전 유지 초기화
 
@@ -192,15 +252,25 @@ powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scri
 
 기본 실행:
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1"
 ```
 
+</details>
+
 이미지까지 다시 빌드:
+
+<details>
+<summary>?? ??</summary>
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1" -BuildImages
 ```
+
+</details>
 
 ### 3. `-BuildImages` 옵션 사용 기준
 
@@ -297,9 +367,14 @@ powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scri
 
 즉, 아래 명령은 **사전까지 포함한 완전 초기화**다.
 
+<details>
+<summary>?? ??</summary>
+
 ```powershell
 docker compose down -v --remove-orphans
 ```
+
+</details>
 
 반대로, 사전을 유지하고 싶다면 `app-postgres-data` 볼륨 삭제는 피하고 아래 항목만 부분 정리해야 한다.
 

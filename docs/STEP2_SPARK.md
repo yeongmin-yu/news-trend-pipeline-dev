@@ -8,6 +8,9 @@
 
 `Kafka` 적재 전까지의 Step 1 수집 흐름은 아래와 같다.
 
+<details>
+<summary>????? ??</summary>
+
 ```mermaid
 flowchart LR
     A["Airflow Scheduler<br/>수집 스케줄 실행"] --> B["news_ingest_dag<br/>수집 DAG"]
@@ -18,9 +21,14 @@ flowchart LR
     F --> G["Kafka: news_topic<br/>기사 메시지 적재"]
 ```
 
+</details>
+
 ### 1-2. Step 2 파이프라인
 
 `Kafka` 이후 Step 2 처리 및 저장 흐름은 아래와 같다.
+
+<details>
+<summary>????? ??</summary>
 
 ```mermaid
 flowchart LR
@@ -41,6 +49,8 @@ flowchart LR
     N -. reload check / 사전 재확인 .-> D
 ```
 
+</details>
+
 ### 1-3. 단계별 책임
 
 | 단계 | 역할 |
@@ -58,6 +68,9 @@ flowchart LR
 
 현재 구현은 `spark.readStream(...).foreachBatch(...)` 기반의 **Spark Structured Streaming**이다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 raw_stream = (
     spark.readStream.format("kafka")
@@ -67,6 +80,8 @@ raw_stream = (
     .load()
 )
 ```
+
+</details>
 
 #### Streaming을 선택한 이유
 
@@ -90,6 +105,9 @@ raw_stream = (
 
 Spark는 Kafka 토픽 `news_topic`을 구독하고, 각 메시지의 `value`를 JSON 문자열로 읽어 기사 스키마로 파싱한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 parsed = (
     raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
@@ -102,6 +120,8 @@ parsed = (
 )
 ```
 
+</details>
+
 읽기 방식의 특징은 다음과 같다.
 
 - Kafka 원문 payload를 Spark 쪽에서 다시 스키마 검증한다.
@@ -113,11 +133,16 @@ parsed = (
 
 전처리는 `title + summary`를 하나의 분석 문자열로 합친 뒤 `tokenize()` UDF를 적용하는 방식이다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
 .withColumn("tokens", tokenize_udf(col("article_text")))
 .dropna(subset=["event_time", "url"])
 ```
+
+</details>
 
 `tokenize()` 내부 흐름은 아래와 같다.
 
@@ -152,12 +177,17 @@ parsed = (
 
 추가로 저장 단계는 모두 **staging table → upsert → truncate** 순서로 처리한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```text
 Spark batch
   -> stg_news_raw / stg_keywords / stg_keyword_trends / stg_keyword_relations
   -> INSERT ... ON CONFLICT ...
   -> TRUNCATE staging table
 ```
+
+</details>
 
 이 방식을 택한 이유는 다음과 같다.
 
@@ -170,6 +200,9 @@ Spark batch
 ### 2-c. 처리 전/후 데이터 예시
 
 #### 처리 전: Kafka 메시지 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```json
 {
@@ -188,7 +221,12 @@ Spark batch
 }
 ```
 
+</details>
+
 #### 전처리 중간 결과 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```text
 article_text
@@ -201,9 +239,14 @@ tokenize(article_text)
 = ["네이버", "생성형", "기반", "검색", "고도화", "네이버", "생성형", "기술", "활용", "검색", "품질"]
 ```
 
+</details>
+
 주의할 점은 현재 `clean_text()`가 영문과 숫자를 제거하므로 `AI`, `LLM`, `GPT` 같은 영문 토큰은 직접 남지 않는다.
 
 #### 처리 후: 기사별 키워드 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```json
 {
@@ -215,7 +258,12 @@ tokenize(article_text)
 }
 ```
 
+</details>
+
 #### 처리 후: 10분 윈도우 트렌드 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```json
 {
@@ -228,7 +276,12 @@ tokenize(article_text)
 }
 ```
 
+</details>
+
 #### 처리 후: 연관 키워드 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```json
 {
@@ -241,6 +294,8 @@ tokenize(article_text)
   "processed_at": "2026-04-22T01:11:00+00:00"
 }
 ```
+
+</details>
 
 ## 3. 저장소 설계
 
@@ -340,9 +395,14 @@ tokenize(article_text)
 
 Spark 실행 시 아래 패키지를 함께 로드한다.
 
+<details>
+<summary>?? ??</summary>
+
 ```bash
 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4
 ```
+
+</details>
 
 - Kafka connector: Spark Structured Streaming이 Kafka를 직접 읽기 위해 필요
 - PostgreSQL JDBC driver: staging table write를 위해 필요
@@ -362,6 +422,9 @@ Spark 실행 시 아래 패키지를 함께 로드한다.
 
 Spark 처리 잡 실행 엔트리포인트는 [`scripts/run_processing.py`](../scripts/run_processing.py) 이다.
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 from news_trend_pipeline.processing.spark_job import run_streaming_job
 
@@ -369,21 +432,36 @@ if __name__ == "__main__":
     run_streaming_job()
 ```
 
+</details>
+
 ### 5-2. 로컬/단일 노드 실행 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```bash
 python scripts/run_processing.py
 ```
 
+</details>
+
 이 경우 `SPARK_MASTER=local[*]` 설정으로 로컬 Spark에서 동작한다.
 
 ### 5-3. Docker Compose 기반 실행 예시
+
+<details>
+<summary>?? ??</summary>
 
 ```bash
 docker compose up -d
 ```
 
+</details>
+
 `spark-streaming` 서비스가 자동으로 아래 명령을 수행한다.
+
+<details>
+<summary>?? ??</summary>
 
 ```bash
 /opt/spark/bin/spark-submit \
@@ -393,9 +471,14 @@ docker compose up -d
   /opt/news-trend-pipeline/scripts/run_processing.py
 ```
 
+</details>
+
 ### 5-4. 핵심 실행 코드
 
 #### Kafka 읽기 + 전처리
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 parsed = (
@@ -412,14 +495,24 @@ parsed = (
 )
 ```
 
+</details>
+
 #### JDBC staging write
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
     df.write.jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
 ```
 
+</details>
+
 #### 기사 원문 upsert
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 _jdbc_write(
@@ -431,7 +524,12 @@ _jdbc_write(
 upsert_from_staging_news_raw()
 ```
 
+</details>
+
 #### 키워드 트렌드 집계
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 keyword_trends = (
@@ -444,7 +542,12 @@ keyword_trends = (
 )
 ```
 
+</details>
+
 #### 연관 키워드 집계
+
+<details>
+<summary>?? ??</summary>
 
 ```python
 representative_keywords = (
@@ -452,6 +555,8 @@ representative_keywords = (
     .filter(col("keyword_rank") <= settings.relation_keyword_limit)
 )
 ```
+
+</details>
 
 ## 6. 구현 파일 목록
 

@@ -35,8 +35,6 @@ export interface KeywordSummary {
   spike: boolean;
   eventScore: number;
   articleCount: number;
-  sourceShareNaver: number;
-  sourceShareGlobal: number;
 }
 
 export interface KpiSummary {
@@ -84,6 +82,20 @@ export interface SpikeResponse {
 export interface RelatedKeyword {
   keyword: string;
   weight: number;
+}
+
+export interface ThemeDistributionItem {
+  id: string;
+  label: string;
+  mentions: number;
+  share: number;
+  color?: string;
+}
+
+export interface ThemeDistributionResponse {
+  keyword: string;
+  totalMentions: number;
+  items: ThemeDistributionItem[];
 }
 
 export interface ArticleItem {
@@ -235,6 +247,10 @@ export const api = {
   related: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
     request<RelatedKeyword[]>(
       `/dashboard/related?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
+    ),
+  themeDistribution: (source: SourceId, range: RangeId, keyword: string) =>
+    request<ThemeDistributionResponse>(
+      `/dashboard/theme-distribution?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
     ),
   articles: (source: SourceId, domain: string, range: RangeId, keyword: string, sort: "latest" | "relevance") =>
     request<ArticleItem[]>(

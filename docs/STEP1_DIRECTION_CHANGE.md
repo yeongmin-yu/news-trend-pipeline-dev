@@ -224,11 +224,16 @@
 
 즉, "전체 쿼리 성공률"과 "수집 시간"을 함께 고려하면 현재 운영 기본값은 다음 조합이 가장 균형이 좋습니다.
 
+<details>
+<summary>?? ??</summary>
+
 ```env
 NAVER_MAX_WORKERS=4
 NAVER_PAGE_REQUEST_DELAY_SECONDS=0.75
 NAVER_QUERY_STAGGER_SECONDS=0.15
 ```
+
+</details>
 
 ### 6-4. 최종 운영 권장값
 

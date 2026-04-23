@@ -30,6 +30,9 @@
 
 ## 2. 변경된 파이프라인 구성도
 
+<details>
+<summary>????? ??</summary>
+
 ```mermaid
 flowchart LR
     A["Airflow Scheduler"] --> B["news_ingest_dag"]
@@ -50,6 +53,8 @@ flowchart LR
     R -->|성공| G
     R -->|영구실패| I["수동 개입 필요"]
 ```
+
+</details>
 
 기존 파이프라인과의 차이는 다음과 같습니다.
 
@@ -81,6 +86,9 @@ flowchart LR
 - `NewsAPIClient` 클래스 전체 제거.
 - `NaverNewsClient`에 병렬 수집 메서드 추가:
 
+<details>
+<summary>?? ??</summary>
+
 ```python
 def fetch_news_parallel(
     self,
@@ -91,6 +99,8 @@ def fetch_news_parallel(
 ) -> list[dict[str, Any]]:
     """테마 키워드 집합에 대해 ThreadPoolExecutor로 병렬 API 호출."""
 ```
+
+</details>
 
 - 수집된 각 기사에 `_query` 내부 필드를 붙여 **"이 기사가 어떤 키워드로 수집되었는지"**를 전파합니다. 최종 Kafka 메시지에는 `metadata.query` 로 옮겨지고, 원본 `_query`는 제거됩니다 (underscore prefix 규약으로 외부 노출 방지).
 - 중복 제거는 `provider::url` 기준으로 집합 전체에 대해 1회 수행합니다. 여러 키워드에서 동일 기사가 잡히는 경우에도 메시지는 1회만 발행됩니다.
@@ -153,6 +163,9 @@ def fetch_news_parallel(
 
 테마 키워드 "GPT"로 수집된 기사의 최종 Kafka payload 예시입니다.
 
+<details>
+<summary>?? ??</summary>
+
 ```json
 {
   "provider": "naver",
@@ -169,6 +182,8 @@ def fetch_news_parallel(
   }
 }
 ```
+
+</details>
 
 `metadata.query` 필드는 이제 **이 기사가 실제로 수집된 테마 키워드**를 담습니다.
 
@@ -233,6 +248,9 @@ def fetch_news_parallel(
 
 변경 전:
 
+<details>
+<summary>?? ??</summary>
+
 ```json
 {
   "providers": {
@@ -244,7 +262,12 @@ def fetch_news_parallel(
 }
 ```
 
+</details>
+
 변경 후:
+
+<details>
+<summary>?? ??</summary>
 
 ```json
 {
@@ -260,6 +283,8 @@ def fetch_news_parallel(
   }
 }
 ```
+
+</details>
 
 - `last_timestamp` 필드는 **영구히 삭제**됩니다. 다음 `save_state()` 부터 구키는 파일에 존재하지 않습니다.
 - `published_urls` 는 여전히 프로바이더 단위 공유입니다. 여러 키워드에서 동일 기사가 잡혀도 한 번만 발행되도록 하는 Layer 2 역할이라 유지됩니다.
@@ -282,6 +307,9 @@ def fetch_news_parallel(
 
 `run_once()` 의 루프가 다음과 같이 바뀝니다.
 
+<details>
+<summary>?? ??</summary>
+
 ```text
 for keyword, (articles, ok) in results.items():
     for article in articles:
@@ -293,6 +321,8 @@ for keyword, (articles, ok) in results.items():
         # 체크포인트 유지 — 다음 실행에서 동일 from_timestamp 로 재시도
         logger.warning("[%s] 키워드 %r 부분실패/오류 — 체크포인트 유지", ...)
 ```
+
+</details>
 
 핵심은 **부분 수집분도 그대로 발행**되지만 체크포인트는 유지된다는 점입니다. 다음 실행이 같은 `from_timestamp` 로 재수집하더라도 `published_urls` Set(Layer 2) 가 이미 발행한 URL을 걸러주므로 **중복 발행이 일어나지 않습니다**. 즉, "부분 성공은 재시도하되 이중 발행은 없다" 는 멱등성이 확보됩니다.
 
