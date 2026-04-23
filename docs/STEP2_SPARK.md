@@ -8,9 +8,6 @@
 
 `Kafka` 적재 전까지의 Step 1 수집 흐름은 아래와 같다.
 
-<details>
-<summary>????? ??</summary>
-
 ```mermaid
 flowchart LR
     A["Airflow Scheduler<br/>수집 스케줄 실행"] --> B["news_ingest_dag<br/>수집 DAG"]
@@ -21,14 +18,10 @@ flowchart LR
     F --> G["Kafka: news_topic<br/>기사 메시지 적재"]
 ```
 
-</details>
 
 ### 1-2. Step 2 파이프라인
 
 `Kafka` 이후 Step 2 처리 및 저장 흐름은 아래와 같다.
-
-<details>
-<summary>????? ??</summary>
 
 ```mermaid
 flowchart LR
@@ -49,8 +42,6 @@ flowchart LR
     N -. reload check / 사전 재확인 .-> D
 ```
 
-</details>
-
 ### 1-3. 단계별 책임
 
 | 단계 | 역할 |
@@ -69,7 +60,7 @@ flowchart LR
 현재 구현은 `spark.readStream(...).foreachBatch(...)` 기반의 **Spark Structured Streaming**이다.
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 raw_stream = (
@@ -106,7 +97,7 @@ raw_stream = (
 Spark는 Kafka 토픽 `news_topic`을 구독하고, 각 메시지의 `value`를 JSON 문자열로 읽어 기사 스키마로 파싱한다.
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 parsed = (
@@ -134,7 +125,7 @@ parsed = (
 전처리는 `title + summary`를 하나의 분석 문자열로 합친 뒤 `tokenize()` UDF를 적용하는 방식이다.
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
@@ -178,7 +169,7 @@ parsed = (
 추가로 저장 단계는 모두 **staging table → upsert → truncate** 순서로 처리한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```text
 Spark batch
@@ -202,7 +193,7 @@ Spark batch
 #### 처리 전: Kafka 메시지 예시
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```json
 {
@@ -224,10 +215,6 @@ Spark batch
 </details>
 
 #### 전처리 중간 결과 예시
-
-<details>
-<summary>?? ??</summary>
-
 ```text
 article_text
 = "네이버, 생성형 AI 기반 검색 고도화 네이버가 생성형 AI와 LLM 기술을 활용해 검색 품질을 높인다."
@@ -239,14 +226,12 @@ tokenize(article_text)
 = ["네이버", "생성형", "기반", "검색", "고도화", "네이버", "생성형", "기술", "활용", "검색", "품질"]
 ```
 
-</details>
-
 주의할 점은 현재 `clean_text()`가 영문과 숫자를 제거하므로 `AI`, `LLM`, `GPT` 같은 영문 토큰은 직접 남지 않는다.
 
 #### 처리 후: 기사별 키워드 예시
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```json
 {
@@ -263,7 +248,7 @@ tokenize(article_text)
 #### 처리 후: 10분 윈도우 트렌드 예시
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```json
 {
@@ -281,7 +266,7 @@ tokenize(article_text)
 #### 처리 후: 연관 키워드 예시
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```json
 {
@@ -396,7 +381,7 @@ tokenize(article_text)
 Spark 실행 시 아래 패키지를 함께 로드한다.
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```bash
 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4
@@ -423,7 +408,7 @@ Spark 실행 시 아래 패키지를 함께 로드한다.
 Spark 처리 잡 실행 엔트리포인트는 [`scripts/run_processing.py`](../scripts/run_processing.py) 이다.
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 from news_trend_pipeline.processing.spark_job import run_streaming_job
@@ -436,32 +421,20 @@ if __name__ == "__main__":
 
 ### 5-2. 로컬/단일 노드 실행 예시
 
-<details>
-<summary>?? ??</summary>
-
 ```bash
 python scripts/run_processing.py
 ```
-
-</details>
 
 이 경우 `SPARK_MASTER=local[*]` 설정으로 로컬 Spark에서 동작한다.
 
 ### 5-3. Docker Compose 기반 실행 예시
 
-<details>
-<summary>?? ??</summary>
 
 ```bash
 docker compose up -d
 ```
 
-</details>
-
 `spark-streaming` 서비스가 자동으로 아래 명령을 수행한다.
-
-<details>
-<summary>?? ??</summary>
 
 ```bash
 /opt/spark/bin/spark-submit \
@@ -471,14 +444,9 @@ docker compose up -d
   /opt/news-trend-pipeline/scripts/run_processing.py
 ```
 
-</details>
-
 ### 5-4. 핵심 실행 코드
 
 #### Kafka 읽기 + 전처리
-
-<details>
-<summary>??</summary>
 
 ```python
 parsed = (
@@ -495,12 +463,10 @@ parsed = (
 )
 ```
 
-</details>
-
 #### JDBC staging write
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
@@ -512,7 +478,7 @@ def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
 #### 기사 원문 upsert
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 _jdbc_write(
@@ -529,7 +495,7 @@ upsert_from_staging_news_raw()
 #### 키워드 트렌드 집계
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 keyword_trends = (
@@ -547,7 +513,7 @@ keyword_trends = (
 #### 연관 키워드 집계
 
 <details>
-<summary>??</summary>
+<summary>코드</summary>
 
 ```python
 representative_keywords = (

@@ -225,7 +225,7 @@
 즉, "전체 쿼리 성공률"과 "수집 시간"을 함께 고려하면 현재 운영 기본값은 다음 조합이 가장 균형이 좋습니다.
 
 <details>
-<summary>?? ??</summary>
+<summary>코드</summary>
 
 ```env
 NAVER_MAX_WORKERS=4
