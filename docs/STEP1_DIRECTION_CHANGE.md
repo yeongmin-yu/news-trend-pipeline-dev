@@ -165,11 +165,87 @@
 - `frontend/src/data.ts`, `frontend/src/app.tsx`
   - 프론트 도메인 선택값을 실제 API 요청에 전달
 
-## 6. 후속 권장 작업
+## 6. Naver 호출 텀 조정 및 운영 기준값
 
-- 관리자 화면에서 `query_keywords`를 편집하는 API/UI 추가
-- 도메인별 수집 품질 지표
-  - 쿼리별 기사 수
-  - 중복률
-  - 무효 키워드 탐지
-- 글로벌 뉴스 소스 추가 시 `provider + domain` 확장 구조 유지
+멀티 도메인 확장 이후 Naver 수집은 `4개 도메인 x 20개 쿼리 = 총 80개 쿼리`를 주기적으로 호출합니다.  
+이 구조에서는 "워커 수"만으로 제어하면 특정 시점에 요청이 몰려 `429 Too Many Requests`가 다시 발생할 수 있어, 이번 개편에서는 다음 3개 파라미터를 함께 제어하도록 변경했습니다.
+
+- `NAVER_MAX_WORKERS`
+- `NAVER_PAGE_REQUEST_DELAY_SECONDS`
+- `NAVER_QUERY_STAGGER_SECONDS`
+
+### 6-1. 파라미터 의미
+
+- `NAVER_MAX_WORKERS`
+  - 동시에 실행할 쿼리 작업 수.
+  - 값이 너무 크면 서로 다른 키워드가 한꺼번에 시작되며 rate limit에 걸릴 가능성이 커집니다.
+- `NAVER_PAGE_REQUEST_DELAY_SECONDS`
+  - 같은 키워드 안에서 `page 1 -> page 2 -> page 3` 호출 사이에 두는 대기 시간입니다.
+  - 한 키워드가 짧은 시간 안에 연속 호출되는 것을 막아줍니다.
+- `NAVER_QUERY_STAGGER_SECONDS`
+  - 병렬 워커에 작업을 던질 때 키워드별 시작 시점을 조금씩 밀어주는 간격입니다.
+  - 예를 들어 `0.15`면 1번째 쿼리는 즉시, 2번째는 0.15초 후, 3번째는 0.30초 후에 시작합니다.
+
+즉, 이번 조정은 단순히 "워커를 줄였다"가 아니라, "워커 수 + 쿼리 시작 시점 + 페이지 간격"을 같이 조정해 요청 버스트를 완화한 것입니다.
+
+### 6-2. 코드 반영 위치
+
+- `src/news_trend_pipeline/core/config.py`
+  - `naver_page_request_delay_seconds`
+  - `naver_query_stagger_seconds`
+  - `.env` 값이 컨테이너 환경변수를 덮어쓸 수 있도록 `load_dotenv(..., override=True)` 적용
+- `src/news_trend_pipeline/ingestion/api_client.py`
+  - `fetch_news_parallel()`에 쿼리별 stagger 적용
+  - `fetch_news()` 내부 page loop에 configurable delay 적용
+- `src/news_trend_pipeline/ingestion/producer.py`
+  - 비정상 기사 1건 때문에 전체 producer cycle이 실패하지 않도록 dead letter 처리 보강
+- `.env`
+  - 운영 기본값 반영
+- `docker-compose.yml`
+  - `api-server`, `spark-streaming`, Airflow 서비스에 동일한 throttle 환경변수 주입
+
+### 6-3. 테스트 결과
+
+동일한 80개 활성 쿼리를 대상으로 실제 Naver 호출을 수행해 비교했습니다.
+
+| 설정 | 결과 | 소요 시간 | 판단 |
+| --- | --- | ---: | --- |
+| `workers=8, stagger=0.0, page_delay=0.5` | `ok=8, fail=72` | 약 0.68초 | 너무 공격적, 운영 불가 |
+| `workers=4, stagger=0.25, page_delay=0.75` | `ok=80, fail=0` | 약 209.57초 | 안정적이지만 다소 느림 |
+| `workers=2, stagger=0.5, page_delay=1.0` | `ok=79, fail=1` | 약 812.41초 | 지나치게 느림 |
+| `workers=3, stagger=0.2, page_delay=0.75` | `ok=80, fail=0` | 약 227.88초 | 안정적이나 현재 추천값보다 느림 |
+| `workers=4, stagger=0.15, page_delay=0.75` | `ok=80, fail=0` | 약 129.36초 | 현재 기준 최적값 |
+
+추가로 실제 producer 전체 cycle도 동일 조건으로 검증했습니다.
+
+- `ok_queries=80`
+- `failed_queries=0`
+- `published=18416`
+
+즉, "전체 쿼리 성공률"과 "수집 시간"을 함께 고려하면 현재 운영 기본값은 다음 조합이 가장 균형이 좋습니다.
+
+```env
+NAVER_MAX_WORKERS=4
+NAVER_PAGE_REQUEST_DELAY_SECONDS=0.75
+NAVER_QUERY_STAGGER_SECONDS=0.15
+```
+
+### 6-4. 최종 운영 권장값
+
+현재 프로젝트의 기본값은 아래처럼 유지하는 것을 권장합니다.
+
+- `NAVER_MAX_WORKERS=4`
+- `NAVER_PAGE_REQUEST_DELAY_SECONDS=0.75`
+- `NAVER_QUERY_STAGGER_SECONDS=0.15`
+
+선정 이유는 다음과 같습니다.
+
+- 80개 쿼리 전체가 실패 없이 끝났습니다.
+- 약 2분 남짓한 수준으로, 15분 주기 수집에 충분히 들어옵니다.
+- `workers=8`처럼 버스트가 커지지 않아 향후 rate limit 변동에도 상대적으로 안전합니다.
+- `workers=2~3`보다 운영 지연이 적습니다.
+
+
+### 6-6. 일부 기사에서 `title`이 비어 있는 비정상 payload가 발견
+
+이런 1건이 producer cycle 전체를 실패시킬 수 있었는데, 지금은 해당 레코드만 dead letter로 적재하고 나머지 수집은 계속 진행합니다.
