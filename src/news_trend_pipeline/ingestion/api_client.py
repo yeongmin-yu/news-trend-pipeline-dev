@@ -18,11 +18,6 @@ from news_trend_pipeline.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Naver 검색 API는 초당 호출 제한이 있어, 동일 키워드의 페이지네이션 호출 사이에
-# 짧은 지연을 두어 429(Too Many Requests)를 예방합니다.
-_NAVER_PAGE_REQUEST_DELAY_SECONDS = 0.5
-
-
 # fetch_news() 반환 타입: (수집된 기사 목록, ok 플래그).
 #   ok=True  → 모든 페이지를 예외 없이 순회 완료(조기 중단 포함, 정상 종료).
 #   ok=False → 페이지네이션 중 네트워크/HTTP/파싱 오류 발생.
@@ -102,10 +97,10 @@ class NaverNewsClient(BaseNewsClient):
         )
 
         for page_index, start in enumerate(start_positions):
-            # 첫 페이지는 즉시 호출, 두 번째 페이지부터 0.5초 지연 후 호출.
+            # 첫 페이지는 즉시 호출, 두 번째 페이지부터 설정된 지연 후 호출.
             # `break`로 조기 중단되는 경우 남은 sleep이 없도록 요청 직전에 대기합니다.
             if page_index > 0:
-                time.sleep(_NAVER_PAGE_REQUEST_DELAY_SECONDS)
+                time.sleep(settings.naver_page_request_delay_seconds)
             try:
                 payload = self._request_news(query=effective_query, display=display, start=start)
             except requests.HTTPError as exc:
@@ -248,14 +243,22 @@ class NaverNewsClient(BaseNewsClient):
         results: dict[str, FetchResult] = {keyword: ([], False) for keyword in keyword_list}
 
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            future_to_query = {
-                executor.submit(
-                    self.fetch_news,
+            def _fetch_with_stagger(keyword: str, start_delay: float) -> FetchResult:
+                if start_delay > 0:
+                    time.sleep(start_delay)
+                return self.fetch_news(
                     keyword,
                     timestamp_map[keyword],
                     page_size,
+                )
+
+            future_to_query = {
+                executor.submit(
+                    _fetch_with_stagger,
+                    keyword,
+                    index * settings.naver_query_stagger_seconds,
                 ): keyword
-                for keyword in keyword_list
+                for index, keyword in enumerate(keyword_list)
             }
             for future in as_completed(future_to_query):
                 keyword = future_to_query[future]

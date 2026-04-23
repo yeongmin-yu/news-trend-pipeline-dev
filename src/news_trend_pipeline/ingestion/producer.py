@@ -35,12 +35,15 @@ def _make_dead_letter_record(
     reason: str,
     attempt: int = 1,
 ) -> dict[str, Any]:
-    normalized = article if isinstance(article, NormalizedNewsArticle) else NormalizedNewsArticle.from_dict(article)
+    if isinstance(article, NormalizedNewsArticle):
+        payload = article.to_dict(include_internal=True)
+    else:
+        payload = dict(article)
     return {
         "failed_at": utc_now_iso(),
         "reason": reason,
         "attempt": attempt,
-        "payload": normalized.to_dict(include_internal=True),
+        "payload": payload,
     }
 
 
@@ -146,7 +149,11 @@ class NewsKafkaProducer:
         return article.get("url") or article.get("provider", "unknown")
 
     def _publish(self, article: dict[str, Any]) -> bool:
-        message = build_message(article)
+        try:
+            message = build_message(article)
+        except ValueError as exc:
+            self._append_dead_letter(article, f"validation_error: {exc}")
+            return False
         partition_key = self._resolve_partition_key(article)
         on_success, on_error = self._make_callbacks(article)
         try:

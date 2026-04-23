@@ -280,6 +280,8 @@ CREATE TABLE IF NOT EXISTS stg_news_raw (
     published_at TIMESTAMPTZ,
     ingested_at  TIMESTAMPTZ
 );
+ALTER TABLE stg_news_raw ADD COLUMN IF NOT EXISTS domain VARCHAR(50);
+ALTER TABLE stg_news_raw ADD COLUMN IF NOT EXISTS query VARCHAR(100);
 
 CREATE TABLE IF NOT EXISTS stg_keywords (
     article_provider  VARCHAR(50),
@@ -289,6 +291,7 @@ CREATE TABLE IF NOT EXISTS stg_keywords (
     keyword_count     INTEGER,
     processed_at      TIMESTAMPTZ
 );
+ALTER TABLE stg_keywords ADD COLUMN IF NOT EXISTS article_domain VARCHAR(50);
 
 CREATE TABLE IF NOT EXISTS stg_keyword_trends (
     provider      VARCHAR(50),
@@ -299,6 +302,7 @@ CREATE TABLE IF NOT EXISTS stg_keyword_trends (
     keyword_count INTEGER,
     processed_at  TIMESTAMPTZ
 );
+ALTER TABLE stg_keyword_trends ADD COLUMN IF NOT EXISTS domain VARCHAR(50);
 
 CREATE TABLE IF NOT EXISTS stg_keyword_relations (
     provider            VARCHAR(50),
@@ -310,3 +314,4 @@ CREATE TABLE IF NOT EXISTS stg_keyword_relations (
     cooccurrence_count  INTEGER,
     processed_at        TIMESTAMPTZ
 );
+ALTER TABLE stg_keyword_relations ADD COLUMN IF NOT EXISTS domain VARCHAR(50);

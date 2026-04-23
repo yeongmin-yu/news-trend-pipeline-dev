@@ -567,9 +567,34 @@ def upsert_from_staging_news_raw() -> None:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
+                WITH ranked AS (
+                    SELECT
+                        COALESCE(provider, 'naver') AS provider,
+                        COALESCE(domain, 'ai_tech') AS domain,
+                        query,
+                        source,
+                        title,
+                        summary,
+                        url,
+                        published_at,
+                        COALESCE(ingested_at, NOW()) AS ingested_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY
+                                COALESCE(provider, 'naver'),
+                                COALESCE(domain, 'ai_tech'),
+                                url
+                            ORDER BY
+                                COALESCE(ingested_at, NOW()) DESC,
+                                published_at DESC NULLS LAST,
+                                title DESC NULLS LAST
+                        ) AS row_rank
+                    FROM stg_news_raw
+                    WHERE url IS NOT NULL
+                )
                 INSERT INTO news_raw (provider, domain, query, source, title, summary, url, published_at, ingested_at)
                 SELECT provider, domain, query, source, title, summary, url, published_at, ingested_at
-                FROM stg_news_raw
+                FROM ranked
+                WHERE row_rank = 1
                 ON CONFLICT (provider, domain, url) DO UPDATE SET
                     query = EXCLUDED.query,
                     source = EXCLUDED.source,
@@ -589,8 +614,8 @@ def upsert_from_staging_keywords() -> None:
                 """
                 WITH dedup AS (
                     SELECT
-                        article_provider,
-                        article_domain,
+                        COALESCE(article_provider, 'naver') AS article_provider,
+                        COALESCE(article_domain, 'ai_tech') AS article_domain,
                         article_url,
                         keyword,
                         MAX(keyword_count) AS keyword_count,
@@ -617,8 +642,8 @@ def upsert_from_staging_keyword_trends() -> None:
                 """
                 WITH dedup AS (
                     SELECT
-                        provider,
-                        domain,
+                        COALESCE(provider, 'naver') AS provider,
+                        COALESCE(domain, 'ai_tech') AS domain,
                         window_start,
                         window_end,
                         keyword,
@@ -646,8 +671,8 @@ def upsert_from_staging_keyword_relations() -> None:
                 """
                 WITH dedup AS (
                     SELECT
-                        provider,
-                        domain,
+                        COALESCE(provider, 'naver') AS provider,
+                        COALESCE(domain, 'ai_tech') AS domain,
                         window_start,
                         window_end,
                         keyword_a,

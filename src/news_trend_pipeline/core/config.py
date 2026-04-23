@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parents[3]
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 
 def _parse_csv(raw: str) -> tuple[str, ...]:
@@ -56,7 +56,9 @@ class Settings:
     naver_news_display: int = int(os.getenv("NAVER_NEWS_DISPLAY", "100"))
     naver_news_sort: str = os.getenv("NAVER_NEWS_SORT", "date")
     naver_news_max_pages: int = int(os.getenv("NAVER_NEWS_MAX_PAGES", "3"))
-    naver_max_workers: int = int(os.getenv("NAVER_MAX_WORKERS", "8"))
+    naver_max_workers: int = int(os.getenv("NAVER_MAX_WORKERS", "4"))
+    naver_page_request_delay_seconds: float = float(os.getenv("NAVER_PAGE_REQUEST_DELAY_SECONDS", "0.75"))
+    naver_query_stagger_seconds: float = float(os.getenv("NAVER_QUERY_STAGGER_SECONDS", "0.15"))
 
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "news_topic")

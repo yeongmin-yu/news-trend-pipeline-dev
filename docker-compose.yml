@@ -29,6 +29,9 @@ x-airflow-common:
     SPARK_MASTER: spark://spark-master:7077
     SPARK_APP_NAME: ${SPARK_APP_NAME:-news-trend-pipeline}
     SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+    NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
+    NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
+    NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
   volumes:
     - ./src:/opt/news-trend-pipeline/src
     - ./runtime/state:/opt/news-trend-pipeline/runtime/state
@@ -128,6 +131,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PYTHONPATH: /app/src
+      NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
+      NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
+      NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
     depends_on:
       app-postgres:
         condition: service_healthy
@@ -252,6 +258,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SPARK_MASTER: spark://spark-master:7077
       SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+      NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
+      NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
+      NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
     command: >
       bash -lc "mkdir -p /tmp/.ivy2 /opt/news-trend-pipeline/runtime/checkpoints /tmp/spark-events &&
       /opt/spark/bin/spark-submit
