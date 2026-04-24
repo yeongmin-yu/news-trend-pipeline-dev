@@ -149,14 +149,18 @@ services:
       - dev-network
 
   frontend-server:
-    build:
-      context: .
-      dockerfile: infra/frontend/Dockerfile.frontend
+    image: node:20-alpine
     restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -lc "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     depends_on:
       - api-server
     ports:
-      - "3000:80"
+      - "3000:5173"
+    volumes:
+      - ./src/dashboard:/app
+      - frontend-node-modules:/app/node_modules
     networks:
       - dev-network
 
@@ -376,3 +380,4 @@ networks:
 volumes:
   app-postgres-data:
   airflow-postgres-data:
+  frontend-node-modules:

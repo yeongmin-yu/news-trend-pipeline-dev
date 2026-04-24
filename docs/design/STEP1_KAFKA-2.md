@@ -30,9 +30,6 @@
 
 ## 2. 변경된 파이프라인 구성도
 
-<details>
-<summary>????? ??</summary>
-
 ```mermaid
 flowchart LR
     A["Airflow Scheduler"] --> B["news_ingest_dag"]
@@ -53,8 +50,6 @@ flowchart LR
     R -->|성공| G
     R -->|영구실패| I["수동 개입 필요"]
 ```
-
-</details>
 
 기존 파이프라인과의 차이는 다음과 같습니다.
 
@@ -86,9 +81,6 @@ flowchart LR
 - `NewsAPIClient` 클래스 전체 제거.
 - `NaverNewsClient`에 병렬 수집 메서드 추가:
 
-<details>
-<summary>??</summary>
-
 ```python
 def fetch_news_parallel(
     self,
@@ -99,8 +91,6 @@ def fetch_news_parallel(
 ) -> list[dict[str, Any]]:
     """테마 키워드 집합에 대해 ThreadPoolExecutor로 병렬 API 호출."""
 ```
-
-</details>
 
 - 수집된 각 기사에 `_query` 내부 필드를 붙여 **"이 기사가 어떤 키워드로 수집되었는지"**를 전파합니다. 최종 Kafka 메시지에는 `metadata.query` 로 옮겨지고, 원본 `_query`는 제거됩니다 (underscore prefix 규약으로 외부 노출 방지).
 - 중복 제거는 `provider::url` 기준으로 집합 전체에 대해 1회 수행합니다. 여러 키워드에서 동일 기사가 잡히는 경우에도 메시지는 1회만 발행됩니다.
@@ -163,15 +153,14 @@ def fetch_news_parallel(
 
 테마 키워드 "GPT"로 수집된 기사의 최종 Kafka payload 예시입니다.
 
-<details>
-<summary>?? ??</summary>
-
 ```json
 {
   "provider": "naver",
   "source": "it.chosun.com",
+  "author": null,
   "title": "OpenAI, 차세대 GPT 모델 공개",
-  "summary": "OpenAI가 차세대 GPT 모델을 공개하고…",
+  "description": "OpenAI가 차세대 GPT 모델을 공개하고…",
+  "content": "OpenAI가 차세대 GPT 모델을 공개하고…",
   "url": "https://it.chosun.com/site/data/html_dir/2026/04/20/2026042000123.html",
   "published_at": "2026-04-20T09:15:00+00:00",
   "ingested_at": "2026-04-20T09:20:03+00:00",
@@ -183,22 +172,85 @@ def fetch_news_parallel(
 }
 ```
 
-</details>
-
 `metadata.query` 필드는 이제 **이 기사가 실제로 수집된 테마 키워드**를 담습니다.
 
-현재 Naver 단일 소스 기준 canonical 기사 스키마는 아래와 같습니다.
+---
 
-- `provider`
-- `source`
-- `title`
-- `summary`
-- `url`
-- `published_at`
-- `ingested_at`
-- `metadata.source`
-- `metadata.version`
-- `metadata.query`
+## 6. 기존 문서와의 연결
+
+- 기본 수집 흐름, Dead Letter 처리, 자동 재처리(`auto_replay_dag`), `consumer_check.py` 사용법 등 변경되지 않은 부분은 [STEP1_KAFKA.md](./STEP1_KAFKA.md) 를 계속 참조합니다.
+- 장애 대응 및 복구 절차는 [DISASTER_RECOVERY.md](./DISASTER_RECOVERY.md) 를 참조합니다.
+- 도메인(테마) 기반 수집의 배경과 키워드 풀은 [DIRECTION.md](./DIRECTION.md) 를 참조합니다.
+
+---
+
+## 7. 프로젝트 구조 리팩토링 (src layout)
+
+앞 절의 코드 변경과 함께, 이후 단계(Spark 집계/Analytics/API/Dashboard)를 고려해 프로젝트 구조를 src layout으로 정리했습니다. 본 절은 `news-trend-pipeline-v2/` 디렉토리에 반영된 내용을 정리한 기록입니다.
+
+### 7-1. 변경 목적
+
+- 단일 `common/`, `ingestion/` 최상위 모듈을 유지하면 이후 `processing/`, `analytics/`, `api/`, `dashboard/` 추가 시 루트에 평평하게 쌓이게 됩니다.
+- 패키지 경계를 `src/news_trend_pipeline/` 한 곳으로 모아 **import 경로를 `news_trend_pipeline.*` 로 통일**하고, 테스트/외부 스크립트에서 같은 방식으로 접근하도록 정리했습니다.
+- Airflow 설정, Docker 이미지, 런타임 산출물(state/logs)이 코드와 섞여 있던 문제를 **`infra/`, `runtime/` 로 분리**해 운영 환경과 개발 환경 모두에서 파일 성격을 명확히 했습니다.
+- `pyproject.toml` 을 도입해 `pip install -e .` 로 editable install이 가능하도록 했습니다.
+
+### 7-2. 디렉토리 이동 표
+
+| 기존 경로 | 새 경로 | 비고 |
+| --- | --- | --- |
+| `common/` | `src/news_trend_pipeline/core/` | import: `from news_trend_pipeline.core.config import settings` |
+| `ingestion/` | `src/news_trend_pipeline/ingestion/` | import: `from news_trend_pipeline.ingestion.producer import ...` |
+| — | `src/news_trend_pipeline/{processing,analytics,api,dashboard}/` | 빈 패키지 placeholder (`__init__.py`) |
+| `batch/dags/` | `airflow/dags/` | `batch/` 네임스페이스 제거, Airflow 전용 최상위 디렉토리로 분리 |
+| `airflow-docker/Dockerfile.airflow` | `infra/airflow/Dockerfile.airflow` | Docker 이미지 관련 산출물을 infra 아래로 이동 |
+| `airflow-docker/config/` | `infra/airflow/config/` | `airflow.cfg` |
+| `airflow-docker/plugins/` | `infra/airflow/plugins/` | |
+| `airflow-docker/logs/` | `runtime/logs/` | 런타임 산출물은 `runtime/` 로 일원화 |
+| `state/` | `runtime/state/` | dead_letter.jsonl, last_timestamp.json 등 |
+| `scripts/` | `scripts/` | 경로 유지, 내부 sys.path를 `src/` 로 변경 |
+
+### 7-3. 코드/설정 변경 포인트
+
+- **`src/news_trend_pipeline/core/config.py`**
+  - `BASE_DIR = Path(__file__).resolve().parents[3]` — src layout에 맞춰 `core → news_trend_pipeline → src → <project root>` 로 3단계 위를 가리킵니다.
+  - `state_dir` 기본값을 `BASE_DIR / "runtime" / "state"` 로 변경.
+- **`src/news_trend_pipeline/ingestion/*.py`**
+  - 모든 `from common.*` → `from news_trend_pipeline.core.*`.
+  - `from ingestion.*` → `from news_trend_pipeline.ingestion.*`.
+- **`airflow/dags/news_ingest_dag.py`, `airflow/dags/auto_replay_dag.py`**
+  - 각 Task 함수 안에서 `sys.path`에 **프로젝트 루트가 아닌 `<project_root>/src`** 를 추가합니다 (`_ensure_src_on_syspath` 헬퍼).
+  - import를 `news_trend_pipeline.*` 로 갱신.
+  - `auto_replay_dag`의 replay 호출을 `python ingestion/replay.py` 대신 **`python -m news_trend_pipeline.ingestion.replay`** 모듈 실행으로 변경하고, `PYTHONPATH`에 `src/` 를 주입합니다.
+- **`scripts/consumer_check.py`**
+  - `PROJECT_ROOT / "src"` 를 sys.path 앞에 삽입.
+  - `from common.config` → `from news_trend_pipeline.core.config`.
+- **`docker-compose.yml`**
+  - `build.dockerfile: airflow-docker/...` → `infra/airflow/Dockerfile.airflow`.
+  - `PYTHONPATH: /opt/news-trend-pipeline` → `/opt/news-trend-pipeline/src`.
+  - `STATE_DIR=/opt/news-trend-pipeline/runtime/state` 환경변수 추가.
+  - volume 매핑:
+    - `./batch/dags → /opt/airflow/dags` → `./airflow/dags → /opt/airflow/dags`
+    - `./airflow-docker/logs → /opt/airflow/logs` → `./runtime/logs → /opt/airflow/logs`
+    - `./airflow-docker/config → /opt/airflow/config` → `./infra/airflow/config → /opt/airflow/config`
+    - `./airflow-docker/plugins → /opt/airflow/plugins` → `./infra/airflow/plugins → /opt/airflow/plugins`
+- **`pyproject.toml`** 신규 생성 — setuptools src layout (`where = ["src"]`, `include = ["news_trend_pipeline*"]`).
+- **`.env` / `.env.example`**
+  - `STATE_DIR=/opt/news-trend-pipeline/state` → `.../runtime/state`.
+  - `.env.example`의 로컬 기본값도 `./runtime/state` 로 변경.
+- **`.gitignore` / `.dockerignore`**
+  - 기존 `state/`, `airflow-docker/logs/` 제외 규칙을 `runtime/state/*`, `runtime/logs/*` 로 교체.
+  - `build/`, `dist/`, `*.egg-info/` 등 packaging 산출물 제외 규칙 추가.
+
+### 7-4. 이후 단계 연동
+
+- Spark 집계(`processing/`), 이벤트 분석(`analytics/`), API(`api/`), 대시보드(`dashboard/`) 모두 동일한 패키지 규약(`news_trend_pipeline.<subpackage>`) 으로 붙이기만 하면 됩니다.
+- 테스트는 `tests/unit`, `tests/integration` 에 위치시키고, `pip install -e .[dev]` 로 pytest 환경을 준비합니다.
+- Airflow DAG 파일을 늘릴 때도 `airflow/dags/` 한 곳에서만 관리되고, 패키지 코드와 분리되어 있어 DAG 로딩 시 무거운 import가 발생하지 않습니다.
+
+### 7-5. 마이그레이션 메모
+
+기존 `news-trend-pipeline-dev/` 에 있던 런타임 state 파일(`state/last_timestamp.json`, `state/dead_letter*.jsonl` 등)은 **`runtime/state/`** 아래로 그대로 옮기면 기존 증분 수집 커서와 Dead Letter 기록을 이어서 사용할 수 있습니다. `airflow-docker/logs/` 의 과거 DAG 로그를 보존하고 싶다면 `runtime/logs/` 로 옮겨주세요.
 
 ---
 
@@ -241,15 +293,11 @@ def fetch_news_parallel(
 
 3. **예외 분류**: 페이지 루프에서 `HTTPError`, `(Timeout, ConnectionError)`, `ValueError` 를 각각 분기해 의미 있는 로그를 남기고 모두 `ok=False` 로 정규화.
 4. **페이지 간 지연**: 요청 **직전** 에 `time.sleep(0.5)` 를 걸어 429 를 예방(첫 페이지는 대기 없음, `break` 이후 잔여 대기 없음).
-
 ### 8-3. 상태 파일 포맷 변경 (구 포맷 제거)
 
 `runtime/state/producer_state.json` 의 구조는 다음과 같이 바뀝니다.
 
 변경 전:
-
-<details>
-<summary>?? ??</summary>
 
 ```json
 {
@@ -262,12 +310,7 @@ def fetch_news_parallel(
 }
 ```
 
-</details>
-
 변경 후:
-
-<details>
-<summary>?? ??</summary>
 
 ```json
 {
@@ -283,8 +326,6 @@ def fetch_news_parallel(
   }
 }
 ```
-
-</details>
 
 - `last_timestamp` 필드는 **영구히 삭제**됩니다. 다음 `save_state()` 부터 구키는 파일에 존재하지 않습니다.
 - `published_urls` 는 여전히 프로바이더 단위 공유입니다. 여러 키워드에서 동일 기사가 잡혀도 한 번만 발행되도록 하는 Layer 2 역할이라 유지됩니다.
@@ -307,9 +348,6 @@ def fetch_news_parallel(
 
 `run_once()` 의 루프가 다음과 같이 바뀝니다.
 
-<details>
-<summary>?? ??</summary>
-
 ```text
 for keyword, (articles, ok) in results.items():
     for article in articles:
@@ -321,8 +359,6 @@ for keyword, (articles, ok) in results.items():
         # 체크포인트 유지 — 다음 실행에서 동일 from_timestamp 로 재시도
         logger.warning("[%s] 키워드 %r 부분실패/오류 — 체크포인트 유지", ...)
 ```
-
-</details>
 
 핵심은 **부분 수집분도 그대로 발행**되지만 체크포인트는 유지된다는 점입니다. 다음 실행이 같은 `from_timestamp` 로 재수집하더라도 `published_urls` Set(Layer 2) 가 이미 발행한 URL을 걸러주므로 **중복 발행이 일어나지 않습니다**. 즉, "부분 성공은 재시도하되 이중 발행은 없다" 는 멱등성이 확보됩니다.
 
@@ -363,5 +399,3 @@ for keyword, (articles, ok) in results.items():
 - **Naver 이외의 프로바이더를 추가할 때**: `fetch_news()` 가 반환하는 `ok` 값을 반드시 채워야 합니다(정상 완료 `True`, 일부 실패 `False`). 이를 안 지키면 문제 (A) 와 동일한 유실 경로가 재현됩니다.
 - **부분 실패가 지속되는 키워드**: 체크포인트가 전진하지 않으므로 같은 범위를 매 run 재조회합니다. `published_urls` 로 중복 발행은 막히지만 API 호출량은 증가하므로, 해당 키워드의 장애 원인(키 만료, 쿼리 문법 문제 등)을 로그로 조기에 포착해야 합니다. `WARNING | [naver] 키워드 %r 부분실패/오류` 라인이 반복되면 경보 조건으로 삼는 것을 권장합니다.
 - **`published_urls` 용량**: 지금은 `[-1000:]` 로 최근 1000개를 유지합니다. 키워드별 체크포인트로 재시도 주기가 짧아지므로 이 용량이 좁아 보이면 상향을 검토하세요 (예: 키워드 수 × 최근 수집량).
----
-

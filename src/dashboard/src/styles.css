@@ -14,18 +14,18 @@
   --text-3: #7a8394;
   --text-4: #535b6b;
   --muted: #39414f;
-  --accent: #5eead4;
-  --accent-2: #22d3ee;
-  --accent-3: #0ea5e9;
-  --accent-weak: #0b3a3a;
+  --accent: #8b5cf6;
+  --accent-2: #6366f1;
+  --accent-3: #4f46e5;
+  --accent-weak: #20163d;
   --up: #34d399;
   --up-weak: #0d2a22;
   --down: #f87171;
   --down-weak: #2a1212;
-  --warn: #fbbf24;
+  --warn: #f59e0b;
   --info: #60a5fa;
-  --spike: #f472b6;
-  --spike-weak: #2a1424;
+  --spike: #ef4444;
+  --spike-weak: #341212;
   --radius-sm: 4px;
   --radius: 6px;
   --radius-lg: 10px;
@@ -53,18 +53,18 @@
   --text-3: #64748b;
   --text-4: #94a3b8;
   --muted: #cbd5e1;
-  --accent: #0d9488;
-  --accent-2: #0891b2;
-  --accent-3: #0369a1;
-  --accent-weak: #ccfbf1;
+  --accent: #7c3aed;
+  --accent-2: #4f46e5;
+  --accent-3: #4338ca;
+  --accent-weak: #ede9fe;
   --up: #059669;
   --up-weak: #d1fae5;
   --down: #dc2626;
   --down-weak: #fee2e2;
-  --warn: #d97706;
+  --warn: #ea580c;
   --info: #2563eb;
-  --spike: #db2777;
-  --spike-weak: #fce7f3;
+  --spike: #dc2626;
+  --spike-weak: #fee2e2;
 }
 
 * {
@@ -461,6 +461,30 @@ input {
   flex: 1;
 }
 
+.side-control {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.side-control:first-of-type {
+  margin-top: 4px;
+}
+
+.side-control-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.side-control input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--spike);
+}
+
 .dot,
 .spike-dot,
 .src-dot {
@@ -732,12 +756,26 @@ input {
 
 .bar-row {
   display: grid;
-  grid-template-columns: 18px minmax(110px, 1.2fr) minmax(0, 2fr) 60px 60px;
+  grid-template-columns: 20px 18px minmax(110px, 1.2fr) minmax(0, 2fr) 60px 60px;
   align-items: center;
   gap: 10px;
   padding: 4px 10px;
   border-bottom: 1px solid var(--divider);
   height: 28px;
+  cursor: pointer;
+}
+
+.bar-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.bar-check input {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -758,12 +796,12 @@ input {
 
 .bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent-3));
+  background: var(--accent);
   border-radius: 2px;
 }
 
 .bar-row.is-spike .bar-fill {
-  background: linear-gradient(90deg, var(--spike), #a855f7);
+  background: linear-gradient(90deg, var(--spike), #fb7185);
 }
 
 .rank,
@@ -987,7 +1025,7 @@ input {
 .score-bar > span {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, var(--spike), #a855f7);
+  background: linear-gradient(90deg, var(--spike), #fb7185);
   border-radius: 2px;
 }
 

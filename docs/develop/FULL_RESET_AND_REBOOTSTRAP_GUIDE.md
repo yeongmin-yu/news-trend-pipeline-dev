@@ -2,10 +2,6 @@
 
 이 문서는 `news-trend-pipeline-v2`를 **완전히 초기화한 뒤 새 스키마 기준으로 다시 올리는 절차**를 정리한 운영 메모다.
 
-현재 기준에서 전체 초기화가 필요한 대표 상황은 아래와 같다.
-
-- Spark checkpoint가 이전 메시지 스키마를 기억하고 있는 경우
-- Kafka / PostgreSQL / Airflow 상태를 모두 버리고 처음부터 다시 시작하고 싶은 경우
 
 ## 초기화 대상
 
@@ -43,25 +39,15 @@
 
 프로젝트 루트:
 
-<details>
-<summary>?? ??</summary>
-
 ```powershell
 cd C:\Project\news-trend-pipeline-v2
 ```
 
-</details>
-
 ### 1. 컨테이너 및 볼륨 전체 제거
-
-<details>
-<summary>?? ??</summary>
 
 ```powershell
 docker compose down -v --remove-orphans
 ```
-
-</details>
 
 설명:
 
@@ -76,9 +62,6 @@ docker compose down -v --remove-orphans
 
 ### 2. 런타임 디렉터리 비우기
 
-<details>
-<summary>?? ??</summary>
-
 ```powershell
 Remove-Item -LiteralPath .\runtime\checkpoints\* -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath .\runtime\state\* -Recurse -Force -ErrorAction SilentlyContinue
@@ -86,12 +69,7 @@ Remove-Item -LiteralPath .\runtime\spark-events\* -Recurse -Force -ErrorAction S
 Remove-Item -LiteralPath .\runtime\logs\* -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
-</details>
-
 빈 디렉터리 유지가 필요하면 `.gitkeep`를 다시 만들어 둔다.
-
-<details>
-<summary>?? ??</summary>
 
 ```powershell
 New-Item -ItemType File -Path .\runtime\checkpoints\.gitkeep -Force | Out-Null
@@ -100,18 +78,11 @@ New-Item -ItemType File -Path .\runtime\spark-events\.gitkeep -Force | Out-Null
 New-Item -ItemType File -Path .\runtime\logs\.gitkeep -Force | Out-Null
 ```
 
-</details>
-
 ### 3. 이미지 재빌드 포함 재기동
-
-<details>
-<summary>?? ??</summary>
 
 ```powershell
 docker compose up -d --build
 ```
-
-</details>
 
 설명:
 
@@ -123,19 +94,11 @@ docker compose up -d --build
 
 컨테이너 상태:
 
-<details>
-<summary>?? ??</summary>
-
 ```powershell
 docker compose ps
 ```
 
-</details>
-
 주요 로그 확인:
-
-<details>
-<summary>?? ??</summary>
 
 ```powershell
 docker logs -f news-trend-develop-airflow-apiserver-1
@@ -143,23 +106,13 @@ docker logs -f news-trend-develop-spark-streaming-1
 docker logs -f news-trend-develop-kafka-1
 ```
 
-</details>
-
 DB 확인:
-
-<details>
-<summary>?? ??</summary>
 
 ```powershell
 docker exec -it news-trend-develop-app-postgres-1 psql -U postgres -d news_pipeline
 ```
 
-</details>
-
 예시 확인 쿼리:
-
-<details>
-<summary>?? ??</summary>
 
 ```sql
 \d news_raw
@@ -168,8 +121,6 @@ SELECT COUNT(*) FROM keywords;
 SELECT COUNT(*) FROM keyword_trends;
 SELECT COUNT(*) FROM keyword_relations;
 ```
-
-</details>
 
 `news_raw` 컬럼이 아래처럼 보이면 새 스키마가 반영된 것이다.
 
@@ -185,9 +136,6 @@ SELECT COUNT(*) FROM keyword_relations;
 
 아래 순서대로 실행하면 된다.
 
-<details>
-<summary>?? ??</summary>
-
 ```powershell
 cd C:\Project\news-trend-pipeline-v2
 docker compose down -v --remove-orphans
@@ -202,92 +150,6 @@ New-Item -ItemType File -Path .\runtime\logs\.gitkeep -Force | Out-Null
 docker compose up -d --build
 docker compose ps
 ```
-
-</details>
-
-## PowerShell 자동화 스크립트
-
-반복 작업을 줄이기 위해 `scripts/` 아래에 두 가지 PowerShell 스크립트를 제공한다.
-
-### 1. 완전 초기화
-
-- 파일: [reset_full_rebootstrap.ps1](../scripts/reset_full_rebootstrap.ps1)
-- 동작:
-  - `docker compose down -v --remove-orphans`
-  - runtime 디렉터리 정리
-  - 재기동
-  - 사전 테이블 포함 전체 초기화
-
-기본 실행:
-
-<details>
-<summary>?? ??</summary>
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1"
-```
-
-</details>
-
-이미지까지 다시 빌드:
-
-<details>
-<summary>?? ??</summary>
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_full_rebootstrap.ps1" -BuildImages
-```
-
-</details>
-
-### 2. 사전 유지 초기화
-
-- 파일: [reset_keep_dictionary_rebootstrap.ps1](../scripts/reset_keep_dictionary_rebootstrap.ps1)
-- 동작:
-  - `docker compose down --remove-orphans`
-  - `airflow-postgres` 메타데이터만 초기화
-  - runtime 디렉터리 정리
-  - `news_raw`, `keywords`, `keyword_trends`, `keyword_relations`, `stg_*`만 비움
-  - `compound_noun_dict`, `compound_noun_candidates`, `stopword_dict`는 유지
-
-기본 실행:
-
-<details>
-<summary>?? ??</summary>
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1"
-```
-
-</details>
-
-이미지까지 다시 빌드:
-
-<details>
-<summary>?? ??</summary>
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scripts\reset_keep_dictionary_rebootstrap.ps1" -BuildImages
-```
-
-</details>
-
-### 3. `-BuildImages` 옵션 사용 기준
-
-기본 동작은 `docker compose up -d` 이다. 아래 경우에만 `-BuildImages`를 붙인다.
-
-- `infra/spark/Dockerfile.spark` 변경
-- `infra/airflow/Dockerfile.airflow` 변경
-- `requirements/requirements-spark.txt` 변경
-- `requirements/requirements-ingestion.txt` 변경
-
-반대로 아래만 바뀐 경우에는 보통 `-BuildImages` 없이 충분하다.
-
-- `src/`
-- `airflow/dags/`
-- `scripts/`
-- `runtime/`
-- `.env`
 
 ## 문제 상황별 체크포인트
 
@@ -367,14 +229,9 @@ powershell -ExecutionPolicy Bypass -File "C:\Project\news-trend-pipeline-v2\scri
 
 즉, 아래 명령은 **사전까지 포함한 완전 초기화**다.
 
-<details>
-<summary>?? ??</summary>
-
 ```powershell
 docker compose down -v --remove-orphans
 ```
-
-</details>
 
 반대로, 사전을 유지하고 싶다면 `app-postgres-data` 볼륨 삭제는 피하고 아래 항목만 부분 정리해야 한다.
 

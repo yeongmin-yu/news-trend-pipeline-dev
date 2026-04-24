@@ -6,6 +6,9 @@ export function TopKeywords({
   keywords,
   selected,
   onSelect,
+  checkedKeywords,
+  onToggleCheck,
+  barColor,
   limit,
   sortBy = "mentions",
   onLimitChange,
@@ -14,6 +17,9 @@ export function TopKeywords({
   keywords: KeywordSummary[];
   selected: string | null;
   onSelect: (keyword: string) => void;
+  checkedKeywords: string[];
+  onToggleCheck: (keyword: string) => void;
+  barColor: string;
   limit: number;
   sortBy?: "mentions" | "growth";
   onLimitChange?: (n: number) => void;
@@ -78,13 +84,33 @@ export function TopKeywords({
             className={`bar-row${selected === item.keyword ? " is-selected" : ""}${item.spike ? " is-spike" : ""}`}
             onClick={() => onSelect(item.keyword)}
           >
+            <label
+              className="bar-check"
+              onClick={(e) => e.stopPropagation()}
+              title={checkedKeywords.includes(item.keyword) ? "트렌드 비교에서 제외" : "트렌드 비교에 추가"}
+            >
+              <input
+                type="checkbox"
+                checked={checkedKeywords.includes(item.keyword)}
+                disabled={!checkedKeywords.includes(item.keyword) && checkedKeywords.length >= 5}
+                onChange={() => onToggleCheck(item.keyword)}
+              />
+            </label>
             <div className="rank">{String(index + 1).padStart(2, "0")}</div>
             <div className="name">
               {item.spike ? <span className="spike-dot" /> : null}
               {item.keyword}
             </div>
             <div className="bar-wrap">
-              <div className="bar-fill" style={{ width: `${(item.mentions / max) * 100}%` }} />
+              <div
+                className="bar-fill"
+                style={{
+                  width: `${(item.mentions / max) * 100}%`,
+                  background: item.spike
+                    ? "linear-gradient(90deg, var(--spike), #fb7185)"
+                    : barColor,
+                }}
+              />
             </div>
             <div className="val">{fmtNum(item.mentions)}</div>
             <div className={`chg chip ${item.growth >= 0 ? "up" : "down"}`}>{fmtPct(item.growth)}</div>
@@ -369,7 +395,7 @@ export function SpikeHeatmap({
   function cellColor(v: number) {
     if (v < 0.05) return "var(--bg-2)";
     const alpha = 0.15 + v * 0.85;
-    return `rgba(244, 114, 182, ${alpha.toFixed(2)})`;
+    return `rgba(239, 68, 68, ${alpha.toFixed(2)})`;
   }
 
   return (
@@ -473,7 +499,7 @@ export function RelatedNetwork({
             }}
           >
             <circle cx={node.x} cy={node.y} r={node.r} fill="var(--bg-2)" stroke="var(--border-hi)" strokeWidth="1" />
-            <circle cx={node.x} cy={node.y} r={node.r - 3} fill={`rgba(94, 234, 212, ${0.15 + node.weight * 0.35})`} />
+            <circle cx={node.x} cy={node.y} r={node.r - 3} fill={`rgba(139, 92, 246, ${0.15 + node.weight * 0.35})`} />
             <text className="network-node-label" x={node.x} y={node.y - node.r - 4} textAnchor="middle">
               {node.keyword}
             </text>

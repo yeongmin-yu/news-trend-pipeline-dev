@@ -15,6 +15,7 @@ import {
   api,
   type ArticleItem,
   type FiltersResponse,
+  type KeywordSummary,
   type RangeId,
   type RelatedKeyword,
   type SourceId,
@@ -56,6 +57,7 @@ const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
 };
 
 const DOMAIN_COLORS: Record<string, string> = {
+  all: "#a78bfa",
   ai_tech: "#5eead4",
   economy_finance: "#f472b6",
   politics_policy: "#fbbf24",
@@ -118,6 +120,21 @@ function getDomainColor(domainId: string, available: boolean): string {
   return DOMAIN_COLORS[domainId] ?? "var(--accent)";
 }
 
+function getTopKeywordBarColor(domainId: string): string {
+  return DOMAIN_COLORS[domainId] ?? DOMAIN_COLORS.all;
+}
+
+function rankKeywords(items: KeywordSummary[], sortBy: "mentions" | "growth"): KeywordSummary[] {
+  const ranked = [...items];
+  if (sortBy === "growth") ranked.sort((a, b) => (b.growth ?? 0) - (a.growth ?? 0));
+  else ranked.sort((a, b) => b.mentions - a.mentions);
+  return ranked;
+}
+
+function isSpikeKeyword(item: Pick<KeywordSummary, "mentions" | "growth">, minMentions: number, minGrowth: number): boolean {
+  return item.mentions >= minMentions && item.growth >= minGrowth;
+}
+
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
@@ -126,12 +143,16 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
+  const [checkedTrendKeywords, setCheckedTrendKeywords] = useState<string[]>([]);
   const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<string | null>(null);
   const [articleSort, setArticleSort] = useState<"latest" | "relevance">("latest");
   const [relatedView, setRelatedView] = useState<"network" | "bar">("network");
   const [topSort, setTopSort] = useState<"mentions" | "growth">("mentions");
   const [topLimit, setTopLimit] = useState(20);
+  const [trendFetchLimit, setTrendFetchLimit] = useState(20);
+  const [spikeMinMentions, setSpikeMinMentions] = useState(5);
+  const [spikeMinGrowth, setSpikeMinGrowth] = useState(0.4);
   const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -164,18 +185,68 @@ export default function App() {
   const keywords = useAsyncData(() => api.keywords(source, domain, range, search, 30), [source, domain, range, search]);
   const spikes = useAsyncData(() => api.spikes(source, domain, range), [source, domain, range]);
   const system = useAsyncData(() => api.system(), []);
+  const rawKeywords = keywords.data ?? [];
+  const rankedKeywords = useMemo(() => rankKeywords(rawKeywords, topSort), [rawKeywords, topSort]);
+  const displayKeywords = useMemo(
+    () =>
+      rawKeywords.map((item) => ({
+        ...item,
+        spike: isSpikeKeyword(item, spikeMinMentions, spikeMinGrowth),
+      })),
+    [rawKeywords, spikeMinMentions, spikeMinGrowth],
+  );
+  const displayKeywordLookup = useMemo(
+    () => new Map(displayKeywords.map((item) => [item.keyword, item])),
+    [displayKeywords],
+  );
 
   useEffect(() => {
-    if (!keywords.data?.length) return;
-    if (!selectedKeyword || !keywords.data.some((item) => item.keyword === selectedKeyword)) {
-      setSelectedKeyword(keywords.data[0].keyword);
+    if (!displayKeywords.length) return;
+    if (!selectedKeyword) {
+      setSelectedKeyword(displayKeywords[0].keyword);
+      return;
     }
-  }, [selectedKeyword, keywords.data]);
+    if (displayKeywords.some((item) => item.keyword === selectedKeyword)) {
+      return;
+    }
+    if (watchlist.includes(selectedKeyword)) {
+      return;
+    }
+    setSelectedKeyword(displayKeywords[0].keyword);
+  }, [selectedKeyword, displayKeywords, watchlist]);
+
+  useEffect(() => {
+    if (!rankedKeywords.length) return;
+    const defaultTopFive = rankedKeywords
+      .slice(0, 5)
+      .map((item) => item.keyword);
+    setCheckedTrendKeywords(defaultTopFive);
+  }, [rankedKeywords, domain, source, range, search]);
+
+  useEffect(() => {
+    setTrendFetchLimit(topLimit);
+  }, [domain, source, range, topSort, search]);
+
+  useEffect(() => {
+    setTrendFetchLimit((prev) => Math.max(prev, topLimit));
+  }, [topLimit]);
+
+  const preloadedTrendKeywords = useMemo(
+    () => rankedKeywords.slice(0, trendFetchLimit).map((item) => item.keyword),
+    [rankedKeywords, trendFetchLimit],
+  );
 
   const trend = useAsyncData(
     () =>
+      preloadedTrendKeywords.length
+        ? api.trend(source, domain, range, preloadedTrendKeywords[0], preloadedTrendKeywords)
+        : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
+    [source, domain, range, preloadedTrendKeywords.join("|")],
+  );
+  const detailTrend = useAsyncData(
+    () =>
       selectedKeyword
-        ? api.trend(source, domain, range, selectedKeyword)
+        ? api.trend(source, domain, range, selectedKeyword, [selectedKeyword])
         : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
     [source, domain, range, selectedKeyword],
   );
@@ -201,19 +272,46 @@ export default function App() {
     [activeFilters.ranges, range],
   );
   const activeKeyword = useMemo(
-    () => keywords.data?.find((k) => k.keyword === selectedKeyword) ?? keywords.data?.[0] ?? null,
-    [keywords.data, selectedKeyword],
+    () => displayKeywords.find((k) => k.keyword === selectedKeyword) ?? displayKeywords[0] ?? null,
+    [displayKeywords, selectedKeyword],
   );
+  const activeKeywordSummary = useMemo(
+    () => displayKeywordLookup.get(selectedKeyword ?? "") ?? activeKeyword,
+    [displayKeywordLookup, selectedKeyword, activeKeyword],
+  );
+  const detailTrendSeries = useMemo(
+    () => detailTrend.data?.series.find((series) => series.name === selectedKeyword) ?? detailTrend.data?.series[0] ?? null,
+    [detailTrend.data, selectedKeyword],
+  );
+  const visibleTrendSeries = useMemo(
+    () => (trend.data?.series ?? []).filter((series) => checkedTrendKeywords.includes(series.name)),
+    [trend.data, checkedTrendKeywords],
+  );
+  const filteredSpikeEvents = useMemo(
+    () =>
+      (spikes.data?.events ?? []).filter(
+        (event) => event.currentMentions >= spikeMinMentions && event.growth >= spikeMinGrowth,
+      ),
+    [spikes.data, spikeMinMentions, spikeMinGrowth],
+  );
+  const spikeHeatmapKeywords = useMemo(() => {
+    const spikeKeywords = rankedKeywords
+      .filter((item) => isSpikeKeyword(item, spikeMinMentions, spikeMinGrowth))
+      .slice(0, 8)
+      .map((item) => item.keyword);
+    if (spikeKeywords.length) return spikeKeywords;
+    return rankedKeywords.slice(0, 8).map((item) => item.keyword);
+  }, [rankedKeywords, spikeMinMentions, spikeMinGrowth]);
 
   const spikeRows = useMemo(() => {
-    const currentKeywords = keywords.data ?? [];
-    const filteredEvents = spikes.data?.events.filter((e) => selectedBucket == null || e.bucket === selectedBucket) ?? [];
+    const currentKeywords = displayKeywords;
+    const filteredEvents = filteredSpikeEvents.filter((e) => selectedBucket == null || e.bucket === selectedBucket);
     const eventKeywords = new Set(filteredEvents.map((e) => e.keyword));
     return (selectedBucket == null
       ? currentKeywords.filter((k) => k.spike)
       : currentKeywords.filter((k) => eventKeywords.has(k.keyword))
     ).slice(0, 12);
-  }, [keywords.data, spikes.data, selectedBucket]);
+  }, [displayKeywords, filteredSpikeEvents, selectedBucket]);
 
   const themeBarItems = useMemo(() => {
     const items = themeDistribution.data?.items ?? [];
@@ -241,12 +339,25 @@ export default function App() {
   const typeaheadMatches = useMemo(() => {
     if (!search.trim()) return [];
     const q = search.trim().toLowerCase();
-    return (keywords.data ?? []).filter((k) => k.keyword.toLowerCase().includes(q)).slice(0, 8);
-  }, [search, keywords.data]);
+    return displayKeywords.filter((k) => k.keyword.toLowerCase().includes(q)).slice(0, 8);
+  }, [search, displayKeywords]);
 
   function toggleSeries(name: string) {
     setHiddenSeries((h) => (h.includes(name) ? h.filter((x) => x !== name) : [...h, name]));
   }
+
+  function toggleTrendKeyword(keyword: string) {
+    setCheckedTrendKeywords((prev) => {
+      if (prev.includes(keyword)) return prev.filter((item) => item !== keyword);
+      if (prev.length >= 5) return prev;
+      return [...prev, keyword];
+    });
+  }
+
+  useEffect(() => {
+    const visibleNames = new Set((trend.data?.series ?? []).map((series) => series.name));
+    setHiddenSeries((prev) => prev.filter((name) => visibleNames.has(name)));
+  }, [trend.data]);
 
   function addToWatchlist(keyword: string) {
     if (!keyword.trim() || watchlist.includes(keyword)) return;
@@ -412,7 +523,7 @@ export default function App() {
 
         <div className="side-section">
           <div className="side-heading">
-            <span>워치리스트</span>
+            <span>지켜보기항목</span>
             <span className="count">{watchlist.length}</span>
           </div>
           <div className="field" style={{ width: "100%" }}>
@@ -426,7 +537,7 @@ export default function App() {
             />
           </div>
           {watchlist.map((kw) => {
-            const kwObj = keywords.data?.find((k) => k.keyword === kw);
+            const kwObj = displayKeywordLookup.get(kw);
             return (
               <div
                 key={kw}
@@ -465,6 +576,41 @@ export default function App() {
         </div>
 
         <div className="side-section">
+          <div className="side-heading">
+            <span>급상승 기준</span>
+            <span className="count">live</span>
+          </div>
+          <div className="side-control">
+            <div className="side-control-head">
+              <span>최소 언급량</span>
+              <span className="mono">{spikeMinMentions}</span>
+            </div>
+            <input
+              type="range"
+              min={1}
+              max={20}
+              step={1}
+              value={spikeMinMentions}
+              onChange={(e) => setSpikeMinMentions(Number(e.target.value))}
+            />
+          </div>
+          <div className="side-control">
+            <div className="side-control-head">
+              <span>최소 증가율</span>
+              <span className="mono">{fmtPct(spikeMinGrowth)}</span>
+            </div>
+            <input
+              type="range"
+              min={0.1}
+              max={2}
+              step={0.05}
+              value={spikeMinGrowth}
+              onChange={(e) => setSpikeMinGrowth(Number(e.target.value))}
+            />
+          </div>
+        </div>
+
+        <div className="side-section">
           <div className="side-heading">파이프라인 상태</div>
           {(system.data?.services ?? []).map((svc) => (
             <div className="side-item" key={svc.key}>
@@ -484,7 +630,9 @@ export default function App() {
                 />
                 {svc.label}
               </span>
-              <span className="n">{svc.detail}</span>
+              <span className="n">
+                {svc.statusCode != null ? `${svc.statusCode} · ${svc.detail}` : svc.detail}
+              </span>
             </div>
           ))}
         </div>
@@ -502,7 +650,7 @@ export default function App() {
             sub="현재 선택 구간 기준"
           />
           <KpiCard label="고유 키워드" value={fmtNum(kpis.data?.uniqueKeywords ?? 0)} delta="중복 제거" tone="info" sub="keyword_trends 기준" />
-          <KpiCard label="급상승 키워드" value={String(kpis.data?.spikeCount ?? 0)} delta="증가율 기반" tone="spike" sub="트렌드 델타 기반" />
+          <KpiCard label="급상승 키워드" value={String(displayKeywords.filter((item) => item.spike).length)} delta="증가율 기반" tone="spike" sub="트렌드 델타 기반" />
           <KpiCard label="마지막 업데이트" value={kpis.data?.lastUpdateRelative ?? "-"} delta={autoRefresh ? "Auto 5m" : "Manual"} tone={autoRefresh ? "info" : "muted"} sub={kpis.data?.lastUpdateAbsolute ?? "로딩 중"} />
           <KpiCard label="데이터 지원" value={String(activeFilters.domains.filter((d) => d.available).length)} delta="스키마" tone="warn" sub="추가 도메인은 추후 지원" />
         </div>
@@ -519,9 +667,12 @@ export default function App() {
             </div>
           ) : (
             <TopKeywords
-              keywords={keywords.data ?? []}
+              keywords={displayKeywords}
               selected={selectedKeyword}
               onSelect={setSelectedKeyword}
+              checkedKeywords={checkedTrendKeywords}
+              onToggleCheck={toggleTrendKeyword}
+              barColor={getTopKeywordBarColor(domain)}
               limit={topLimit}
               sortBy={topSort}
               onLimitChange={setTopLimit}
@@ -549,9 +700,11 @@ export default function App() {
             <div className="panel-body">
               {trend.loading ? (
                 <LoadingState label="시계열 데이터를 불러오는 중..." />
+              ) : !checkedTrendKeywords.length ? (
+                <EmptyState title="선택된 키워드 없음" body="상위 키워드 목록의 체크박스로 비교 대상을 선택하세요." />
               ) : (
                 <TrendLine
-                  series={trend.data?.series ?? []}
+                  series={visibleTrendSeries}
                   bucketMin={activeRange.bucketMin}
                   hidden={hiddenSeries}
                   onToggle={toggleSeries}
@@ -586,8 +739,8 @@ export default function App() {
                 <LoadingState label="급상승 이벤트를 계산하는 중..." />
               ) : (
                 <SpikeHeatmap
-                  keywords={spikes.data?.topKeywords ?? []}
-                  events={spikes.data?.events ?? []}
+                  keywords={spikeHeatmapKeywords}
+                  events={filteredSpikeEvents}
                   buckets={spikes.data?.range.buckets ?? activeRange.buckets}
                   bucketMin={spikes.data?.range.bucketMin ?? activeRange.bucketMin}
                   selectedBucket={selectedBucket}
@@ -669,13 +822,13 @@ export default function App() {
           <div className="rail-head">
             <div>
               <div className="rail-title">
-                {activeKeyword?.spike ? <span className="spike-dot" /> : null}
-                {activeKeyword?.keyword ?? "선택된 키워드 없음"}
+                {activeKeywordSummary?.spike ? <span className="spike-dot" /> : null}
+                {selectedKeyword ?? "선택된 키워드 없음"}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                {!watchlist.includes(activeKeyword?.keyword ?? "") ? (
+                {!watchlist.includes(selectedKeyword ?? "") ? (
                   <button
-                    onClick={() => activeKeyword && addToWatchlist(activeKeyword.keyword)}
+                    onClick={() => selectedKeyword && addToWatchlist(selectedKeyword)}
                     style={{
                       fontSize: 10,
                       color: "var(--accent)",
@@ -686,11 +839,11 @@ export default function App() {
                       fontFamily: "var(--font-mono)",
                     }}
                   >
-                    + 워치리스트
+                    + 지켜보기항목
                   </button>
                 ) : (
                   <button
-                    onClick={() => activeKeyword && removeFromWatchlist(activeKeyword.keyword)}
+                    onClick={() => selectedKeyword && removeFromWatchlist(selectedKeyword)}
                     style={{
                       fontSize: 10,
                       color: "var(--text-4)",
@@ -714,24 +867,24 @@ export default function App() {
           <div className="rail-metrics">
             <div className="rail-metric">
               <div className="lbl">Mentions</div>
-              <div className="val">{fmtNum(activeKeyword?.mentions ?? 0)}</div>
+              <div className="val">{fmtNum(activeKeywordSummary?.mentions ?? 0)}</div>
             </div>
             <div className="rail-metric">
               <div className="lbl">증가율</div>
               <div
                 className="val"
-                style={{ color: (activeKeyword?.growth ?? 0) > 0 ? "var(--up)" : "var(--down)" }}
+                style={{ color: (activeKeywordSummary?.growth ?? 0) > 0 ? "var(--up)" : "var(--down)" }}
               >
-                {fmtPct(activeKeyword?.growth ?? 0)}
+                {fmtPct(activeKeywordSummary?.growth ?? 0)}
               </div>
             </div>
             <div className="rail-metric">
               <div className="lbl">Event</div>
               <div
                 className="val"
-                style={{ color: activeKeyword?.spike ? "var(--spike)" : "var(--text-3)" }}
+                style={{ color: activeKeywordSummary?.spike ? "var(--spike)" : "var(--text-3)" }}
               >
-                {fmtNum(activeKeyword?.eventScore ?? 0)}
+                {fmtNum(activeKeywordSummary?.eventScore ?? 0)}
               </div>
             </div>
           </div>
@@ -741,11 +894,11 @@ export default function App() {
               최근 추이<span>{activeRange.label}</span>
             </h4>
             <div style={{ height: 120, position: "relative" }}>
-              {trend.loading ? (
+              {detailTrend.loading ? (
                 <LoadingState label="최근 추이를 불러오는 중..." />
-              ) : trend.data?.series?.[0]?.points?.length ? (
+              ) : detailTrendSeries?.points?.length ? (
                 <TrendLine
-                  series={[trend.data.series[0]]}
+                  series={[detailTrendSeries]}
                   bucketMin={activeRange.bucketMin}
                   mini={true}
                   hidden={[]}

@@ -58,7 +58,7 @@ SOURCES = [
     {"id": "global", "label": "글로벌 뉴스", "color": "#f59e0b"},
 ]
 
-PALETTE = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa", "#a78bfa"]
+PALETTE = ["#8b5cf6", "#0ea5e9", "#22c55e", "#f59e0b", "#64748b"]
 THEME_COLORS = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa"]
 
 
@@ -303,14 +303,29 @@ def get_top_keywords(
     return result
 
 
-def get_trend_series(source: str, domain: str, range_id: str, keyword: str, compare_limit: int = 4) -> dict[str, Any]:
+def get_trend_series(
+    source: str,
+    domain: str,
+    range_id: str,
+    keyword: str | None = None,
+    keywords: list[str] | None = None,
+    compare_limit: int = 4,
+) -> dict[str, Any]:
     spec, start_at, end_at, _ = _range_bounds(range_id)
     provider = _provider_filter(source)
     domain_filter = _domain_filter(domain)
     top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=max(compare_limit * 2, 20))
-    compare_keywords = [keyword]
-    compare_keywords.extend(item["keyword"] for item in top_keywords if item["keyword"] != keyword)
-    compare_keywords = compare_keywords[:compare_limit]
+    compare_keywords: list[str] = []
+    if keywords:
+        for item in keywords:
+            normalized = item.strip()
+            if normalized and normalized not in compare_keywords:
+                compare_keywords.append(normalized)
+        compare_keywords = compare_keywords[:5]
+    elif keyword:
+        compare_keywords = [keyword]
+        compare_keywords.extend(item["keyword"] for item in top_keywords if item["keyword"] != keyword)
+        compare_keywords = compare_keywords[:compare_limit]
     bucket_edges = [start_at + timedelta(minutes=spec.bucket_min * index) for index in range(spec.buckets + 1)]
     bucket_map = {index: bucket_edges[index] for index in range(spec.buckets)}
     series_lookup = {
@@ -439,6 +454,8 @@ def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -
                         "keyword": row["keyword"],
                         "intensity": min(1.0, max(0.12, float(row["growth"] or 0.0))),
                         "source": "naver" if naver_share >= 0.5 else "global",
+                        "currentMentions": int(row["current_mentions"] or 0),
+                        "prevMentions": int(row["prev_mentions"] or 0),
                         "growth": float(row["growth"] or 0.0),
                         "score": int(row["event_score"] or 0),
                     }
@@ -486,6 +503,8 @@ def get_spike_events(source: str, domain: str, range_id: str, limit: int = 32) -
                             "keyword": keyword_name,
                             "intensity": min(1.0, max(0.12, growth)),
                             "source": "naver" if naver_share >= 0.5 else "global",
+                            "currentMentions": count,
+                            "prevMentions": previous,
                             "growth": growth,
                             "score": int(summary["eventScore"]) if summary else 0,
                         }
@@ -705,39 +724,39 @@ def get_articles(
     ]
 
 
-def _probe_http(url: str, timeout: float = 1.5) -> tuple[str, str]:
+def _probe_http(url: str, timeout: float = 1.5) -> tuple[str, str, int | None]:
     try:
         response = requests.get(url, timeout=timeout)
         if response.ok:
-            return "ok", f"{response.status_code}"
-        return "warn", f"{response.status_code}"
+            return "ok", f"HTTP {response.status_code}", response.status_code
+        return "warn", f"HTTP {response.status_code}", response.status_code
     except requests.RequestException:
-        return "down", "unreachable"
+        return "down", "unreachable", None
 
 
-def _probe_tcp(host: str, port: int, timeout: float = 1.0) -> tuple[str, str]:
+def _probe_tcp(host: str, port: int, timeout: float = 1.0) -> tuple[str, str, int | None]:
     try:
         with socket.create_connection((host, port), timeout=timeout):
-            return "ok", f"{host}:{port}"
+            return "ok", f"{host}:{port}", 200
     except OSError:
-        return "down", f"{host}:{port}"
+        return "down", f"{host}:{port}", None
 
 
 def get_system_status() -> dict[str, Any]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute("SELECT 1")
-    kafka_status, kafka_detail = _probe_tcp("kafka", 29092)
-    spark_status, spark_detail = _probe_http("http://spark-master:8080")
-    airflow_status, airflow_detail = _probe_http("http://airflow-apiserver:8080/api/v2/version")
+    kafka_status, kafka_detail, kafka_code = _probe_tcp("kafka", 29092)
+    spark_status, spark_detail, spark_code = _probe_http("http://spark-master:8080")
+    airflow_status, airflow_detail, airflow_code = _probe_http("http://airflow-apiserver:8080/api/v2/version")
     parsed = urlparse("http://localhost")
     return {
         "services": [
-            {"key": "kafka", "label": "Kafka ingest", "status": kafka_status, "detail": kafka_detail},
-            {"key": "spark", "label": "Spark", "status": spark_status, "detail": spark_detail},
-            {"key": "airflow", "label": "Airflow", "status": airflow_status, "detail": airflow_detail},
-            {"key": "api", "label": "API", "status": "ok", "detail": parsed.hostname or "self"},
-            {"key": "db", "label": "PostgreSQL", "status": "ok", "detail": settings.postgres_host},
+            {"key": "kafka", "label": "Kafka ingest", "status": kafka_status, "detail": kafka_detail, "statusCode": kafka_code},
+            {"key": "spark", "label": "Spark", "status": spark_status, "detail": spark_detail, "statusCode": spark_code},
+            {"key": "airflow", "label": "Airflow", "status": airflow_status, "detail": airflow_detail, "statusCode": airflow_code},
+            {"key": "api", "label": "API", "status": "ok", "detail": parsed.hostname or "self", "statusCode": 200},
+            {"key": "db", "label": "PostgreSQL", "status": "ok", "detail": settings.postgres_host, "statusCode": 200},
         ]
     }
 

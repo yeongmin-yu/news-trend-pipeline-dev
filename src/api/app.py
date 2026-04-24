@@ -81,13 +81,22 @@ def dashboard_keywords(
 
 @app.get("/api/v1/dashboard/trend")
 def dashboard_trend(
-    keyword: str,
+    keyword: str | None = Query(default=None),
+    keywords: str | None = Query(default=None),
     source: str = Query(default="all"),
     domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     compare_limit: int = Query(default=4, ge=1, le=5, alias="compareLimit"),
 ) -> dict:
-    return get_trend_series(source=source, domain=domain, range_id=range_id, keyword=keyword, compare_limit=compare_limit)
+    selected_keywords = [item.strip() for item in (keywords or "").split(",") if item.strip()]
+    return get_trend_series(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        keyword=keyword,
+        keywords=selected_keywords,
+        compare_limit=compare_limit,
+    )
 
 
 @app.get("/api/v1/dashboard/spikes")

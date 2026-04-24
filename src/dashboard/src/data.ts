@@ -69,6 +69,8 @@ export interface SpikeEvent {
   keyword: string;
   intensity: number;
   source: "naver" | "global";
+  currentMentions: number;
+  prevMentions: number;
   growth: number;
   score: number;
 }
@@ -118,6 +120,7 @@ export interface ServiceStatus {
   label: string;
   status: "ok" | "warn" | "down" | "unknown";
   detail: string;
+  statusCode?: number | null;
 }
 
 export interface SystemStatusResponse {
@@ -240,8 +243,12 @@ export const api = {
     request<KeywordSummary[]>(
       `/dashboard/keywords?source=${source}&domain=${domain}&range=${range}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`,
     ),
-  trend: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
-    request<TrendResponse>(`/dashboard/trend?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}`),
+  trend: (source: SourceId, domain: string, range: RangeId, keyword: string, keywords?: string[]) =>
+    request<TrendResponse>(
+      `/dashboard/trend?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}${
+        keywords?.length ? `&keywords=${encodeURIComponent(keywords.join(","))}` : ""
+      }`,
+    ),
   spikes: (source: SourceId, domain: string, range: RangeId) =>
     request<SpikeResponse>(`/dashboard/spikes?source=${source}&domain=${domain}&range=${range}`),
   related: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
