@@ -20,6 +20,7 @@ import {
   type RelatedKeyword,
   type SourceId,
   type ThemeDistributionResponse,
+  type TrendBucketId,
   type TrendResponse,
 } from "./data";
 import { RelatedNetwork, SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
@@ -63,6 +64,19 @@ const DOMAIN_COLORS: Record<string, string> = {
   politics_policy: "#fbbf24",
   entertainment_culture: "#60a5fa",
 };
+
+const TREND_BUCKET_OPTIONS: Array<{ id: TrendBucketId; label: string; minutes: number }> = [
+  { id: "5m", label: "5분", minutes: 5 },
+  { id: "15m", label: "15분", minutes: 15 },
+  { id: "30m", label: "30분", minutes: 30 },
+  { id: "1h", label: "1시간", minutes: 60 },
+  { id: "4h", label: "4시간", minutes: 240 },
+  { id: "1d", label: "1일", minutes: 1440 },
+];
+
+const MIN_TREND_WINDOW_MS = 30 * 60 * 1000;
+const MAX_TREND_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_POINTS_PER_QUERY = 480;
 
 function useAsyncData<T>(factory: () => Promise<T>, deps: unknown[]): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ data: null, loading: true, error: null });
@@ -135,6 +149,41 @@ function isSpikeKeyword(item: Pick<KeywordSummary, "mentions" | "growth">, minMe
   return item.mentions >= minMentions && item.growth >= minGrowth;
 }
 
+function pickAutoTrendBucket(durationMs: number): TrendBucketId {
+  if (durationMs <= 6 * 60 * 60 * 1000) return "5m";
+  if (durationMs <= 2 * 24 * 60 * 60 * 1000) return "15m";
+  if (durationMs <= 7 * 24 * 60 * 60 * 1000) return "1h";
+  return "4h";
+}
+
+function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [number, number] {
+  let start = startMs;
+  let end = endMs;
+  const duration = Math.min(MAX_TREND_WINDOW_MS, Math.max(MIN_TREND_WINDOW_MS, end - start));
+  if (end > nowMs) {
+    end = nowMs;
+    start = end - duration;
+  }
+  if (end - start < duration) {
+    start = end - duration;
+  }
+  return [start, end];
+}
+
+function toDateTimeLocalInput(ms: number): string {
+  const date = new Date(ms);
+  const local = new Date(date.getTime() + 9 * 3600_000);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${local.getUTCFullYear()}-${pad(local.getUTCMonth() + 1)}-${pad(local.getUTCDate())}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}`;
+}
+
+function fromDateTimeLocalInput(value: string): number | null {
+  if (!value) return null;
+  const parsed = new Date(`${value}:00+09:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.getTime();
+}
+
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
@@ -151,6 +200,11 @@ export default function App() {
   const [topSort, setTopSort] = useState<"mentions" | "growth">("mentions");
   const [topLimit, setTopLimit] = useState(20);
   const [trendFetchLimit, setTrendFetchLimit] = useState(20);
+  const [trendBucketMode, setTrendBucketMode] = useState<"auto" | TrendBucketId>("auto");
+  const [trendWindow, setTrendWindow] = useState(() => {
+    const end = Date.now();
+    return { startMs: end - (60 * 60 * 1000), endMs: end };
+  });
   const [spikeMinMentions, setSpikeMinMentions] = useState(5);
   const [spikeMinGrowth, setSpikeMinGrowth] = useState(0.4);
   const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
@@ -235,14 +289,75 @@ export default function App() {
     () => rankedKeywords.slice(0, trendFetchLimit).map((item) => item.keyword),
     [rankedKeywords, trendFetchLimit],
   );
+  const trendDurationMs = trendWindow.endMs - trendWindow.startMs;
+  const effectiveTrendBucket = useMemo<TrendBucketId>(() => {
+    const preferred = trendBucketMode === "auto" ? pickAutoTrendBucket(trendDurationMs) : trendBucketMode;
+    const preferredOption = TREND_BUCKET_OPTIONS.find((item) => item.id === preferred) ?? TREND_BUCKET_OPTIONS[1];
+    const maxAllowedMinutes = Math.ceil(trendDurationMs / MAX_POINTS_PER_QUERY / 60_000);
+    const safeOption =
+      TREND_BUCKET_OPTIONS.find((item) => item.minutes >= maxAllowedMinutes && item.minutes >= preferredOption.minutes) ??
+      TREND_BUCKET_OPTIONS[TREND_BUCKET_OPTIONS.length - 1];
+    return safeOption.id;
+  }, [trendBucketMode, trendDurationMs]);
+  const [debouncedTrendWindow, setDebouncedTrendWindow] = useState(trendWindow);
 
-  const trend = useAsyncData(
-    () =>
-      preloadedTrendKeywords.length
-        ? api.trend(source, domain, range, preloadedTrendKeywords[0], preloadedTrendKeywords)
-        : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
-    [source, domain, range, preloadedTrendKeywords.join("|")],
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedTrendWindow(trendWindow), 180);
+    return () => window.clearTimeout(timer);
+  }, [trendWindow]);
+
+  const trendCacheRef = useRef<Map<string, TrendResponse>>(new Map());
+  const [trend, setTrend] = useState<AsyncState<TrendResponse>>({ data: null, loading: true, error: null });
+  const trendRequestKey = useMemo(
+    () => [
+      source,
+      domain,
+      debouncedTrendWindow.startMs,
+      debouncedTrendWindow.endMs,
+      effectiveTrendBucket,
+      preloadedTrendKeywords.join("|"),
+    ].join("::"),
+    [source, domain, debouncedTrendWindow.startMs, debouncedTrendWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords],
   );
+
+  useEffect(() => {
+    if (!preloadedTrendKeywords.length) {
+      setTrend({ data: { series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse, loading: false, error: null });
+      return;
+    }
+    const cached = trendCacheRef.current.get(trendRequestKey);
+    if (cached) {
+      setTrend({ data: cached, loading: false, error: null });
+      return;
+    }
+    let alive = true;
+    setTrend((prev) => ({ data: prev.data, loading: true, error: null }));
+    api
+      .trendWindow(
+        source,
+        domain,
+        new Date(debouncedTrendWindow.startMs).toISOString(),
+        new Date(debouncedTrendWindow.endMs).toISOString(),
+        effectiveTrendBucket,
+        preloadedTrendKeywords,
+      )
+      .then((data) => {
+        if (!alive) return;
+        trendCacheRef.current.set(trendRequestKey, data);
+        setTrend({ data, loading: false, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setTrend({
+          data: null,
+          loading: false,
+          error: error instanceof Error ? error.message : "알 수 없는 오류",
+        });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [source, domain, debouncedTrendWindow.startMs, debouncedTrendWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords, trendRequestKey]);
   const detailTrend = useAsyncData(
     () =>
       selectedKeyword
@@ -271,6 +386,12 @@ export default function App() {
     () => activeFilters.ranges.find((r) => r.id === range) ?? DEFAULT_FILTERS.ranges[2],
     [activeFilters.ranges, range],
   );
+  useEffect(() => {
+    const endMs = Date.now();
+    const startMs = endMs - activeRange.bucketMin * activeRange.buckets * 60_000;
+    setTrendWindow({ startMs, endMs });
+    setTrendBucketMode("auto");
+  }, [domain, source, range, activeRange.bucketMin, activeRange.buckets]);
   const activeKeyword = useMemo(
     () => displayKeywords.find((k) => k.keyword === selectedKeyword) ?? displayKeywords[0] ?? null,
     [displayKeywords, selectedKeyword],
@@ -351,6 +472,29 @@ export default function App() {
       if (prev.includes(keyword)) return prev.filter((item) => item !== keyword);
       if (prev.length >= 5) return prev;
       return [...prev, keyword];
+    });
+  }
+
+  function setTrendWindowBound(kind: "start" | "end", value: string) {
+    const parsed = fromDateTimeLocalInput(value);
+    if (parsed == null) return;
+    setTrendWindow((prev) => {
+      const next = kind === "start" ? { startMs: parsed, endMs: prev.endMs } : { startMs: prev.startMs, endMs: parsed };
+      const [startMs, endMs] = clampTrendWindow(next.startMs, next.endMs, now);
+      return { startMs, endMs };
+    });
+  }
+
+  function handleTrendWheelZoom(direction: "in" | "out", anchorRatio: number) {
+    setTrendWindow((prev) => {
+      const currentDuration = prev.endMs - prev.startMs;
+      const nextDuration = direction === "in" ? currentDuration * 0.8 : currentDuration * 1.25;
+      const clampedDuration = Math.min(MAX_TREND_WINDOW_MS, Math.max(MIN_TREND_WINDOW_MS, nextDuration));
+      const anchorTime = prev.startMs + currentDuration * anchorRatio;
+      const nextStart = anchorTime - clampedDuration * anchorRatio;
+      const nextEnd = anchorTime + clampedDuration * (1 - anchorRatio);
+      const [startMs, endMs] = clampTrendWindow(nextStart, nextEnd, now);
+      return { startMs, endMs };
     });
   }
 
@@ -631,7 +775,7 @@ export default function App() {
                 {svc.label}
               </span>
               <span className="n">
-                {svc.statusCode != null ? `${svc.statusCode} · ${svc.detail}` : svc.detail}
+                {svc.statusCode != null ? `HTTP ${svc.statusCode}` : "HTTP -"}
               </span>
             </div>
           ))}
@@ -686,8 +830,9 @@ export default function App() {
                 <Icon.TrendUp size={12} />
                 키워드 트렌드
                 <span className="tag mono">
-                  {activeRange.label} · {activeRange.buckets} pts
+                  {fmtKST(trendWindow.startMs)} ~ {fmtKST(trendWindow.endMs)}
                 </span>
+                <span className="tag mono">{effectiveTrendBucket}</span>
               </div>
               <div className="panel-tools">
                 {selectedBucket != null && (
@@ -698,18 +843,50 @@ export default function App() {
               </div>
             </div>
             <div className="panel-body">
+              <div className="trend-toolbar">
+                <div className="trend-datetime">
+                  <div className="field">
+                    <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.startMs)} onChange={(e) => setTrendWindowBound("start", e.target.value)} />
+                  </div>
+                  <div className="field">
+                    <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.endMs)} onChange={(e) => setTrendWindowBound("end", e.target.value)} />
+                  </div>
+                </div>
+                <div className="seg">
+                  <button className={trendBucketMode === "auto" ? "is-active" : ""} onClick={() => setTrendBucketMode("auto")}>
+                    자동
+                  </button>
+                  {TREND_BUCKET_OPTIONS.map((option) => {
+                    const disabled = Math.ceil(trendDurationMs / (option.minutes * 60_000)) > MAX_POINTS_PER_QUERY;
+                    return (
+                      <button
+                        key={option.id}
+                        className={trendBucketMode === option.id ? "is-active" : ""}
+                        onClick={() => setTrendBucketMode(option.id)}
+                        disabled={disabled}
+                        title={disabled ? "현재 기간에서는 포인트 수가 너무 많습니다." : option.label}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               {trend.loading ? (
                 <LoadingState label="시계열 데이터를 불러오는 중..." />
+              ) : trend.error ? (
+                <EmptyState title="트렌드 로드 실패" body={trend.error} />
               ) : !checkedTrendKeywords.length ? (
                 <EmptyState title="선택된 키워드 없음" body="상위 키워드 목록의 체크박스로 비교 대상을 선택하세요." />
               ) : (
                 <TrendLine
                   series={visibleTrendSeries}
-                  bucketMin={activeRange.bucketMin}
+                  bucketMin={trend.data?.range.bucketMin ?? activeRange.bucketMin}
                   hidden={hiddenSeries}
                   onToggle={toggleSeries}
                   selectedBucket={selectedBucket}
                   onPointClick={setSelectedBucket}
+                  onWheelZoom={handleTrendWheelZoom}
                   nowMs={now}
                 />
               )}

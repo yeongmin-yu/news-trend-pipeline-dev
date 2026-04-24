@@ -128,6 +128,7 @@ export function TrendLine({
   onToggle,
   selectedBucket,
   onPointClick,
+  onWheelZoom,
   mini = false,
   nowMs,
 }: {
@@ -137,6 +138,7 @@ export function TrendLine({
   onToggle?: (name: string) => void;
   selectedBucket?: number | null;
   onPointClick?: (bucketIdx: number) => void;
+  onWheelZoom?: (direction: "in" | "out", anchorRatio: number) => void;
   mini?: boolean;
   nowMs?: number;
 }) {
@@ -207,6 +209,14 @@ export function TrendLine({
         viewBox={`0 0 ${size.width} ${size.height}`}
         style={{ cursor: onPointClick ? "pointer" : "default" }}
         onMouseLeave={() => setHoverIndex(null)}
+        onWheel={(e) => {
+          if (!onWheelZoom || mini) return;
+          e.preventDefault();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const localX = e.clientX - rect.left;
+          const anchorRatio = Math.min(1, Math.max(0, (localX - pad.left) / innerWidth));
+          onWheelZoom(e.deltaY > 0 ? "out" : "in", anchorRatio);
+        }}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const localX = e.clientX - rect.left;

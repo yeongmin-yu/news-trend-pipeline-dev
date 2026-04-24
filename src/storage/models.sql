@@ -126,6 +126,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_news_raw_provider_domain_url
 
 CREATE INDEX IF NOT EXISTS idx_keywords_keyword
     ON keywords(keyword);
+CREATE INDEX IF NOT EXISTS idx_keywords_keyword_article
+    ON keywords(keyword, article_provider, article_domain, article_url);
 CREATE INDEX IF NOT EXISTS idx_keywords_domain_keyword
     ON keywords(article_domain, keyword);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_unique

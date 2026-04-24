@@ -1,5 +1,6 @@
 export type SourceId = "all" | "naver" | "global";
 export type RangeId = "10m" | "30m" | "1h" | "6h" | "12h" | "1d";
+export type TrendBucketId = "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 export interface DomainOption {
   id: string;
@@ -248,6 +249,17 @@ export const api = {
       `/dashboard/trend?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}${
         keywords?.length ? `&keywords=${encodeURIComponent(keywords.join(","))}` : ""
       }`,
+    ),
+  trendWindow: (
+    source: SourceId,
+    domain: string,
+    startAt: string,
+    endAt: string,
+    bucket: TrendBucketId,
+    keywords: string[],
+  ) =>
+    request<TrendResponse>(
+      `/dashboard/trend-window?source=${source}&domain=${domain}&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}&bucket=${bucket}&keywords=${encodeURIComponent(keywords.join(","))}`,
     ),
   spikes: (source: SourceId, domain: string, range: RangeId) =>
     request<SpikeResponse>(`/dashboard/spikes?source=${source}&domain=${domain}&range=${range}`),

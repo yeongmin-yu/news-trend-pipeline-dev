@@ -60,6 +60,14 @@ SOURCES = [
 
 PALETTE = ["#8b5cf6", "#0ea5e9", "#22c55e", "#f59e0b", "#64748b"]
 THEME_COLORS = ["#5eead4", "#f472b6", "#fbbf24", "#60a5fa"]
+TREND_BUCKETS = {
+    "5m": ("5 minutes", 5),
+    "15m": ("15 minutes", 15),
+    "30m": ("30 minutes", 30),
+    "1h": ("1 hour", 60),
+    "4h": ("4 hours", 240),
+    "1d": ("1 day", 1440),
+}
 
 
 def _provider_filter(source: str) -> str | None:
@@ -728,18 +736,18 @@ def _probe_http(url: str, timeout: float = 1.5) -> tuple[str, str, int | None]:
     try:
         response = requests.get(url, timeout=timeout)
         if response.ok:
-            return "ok", f"HTTP {response.status_code}", response.status_code
-        return "warn", f"HTTP {response.status_code}", response.status_code
+            return "ok", "", response.status_code
+        return "warn", "", response.status_code
     except requests.RequestException:
-        return "down", "unreachable", None
+        return "down", "", 503
 
 
 def _probe_tcp(host: str, port: int, timeout: float = 1.0) -> tuple[str, str, int | None]:
     try:
         with socket.create_connection((host, port), timeout=timeout):
-            return "ok", f"{host}:{port}", 200
+            return "ok", "", 200
     except OSError:
-        return "down", f"{host}:{port}", None
+        return "down", "", 503
 
 
 def get_system_status() -> dict[str, Any]:
@@ -749,15 +757,99 @@ def get_system_status() -> dict[str, Any]:
     kafka_status, kafka_detail, kafka_code = _probe_tcp("kafka", 29092)
     spark_status, spark_detail, spark_code = _probe_http("http://spark-master:8080")
     airflow_status, airflow_detail, airflow_code = _probe_http("http://airflow-apiserver:8080/api/v2/version")
-    parsed = urlparse("http://localhost")
     return {
         "services": [
             {"key": "kafka", "label": "Kafka ingest", "status": kafka_status, "detail": kafka_detail, "statusCode": kafka_code},
             {"key": "spark", "label": "Spark", "status": spark_status, "detail": spark_detail, "statusCode": spark_code},
             {"key": "airflow", "label": "Airflow", "status": airflow_status, "detail": airflow_detail, "statusCode": airflow_code},
-            {"key": "api", "label": "API", "status": "ok", "detail": parsed.hostname or "self", "statusCode": 200},
-            {"key": "db", "label": "PostgreSQL", "status": "ok", "detail": settings.postgres_host, "statusCode": 200},
+            {"key": "api", "label": "API", "status": "ok", "detail": "", "statusCode": 200},
+            {"key": "db", "label": "PostgreSQL", "status": "ok", "detail": "", "statusCode": 200},
         ]
+    }
+
+
+def get_trend_window_series(
+    source: str,
+    domain: str,
+    start_at: datetime,
+    end_at: datetime,
+    bucket_id: str,
+    keywords: list[str],
+) -> dict[str, Any]:
+    if bucket_id not in TREND_BUCKETS:
+        raise ValueError(f"Unsupported bucket: {bucket_id}")
+    if not keywords:
+        return {"series": [], "range": {"id": bucket_id, "label": bucket_id, "bucketMin": TREND_BUCKETS[bucket_id][1], "buckets": 0}}
+    if end_at <= start_at:
+        raise ValueError("endAt must be later than startAt")
+
+    provider = _provider_filter(source)
+    domain_filter = _domain_filter(domain)
+    bucket_interval, bucket_min = TREND_BUCKETS[bucket_id]
+    bucket_delta = timedelta(minutes=bucket_min)
+    start_utc = start_at.astimezone(UTC)
+    end_utc = end_at.astimezone(UTC)
+    total_buckets = max(1, int((end_utc - start_utc) / bucket_delta))
+    if total_buckets > 720:
+        raise ValueError("Requested range is too wide for the selected bucket")
+
+    bucket_edges = [start_utc + (bucket_delta * index) for index in range(total_buckets + 1)]
+    series_lookup = {
+        name: [{"bucket": index, "timestamp": bucket_edges[index], "value": 0} for index in range(total_buckets)]
+        for name in keywords
+    }
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    k.keyword,
+                    date_bin(%(bucket_interval)s::interval, n.published_at, %(origin)s::timestamptz) AS bucket_start,
+                    SUM(k.keyword_count) AS keyword_count
+                FROM keywords k
+                JOIN news_raw n
+                  ON n.provider = k.article_provider
+                 AND n.domain = k.article_domain
+                 AND n.url = k.article_url
+                WHERE k.keyword = ANY(%(keywords)s)
+                  AND n.published_at >= %(start_at)s
+                  AND n.published_at < %(end_at)s
+                  AND (%(provider)s IS NULL OR n.provider = %(provider)s)
+                  AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                GROUP BY k.keyword, bucket_start
+                ORDER BY bucket_start ASC
+                """,
+                {
+                    "start_at": start_utc,
+                    "end_at": end_utc,
+                    "provider": provider,
+                    "domain": domain_filter,
+                    "bucket_interval": bucket_interval,
+                    "origin": start_utc,
+                    "keywords": keywords,
+                },
+            )
+            for row in cursor.fetchall():
+                bucket_index = int((row["bucket_start"] - start_utc).total_seconds() // bucket_delta.total_seconds())
+                if 0 <= bucket_index < total_buckets and row["keyword"] in series_lookup:
+                    series_lookup[row["keyword"]][bucket_index]["value"] = int(row["keyword_count"] or 0)
+
+    return {
+        "series": [
+            {
+                "name": name,
+                "color": PALETTE[index % len(PALETTE)],
+                "spike": False,
+                "points": points,
+            }
+            for index, (name, points) in enumerate(series_lookup.items())
+        ],
+        "range": {
+            "id": bucket_id,
+            "label": bucket_id,
+            "bucketMin": bucket_min,
+            "buckets": total_buckets,
+        },
     }
 
 

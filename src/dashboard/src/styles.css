@@ -632,6 +632,29 @@ input {
   overflow: hidden;
 }
 
+.trend-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.trend-datetime {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trend-datetime .field {
+  min-width: 208px;
+}
+
+.trend-datetime input[type="datetime-local"] {
+  font-family: var(--font-mono);
+}
+
 .flush {
   padding: 0;
 }

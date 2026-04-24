@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -28,6 +30,7 @@ from api.service import (
     get_theme_distribution,
     get_top_keywords,
     get_trend_series,
+    get_trend_window_series,
     review_compound_candidate,
     update_query_keyword,
 )
@@ -96,6 +99,26 @@ def dashboard_trend(
         keyword=keyword,
         keywords=selected_keywords,
         compare_limit=compare_limit,
+    )
+
+
+@app.get("/api/v1/dashboard/trend-window")
+def dashboard_trend_window(
+    keywords: str,
+    source: str = Query(default="all"),
+    domain: str = Query(default="all"),
+    start_at: datetime = Query(alias="startAt"),
+    end_at: datetime = Query(alias="endAt"),
+    bucket: str = Query(default="15m"),
+) -> dict:
+    selected_keywords = [item.strip() for item in keywords.split(",") if item.strip()]
+    return get_trend_window_series(
+        source=source,
+        domain=domain,
+        start_at=start_at,
+        end_at=end_at,
+        bucket_id=bucket,
+        keywords=selected_keywords,
     )
 
 
