@@ -22,7 +22,7 @@ def _run_event_detection(**context) -> None:
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
 
-    from news_trend_pipeline.analytics.event_detector import run_event_detection_job
+    from analytics.event_detector import run_event_detection_job
 
     until: datetime = context["data_interval_end"]
     result = run_event_detection_job(until=until, lookback_hours=24)

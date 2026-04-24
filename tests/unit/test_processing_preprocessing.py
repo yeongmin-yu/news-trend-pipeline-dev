@@ -1,4 +1,4 @@
-from news_trend_pipeline.processing.preprocessing import clean_text, merge_compound_nouns
+from processing.preprocessing import clean_text, merge_compound_nouns
 
 
 def test_clean_text_removes_html_and_non_korean() -> None:

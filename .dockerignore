@@ -19,8 +19,8 @@ spark-docker/spark-events/
 build/
 dist/
 *.egg-info/
-frontend/node_modules/
-frontend/dist/
+src/dashboard/node_modules/
+src/dashboard/dist/
 
 # Git
 .git

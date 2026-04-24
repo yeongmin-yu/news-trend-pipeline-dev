@@ -162,7 +162,7 @@
   - Spark 집계 경로에 `domain` 전파
 - `api/service.py`, `api/app.py`
   - 대시보드 API에 `domain` 필터 반영
-- `frontend/src/data.ts`, `frontend/src/app.tsx`
+- `src/dashboard/src/data.ts`, `src/dashboard/src/app.tsx`
   - 프론트 도메인 선택값을 실제 API 요청에 전달
 
 ## 6. Naver 호출 텀 조정 및 운영 기준값
@@ -190,14 +190,14 @@
 
 ### 6-2. 코드 반영 위치
 
-- `src/news_trend_pipeline/core/config.py`
+- `src/core/config.py`
   - `naver_page_request_delay_seconds`
   - `naver_query_stagger_seconds`
   - `.env` 값이 컨테이너 환경변수를 덮어쓸 수 있도록 `load_dotenv(..., override=True)` 적용
-- `src/news_trend_pipeline/ingestion/api_client.py`
+- `src/ingestion/api_client.py`
   - `fetch_news_parallel()`에 쿼리별 stagger 적용
   - `fetch_news()` 내부 page loop에 configurable delay 적용
-- `src/news_trend_pipeline/ingestion/producer.py`
+- `src/ingestion/producer.py`
   - 비정상 기사 1건 때문에 전체 producer cycle이 실패하지 않도록 dead letter 처리 보강
 - `.env`
   - 운영 기본값 반영

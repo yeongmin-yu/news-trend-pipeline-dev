@@ -207,15 +207,15 @@
 
 ## 6. 구현 파일 맵
 
-- `src/news_trend_pipeline/api/app.py`
+- `src/api/app.py`
   - 라우트 정의
-- `src/news_trend_pipeline/api/service.py`
+- `src/api/service.py`
   - SQL 기반 서비스 로직
-- `src/news_trend_pipeline/api/schemas.py`
+- `src/api/schemas.py`
   - 요청 body schema
-- `src/news_trend_pipeline/storage/db.py`
+- `src/storage/db.py`
   - DB 연결, seed, helper
-- `src/news_trend_pipeline/storage/models.sql`
+- `src/storage/models.sql`
   - schema 정의
 
 ## 7. 구현 원칙

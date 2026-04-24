@@ -411,7 +411,7 @@ Spark 처리 잡 실행 엔트리포인트는 [`scripts/run_processing.py`](../s
 <summary>코드</summary>
 
 ```python
-from news_trend_pipeline.processing.spark_job import run_streaming_job
+from processing.spark_job import run_streaming_job
 
 if __name__ == "__main__":
     run_streaming_job()
@@ -526,16 +526,16 @@ representative_keywords = (
 
 ## 6. 구현 파일 목록
 
-- `src/news_trend_pipeline/processing/spark_job.py`
-- `src/news_trend_pipeline/processing/preprocessing.py`
-- `src/news_trend_pipeline/storage/db.py`
-- `src/news_trend_pipeline/storage/models.sql`
-- `src/news_trend_pipeline/core/config.py`
+- `src/processing/spark_job.py`
+- `src/processing/preprocessing.py`
+- `src/storage/db.py`
+- `src/storage/models.sql`
+- `src/core/config.py`
 - `scripts/run_processing.py`
 - `infra/spark/Dockerfile.spark`
 - `docker-compose.yml`
 - `airflow/dags/compound_extraction_dag.py`
-- `src/news_trend_pipeline/analytics/compound_extractor.py`
+- `src/analytics/compound_extractor.py`
 
 ## 7. 관련 문서
 

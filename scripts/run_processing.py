@@ -9,7 +9,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from news_trend_pipeline.processing.spark_job import run_streaming_job
+from processing.spark_job import run_streaming_job
 
 
 if __name__ == "__main__":

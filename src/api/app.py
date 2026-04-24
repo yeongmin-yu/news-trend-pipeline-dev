@@ -3,13 +3,13 @@ from __future__ import annotations
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from news_trend_pipeline.api.schemas import (
+from api.schemas import (
     ReviewCandidateRequest,
     UpsertCompoundNounRequest,
     UpsertQueryKeywordRequest,
     UpsertStopwordRequest,
 )
-from news_trend_pipeline.api.service import (
+from api.service import (
     create_query_keyword,
     create_compound_noun,
     create_stopword,
@@ -31,7 +31,7 @@ from news_trend_pipeline.api.service import (
     review_compound_candidate,
     update_query_keyword,
 )
-from news_trend_pipeline.storage.db import safe_initialize_database
+from storage.db import safe_initialize_database
 
 
 app = FastAPI(title="News Trend Pipeline API", version="0.1.0")

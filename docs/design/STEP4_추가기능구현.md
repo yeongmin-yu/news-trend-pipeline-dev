@@ -34,9 +34,9 @@
 
 반영 위치:
 
-- [src/news_trend_pipeline/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/models.sql)
-- [src/news_trend_pipeline/storage/db.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/db.py)
-- [src/news_trend_pipeline/ingestion/producer.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/ingestion/producer.py)
+- [src/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/storage/models.sql)
+- [src/storage/db.py](C:/Project/news-trend-pipeline-v2/src/storage/db.py)
+- [src/ingestion/producer.py](C:/Project/news-trend-pipeline-v2/src/ingestion/producer.py)
 
 동작 방식:
 
@@ -58,10 +58,10 @@
 
 반영 위치:
 
-- [src/news_trend_pipeline/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/models.sql)
-- [src/news_trend_pipeline/storage/db.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/db.py)
-- [src/news_trend_pipeline/api/service.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/api/service.py)
-- [src/news_trend_pipeline/api/app.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/api/app.py)
+- [src/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/storage/models.sql)
+- [src/storage/db.py](C:/Project/news-trend-pipeline-v2/src/storage/db.py)
+- [src/api/service.py](C:/Project/news-trend-pipeline-v2/src/api/service.py)
+- [src/api/app.py](C:/Project/news-trend-pipeline-v2/src/api/app.py)
 
 제공 API:
 
@@ -82,10 +82,10 @@
 
 반영 위치:
 
-- [src/news_trend_pipeline/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/models.sql)
-- [src/news_trend_pipeline/storage/db.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/storage/db.py)
-- [src/news_trend_pipeline/api/service.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/api/service.py)
-- [src/news_trend_pipeline/api/app.py](C:/Project/news-trend-pipeline-v2/src/news_trend_pipeline/api/app.py)
+- [src/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/storage/models.sql)
+- [src/storage/db.py](C:/Project/news-trend-pipeline-v2/src/storage/db.py)
+- [src/api/service.py](C:/Project/news-trend-pipeline-v2/src/api/service.py)
+- [src/api/app.py](C:/Project/news-trend-pipeline-v2/src/api/app.py)
 
 제공 API:
 
@@ -98,12 +98,12 @@
 
 추가 파일:
 
-- [frontend/src/query-keyword-modal.tsx](C:/Project/news-trend-pipeline-v2/frontend/src/query-keyword-modal.tsx)
+- [src/dashboard/src/query-keyword-modal.tsx](C:/Project/news-trend-pipeline-v2/src/dashboard/src/query-keyword-modal.tsx)
 
 수정 파일:
 
-- [frontend/src/app.tsx](C:/Project/news-trend-pipeline-v2/frontend/src/app.tsx)
-- [frontend/src/data.ts](C:/Project/news-trend-pipeline-v2/frontend/src/data.ts)
+- [src/dashboard/src/app.tsx](C:/Project/news-trend-pipeline-v2/src/dashboard/src/app.tsx)
+- [src/dashboard/src/data.ts](C:/Project/news-trend-pipeline-v2/src/dashboard/src/data.ts)
 
 UI 반영 내용:
 

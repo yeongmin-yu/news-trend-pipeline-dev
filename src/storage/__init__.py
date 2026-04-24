@@ -1,4 +1,4 @@
-from news_trend_pipeline.storage.db import (
+from storage.db import (
     fetch_news_raw_between,
     get_connection,
     initialize_database,

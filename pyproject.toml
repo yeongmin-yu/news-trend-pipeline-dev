@@ -31,7 +31,7 @@ processing = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["news_trend_pipeline*"]
+include = ["analytics*", "api*", "core*", "ingestion*", "processing*", "storage*"]
 
 [tool.setuptools.package-dir]
 "" = "src"

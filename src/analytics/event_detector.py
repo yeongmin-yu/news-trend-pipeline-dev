@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 
 from psycopg2.extras import RealDictCursor
 
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.storage.db import get_connection, replace_keyword_events
+from core.logger import get_logger
+from storage.db import get_connection, replace_keyword_events
 
 
 logger = get_logger(__name__)

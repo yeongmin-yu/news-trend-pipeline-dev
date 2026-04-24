@@ -17,11 +17,11 @@ from pyspark.sql.functions import row_number
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.core.schemas import NormalizedNewsArticle
-from news_trend_pipeline.processing.preprocessing import tokenize
-from news_trend_pipeline.storage.db import (
+from core.config import settings
+from core.logger import get_logger
+from core.schemas import NormalizedNewsArticle
+from processing.preprocessing import tokenize
+from storage.db import (
     safe_initialize_database,
     upsert_from_staging_keyword_relations,
     upsert_from_staging_keyword_trends,

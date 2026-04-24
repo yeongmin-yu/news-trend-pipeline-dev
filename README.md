@@ -94,14 +94,13 @@ flowchart LR
 ```text
 news-trend-pipeline/
 ├─ src/                       # dev mount -> /opt/news-trend-pipeline/src
-│  └─ news_trend_pipeline/
-│     ├─ __init__.py
-│     ├─ core/                # 공통 설정, 로거, 유틸
-│     ├─ ingestion/           # API client / Kafka producer / replay
-│     ├─ processing/          # Spark 집계
-│     ├─ analytics/           # 복합명사 / 이벤트 분석
-│     ├─ api/                 # FastAPI 조회 계층
-│     └─ dashboard/           # FrontEnd 대시보드
+│  ├─ core/                   # 공통 설정, 로거, 유틸
+│  ├─ ingestion/              # API client / Kafka producer / replay
+│  ├─ processing/             # Spark 집계
+│  ├─ analytics/              # 복합명사 / 이벤트 분석
+│  ├─ api/                    # FastAPI 조회 계층
+│  ├─ storage/                # DB 스키마 / 접근 계층
+│  └─ dashboard/              # FrontEnd 대시보드 앱
 ├─ airflow/
 │  └─ dags/                   # dev mount -> /opt/airflow/dags
 ├─ infra/
@@ -242,8 +241,8 @@ docker compose up --build -d
 
 ```bash
 pip install -e .
-python -m news_trend_pipeline.ingestion.producer          # Kafka로 뉴스 적재
-python -m news_trend_pipeline.ingestion.replay            # Dead Letter 재처리
+python -m ingestion.producer          # Kafka로 뉴스 적재
+python -m ingestion.replay            # Dead Letter 재처리
 python scripts/consumer_check.py --max-messages 5         # 적재 결과 확인
 ```
 
@@ -252,7 +251,7 @@ python scripts/consumer_check.py --max-messages 5         # 적재 결과 확인
 
 ```bash
 export PYTHONPATH="$(pwd)/src"
-python -m news_trend_pipeline.ingestion.producer
+python -m ingestion.producer
 ```
 
 

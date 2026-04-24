@@ -12,12 +12,12 @@ Task 흐름:
   - max_active_runs=1 : 동시 실행 방지
   - catchup=False     : 과거 누락 실행 스킵
   - 15분마다 자동 실행되어 news_ingest_dag와 병렬로 동작
-  - `python -m news_trend_pipeline.ingestion.replay` 를 subprocess로 호출해 dead_letter.jsonl 재처리
+  - `python -m ingestion.replay` 를 subprocess로 호출해 dead_letter.jsonl 재처리
   - 재처리 결과를 XCom으로 집계해 모니터링
   - 영구 실패 메시지는 별도 모니터링 태스크에서 감시
 
 src layout: DAG → airflow/dags/ → 프로젝트 루트의 `src/` 를 sys.path에 추가하여
-`news_trend_pipeline` 패키지를 import합니다.
+평탄화된 패키지 구조를 import합니다.
 """
 
 from datetime import datetime, timedelta
@@ -60,8 +60,8 @@ def task_check_kafka_health() -> None:
     from kafka import KafkaAdminClient
     from kafka.errors import NoBrokersAvailable
 
-    from news_trend_pipeline.core.config import settings
-    from news_trend_pipeline.core.logger import get_logger
+    from core.config import settings
+    from core.logger import get_logger
 
     logger = get_logger(__name__)
 
@@ -82,7 +82,7 @@ def task_check_kafka_health() -> None:
 
 
 def task_replay_dead_letters(**context: object) -> dict[str, int]:
-    """news_trend_pipeline.ingestion.replay 모듈을 subprocess로 호출해 Dead Letter를 재처리합니다.
+    """ingestion.replay 모듈을 subprocess로 호출해 Dead Letter를 재처리합니다.
 
     dead_letter.jsonl이 없으면 빈 결과를 반환합니다.
     결과를 딕셔너리로 반환하고 XCom에 push합니다.
@@ -100,8 +100,8 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
         if (candidate_root / "runtime").exists() or (candidate_root / "src").exists():
             project_root = candidate_root
 
-    from news_trend_pipeline.core.config import settings
-    from news_trend_pipeline.core.logger import get_logger
+    from core.config import settings
+    from core.logger import get_logger
 
     logger = get_logger(__name__)
 
@@ -121,7 +121,7 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
     src_dir = project_root / "src"
 
     try:
-        logger.info("재처리 모듈 실행: python -m news_trend_pipeline.ingestion.replay (cwd=%s)", project_root)
+        logger.info("재처리 모듈 실행: python -m ingestion.replay (cwd=%s)", project_root)
 
         env = os.environ.copy()
         # src/ 를 PYTHONPATH 앞에 유지
@@ -131,7 +131,7 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
         )
 
         result = subprocess.run(
-            [sys.executable, "-m", "news_trend_pipeline.ingestion.replay"],
+            [sys.executable, "-m", "ingestion.replay"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
@@ -185,7 +185,7 @@ def task_summarize_replay_results(**context: object) -> None:
     """재처리 결과를 XCom에서 읽어 요약 로그를 남깁니다."""
     _ensure_src_on_syspath()
 
-    from news_trend_pipeline.core.logger import get_logger
+    from core.logger import get_logger
 
     logger = get_logger(__name__)
     ti = context["ti"]
@@ -223,8 +223,8 @@ def task_check_permanent_failures() -> None:
     """dead_letter_permanent.jsonl을 모니터링하고 영구 실패 메시지 상세 정보를 기록합니다."""
     _ensure_src_on_syspath()
 
-    from news_trend_pipeline.core.config import settings
-    from news_trend_pipeline.core.logger import get_logger
+    from core.config import settings
+    from core.logger import get_logger
 
     logger = get_logger(__name__)
 

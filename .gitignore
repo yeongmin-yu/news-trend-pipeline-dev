@@ -29,9 +29,9 @@ build/
 dist/
 *.egg-info/
 
-frontend/node_modules/
-frontend/dist/
-frontend/*.tsbuildinfo
+src/dashboard/node_modules/
+src/dashboard/dist/
+src/dashboard/*.tsbuildinfo
 
 .claude/settings.local.json
 .claude/worktrees/

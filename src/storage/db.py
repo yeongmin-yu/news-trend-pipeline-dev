@@ -10,10 +10,10 @@ import psycopg2
 from psycopg2 import Error
 from psycopg2.extras import Json, RealDictCursor
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.domains import DOMAIN_DEFINITIONS
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.processing.preprocessing import tokenize
+from core.config import settings
+from core.domains import DOMAIN_DEFINITIONS
+from core.logger import get_logger
+from processing.preprocessing import tokenize
 
 _STOPWORD_SEED: tuple[str, ...] = (
     "기자",

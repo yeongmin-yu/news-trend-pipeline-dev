@@ -15,8 +15,8 @@ SRC_DIR = PROJECT_ROOT / "src"
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.schemas import NormalizedNewsArticle
+from core.config import settings
+from core.schemas import NormalizedNewsArticle
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

@@ -45,10 +45,10 @@ Kafka 메시지
 
 | 파일 | 역할 |
 |------|------|
-| [`processing/preprocessing.py`](../src/news_trend_pipeline/processing/preprocessing.py) | 정제·토큰화·병합 |
-| [`analytics/compound_extractor.py`](../src/news_trend_pipeline/analytics/compound_extractor.py) | 복합명사 후보 자동 추출 배치 |
-| [`storage/db.py`](../src/news_trend_pipeline/storage/db.py) | 사전 CRUD (`fetch_compound_nouns`, `fetch_stopwords`, `upsert_compound_candidates`) |
-| [`storage/models.sql`](../src/news_trend_pipeline/storage/models.sql) | 사전 테이블 스키마 |
+| [`processing/preprocessing.py`](../src/processing/preprocessing.py) | 정제·토큰화·병합 |
+| [`analytics/compound_extractor.py`](../src/analytics/compound_extractor.py) | 복합명사 후보 자동 추출 배치 |
+| [`storage/db.py`](../src/storage/db.py) | 사전 CRUD (`fetch_compound_nouns`, `fetch_stopwords`, `upsert_compound_candidates`) |
+| [`storage/models.sql`](../src/storage/models.sql) | 사전 테이블 스키마 |
 
 ---
 
@@ -222,7 +222,7 @@ txt 파일 로드 (fallback)        _KOREAN_STOPWORDS_DEFAULT (fallback)
 @lru_cache(maxsize=1)
 def get_user_dictionary() -> tuple[str, ...]:
     try:
-        from news_trend_pipeline.storage.db import fetch_compound_nouns  # lazy import
+        from storage.db import fetch_compound_nouns  # lazy import
         words = fetch_compound_nouns()
         if words:
             return tuple(words)
@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS stopword_dict (
 
 ## 9. 복합명사 후보 자동 추출
 
-**파일**: [`analytics/compound_extractor.py`](../src/news_trend_pipeline/analytics/compound_extractor.py)  
+**파일**: [`analytics/compound_extractor.py`](../src/analytics/compound_extractor.py)  
 **DAG**: [`airflow/dags/compound_extraction_dag.py`](../airflow/dags/compound_extraction_dag.py)
 
 ### 목적

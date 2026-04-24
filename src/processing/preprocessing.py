@@ -13,8 +13,8 @@ try:
 except ImportError:  # pragma: no cover
     Kiwi = None
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
+from core.config import settings
+from core.logger import get_logger
 
 
 # DB를 사용할 수 없는 환경의 fallback 불용어
@@ -106,7 +106,7 @@ def _refresh_dictionary_caches_if_needed(*, force: bool = False) -> None:
 
         _last_dictionary_version_check_at = now
         try:
-            from news_trend_pipeline.storage.db import fetch_dictionary_versions  # noqa: PLC0415
+            from storage.db import fetch_dictionary_versions  # noqa: PLC0415
 
             latest_versions = fetch_dictionary_versions()
         except Exception as exc:  # pragma: no cover
@@ -160,7 +160,7 @@ def get_user_dictionary() -> tuple[str, ...]:
     """DB에서 승인된 복합명사를 로드한다. DB 불가 시 파일 fallback."""
     try:
         # db.py가 preprocessing.py를 import하므로 순환 참조 방지를 위해 lazy import
-        from news_trend_pipeline.storage.db import fetch_compound_nouns  # noqa: PLC0415
+        from storage.db import fetch_compound_nouns  # noqa: PLC0415
         words = fetch_compound_nouns()
         if words:
             return tuple(words)
@@ -200,7 +200,7 @@ def get_kiwi() -> Kiwi | None:
 def _get_stopwords() -> frozenset[str]:
     """DB에서 불용어를 로드한다. DB 불가 시 기본값 fallback."""
     try:
-        from news_trend_pipeline.storage.db import fetch_stopwords  # noqa: PLC0415
+        from storage.db import fetch_stopwords  # noqa: PLC0415
         words = fetch_stopwords(language="ko")
         if words:
             return frozenset(words)

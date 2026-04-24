@@ -40,7 +40,7 @@ def _run_extraction(**context) -> None:
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
 
-    from news_trend_pipeline.analytics.compound_extractor import run_extraction_job
+    from analytics.compound_extractor import run_extraction_job
 
     # data_interval_end 기준으로 window를 설정해 재처리 멱등성 확보
     until: datetime = context["data_interval_end"]

@@ -21,10 +21,10 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.processing.preprocessing import KOREAN_TOKEN_PATTERN, KOREAN_NOUN_TAGS
-from news_trend_pipeline.storage.db import (
+from core.config import settings
+from core.logger import get_logger
+from processing.preprocessing import KOREAN_TOKEN_PATTERN, KOREAN_NOUN_TAGS
+from storage.db import (
     fetch_articles_for_extraction,
     fetch_compound_nouns,
     upsert_compound_candidates,

@@ -1,4 +1,4 @@
-from news_trend_pipeline.core.schemas import NormalizedNewsArticle
+from core.schemas import NormalizedNewsArticle
 
 
 def test_normalized_news_article_to_message_includes_metadata() -> None:

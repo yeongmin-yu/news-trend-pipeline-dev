@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
+from core.config import settings
+from core.logger import get_logger
 
 
 logger = get_logger(__name__)

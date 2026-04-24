@@ -11,11 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.core.schemas import NormalizedNewsArticle
-from news_trend_pipeline.core.utils import ensure_dir, read_json, utc_now_iso
-from news_trend_pipeline.ingestion.producer import NewsKafkaProducer, build_message
+from core.config import settings
+from core.logger import get_logger
+from core.schemas import NormalizedNewsArticle
+from core.utils import ensure_dir, read_json, utc_now_iso
+from ingestion.producer import NewsKafkaProducer, build_message
 
 
 logger = get_logger(__name__)

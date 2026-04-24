@@ -10,9 +10,9 @@ from urllib.parse import urlparse
 import requests
 from psycopg2.extras import RealDictCursor
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
-from news_trend_pipeline.storage.db import (
+from core.config import settings
+from core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
+from storage.db import (
     create_query_keyword as db_create_query_keyword,
     delete_query_keyword as db_delete_query_keyword,
     fetch_all_query_keywords,

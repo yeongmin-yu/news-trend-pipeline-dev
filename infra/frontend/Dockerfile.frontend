@@ -2,11 +2,11 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-COPY frontend/package.json frontend/tsconfig.json frontend/tsconfig.app.json frontend/vite.config.ts ./
+COPY src/dashboard/package.json src/dashboard/package-lock.json src/dashboard/tsconfig.json src/dashboard/tsconfig.app.json src/dashboard/vite.config.ts ./
 RUN npm install
 
-COPY frontend/index.html ./index.html
-COPY frontend/src ./src
+COPY src/dashboard/index.html ./index.html
+COPY src/dashboard/src ./src
 
 RUN npm run build
 

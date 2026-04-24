@@ -15,12 +15,12 @@ if str(PROJECT_ROOT) not in sys.path:
 from kafka import KafkaProducer
 from kafka.errors import KafkaError, KafkaTimeoutError
 
-from news_trend_pipeline.core.config import settings
-from news_trend_pipeline.core.logger import get_logger
-from news_trend_pipeline.core.schemas import NormalizedNewsArticle
-from news_trend_pipeline.core.utils import ensure_dir, read_json, utc_now_iso
-from news_trend_pipeline.ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient
-from news_trend_pipeline.storage.db import fetch_active_query_keywords, insert_collection_metric, safe_initialize_database
+from core.config import settings
+from core.logger import get_logger
+from core.schemas import NormalizedNewsArticle
+from core.utils import ensure_dir, read_json, utc_now_iso
+from ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient
+from storage.db import fetch_active_query_keywords, insert_collection_metric, safe_initialize_database
 
 
 logger = get_logger(__name__)
