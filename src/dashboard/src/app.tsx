@@ -14,8 +14,10 @@ function fmtKST(ms: number, withSeconds = false): string {
 import {
   api,
   type ArticleItem,
+  type DashboardOverviewResponse,
   type FiltersResponse,
   type KeywordSummary,
+  type OverviewCachePayload,
   type RangeId,
   type RelatedKeyword,
   type SourceId,
@@ -32,6 +34,11 @@ type AsyncState<T> = {
   data: T | null;
   loading: boolean;
   error: string | null;
+};
+
+type AsyncOptions = {
+  cacheKey?: string;
+  keepPreviousData?: boolean;
 };
 
 const DEFAULT_FILTERS: FiltersResponse = {
@@ -77,27 +84,48 @@ const TREND_BUCKET_OPTIONS: Array<{ id: TrendBucketId; label: string; minutes: n
 const MIN_TREND_WINDOW_MS = 30 * 60 * 1000;
 const MAX_TREND_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_POINTS_PER_QUERY = 480;
+const TREND_FETCH_OVERSCAN_BUCKETS = 7;
+const DASHBOARD_WINDOW_COMMIT_DELAY_MS = 550;
+const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
-function useAsyncData<T>(factory: () => Promise<T>, deps: unknown[]): AsyncState<T> {
+function useAsyncData<T>(factory: () => Promise<T>, deps: unknown[], options?: AsyncOptions): AsyncState<T> {
   const [state, setState] = useState<AsyncState<T>>({ data: null, loading: true, error: null });
+  const cacheRef = useRef<Map<string, T>>(new Map());
 
   useEffect(() => {
     let alive = true;
-    setState({ data: null, loading: true, error: null });
+    const cached = options?.cacheKey ? cacheRef.current.get(options.cacheKey) : undefined;
+    if (cached !== undefined) {
+      setState({ data: cached, loading: false, error: null });
+      return () => {
+        alive = false;
+      };
+    }
+    setState((prev) => ({
+      data: options?.keepPreviousData ? prev.data : null,
+      loading: options?.keepPreviousData ? prev.data == null : true,
+      error: null,
+    }));
     factory()
       .then((data) => {
-        if (alive) setState({ data, loading: false, error: null });
+        if (!alive) return;
+        if (options?.cacheKey) {
+          cacheRef.current.set(options.cacheKey, data);
+        }
+        setState({ data, loading: false, error: null });
       })
       .catch((error: unknown) => {
-        if (alive)
-          setState({
-            data: null,
+        if (!alive) return;
+          setState((prev) => ({
+            data: options?.keepPreviousData ? prev.data : null,
             loading: false,
             error: error instanceof Error ? error.message : "알 수 없는 오류",
-          });
+          }));
       });
-    return () => { alive = false; };
-  }, deps);
+    return () => {
+      alive = false;
+    };
+  }, [...deps, options?.cacheKey, options?.keepPreviousData]);
 
   return state;
 }
@@ -156,6 +184,10 @@ function pickAutoTrendBucket(durationMs: number): TrendBucketId {
   return "4h";
 }
 
+function getTrendBucketMinutes(bucketId: TrendBucketId): number {
+  return TREND_BUCKET_OPTIONS.find((item) => item.id === bucketId)?.minutes ?? 15;
+}
+
 function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [number, number] {
   let start = startMs;
   let end = endMs;
@@ -168,6 +200,163 @@ function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [numbe
     start = end - duration;
   }
   return [start, end];
+}
+
+function expandTrendFetchWindow(startMs: number, endMs: number, bucketId: TrendBucketId, nowMs: number) {
+  const bucketMs = getTrendBucketMinutes(bucketId) * 60_000;
+  const visibleBuckets = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
+  const overscanBuckets = Math.max(
+    TREND_FETCH_OVERSCAN_BUCKETS,
+    Math.min(18, Math.ceil(visibleBuckets * 0.35)),
+  );
+  const overscanMs = bucketMs * overscanBuckets;
+  const nextStart = Math.max(0, startMs - overscanMs);
+  const nextEnd = Math.min(nowMs, endMs + overscanMs);
+  return { startMs: nextStart, endMs: nextEnd };
+}
+
+function expandOverviewFetchWindow(startMs: number, endMs: number, nowMs: number) {
+  const duration = Math.max(MIN_TREND_WINDOW_MS, endMs - startMs);
+  const overscanMs = Math.max(15 * 60_000, Math.min(duration, Math.floor(duration * 0.75)));
+  return {
+    startMs: Math.max(0, startMs - overscanMs),
+    endMs: Math.min(nowMs, endMs + overscanMs),
+  };
+}
+
+function fmtAbsoluteKst(value: string | null): string {
+  if (!value) return "?곗씠???놁쓬";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "?곗씠???놁쓬";
+  const kst = new Date(date.getTime() + 9 * 3600_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${kst.getUTCFullYear()}-${pad(kst.getUTCMonth() + 1)}-${pad(kst.getUTCDate())} ${pad(kst.getUTCHours())}:${pad(kst.getUTCMinutes())}:${pad(kst.getUTCSeconds())} KST`;
+}
+
+function deriveOverviewFromCache(
+  source: SourceId,
+  cache: OverviewCachePayload | undefined,
+  startMs: number,
+  endMs: number,
+  limit: number,
+  nowMs: number,
+): DashboardOverviewResponse | null {
+  if (!cache) return null;
+  const articleBuckets = cache.articleBuckets ?? [];
+  const keywordBuckets = cache.keywordBuckets ?? [];
+  const durationMs = endMs - startMs;
+  const prevStartMs = startMs - durationMs;
+  const currentRows = articleBuckets.filter((row) => {
+    const ts = new Date(row.timestamp).getTime();
+    return ts >= startMs && ts < endMs;
+  });
+  const prevRows = articleBuckets.filter((row) => {
+    const ts = new Date(row.timestamp).getTime();
+    return ts >= prevStartMs && ts < startMs;
+  });
+  const currentBucketSet = new Set(currentRows.map((row) => row.bucket));
+  const currentArticles = currentRows.reduce((sum, row) => sum + row.articleCount, 0);
+  const prevArticles = prevRows.reduce((sum, row) => sum + row.articleCount, 0);
+  const lastUpdateCandidates = currentRows
+    .map((row) => row.lastUpdateAt)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const lastUpdateAt = lastUpdateCandidates.length ? lastUpdateCandidates[lastUpdateCandidates.length - 1] : null;
+
+  const keywordMap = new Map<string, { mentions: Map<number, number>; articles: Map<number, number> }>();
+  for (const row of keywordBuckets) {
+    const current = keywordMap.get(row.keyword) ?? { mentions: new Map<number, number>(), articles: new Map<number, number>() };
+    current.mentions.set(row.bucket, row.mentions);
+    current.articles.set(row.bucket, row.articleCount);
+    keywordMap.set(row.keyword, current);
+  }
+
+  const derivedKeywords: KeywordSummary[] = [];
+  const spikeEvents: DashboardOverviewResponse["spikes"]["events"] = [];
+  const spikeKeywordSet = new Set<string>();
+  const defaultEventSource = source === "global" ? "global" : "naver";
+  const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucketMin * 60_000)));
+
+  for (const keyword of cache.candidateKeywords) {
+    const series = keywordMap.get(keyword);
+    if (!series) continue;
+    let currentMentions = 0;
+    let prevMentions = 0;
+    let articleCount = 0;
+    for (const row of currentRows) {
+      currentMentions += series.mentions.get(row.bucket) ?? 0;
+      articleCount += series.articles.get(row.bucket) ?? 0;
+    }
+    for (const row of prevRows) {
+      prevMentions += series.mentions.get(row.bucket) ?? 0;
+    }
+    if (currentMentions <= 0 && prevMentions <= 0) continue;
+    const growth = prevMentions <= 0 ? (currentMentions > 0 ? 1 : 0) : (currentMentions - prevMentions) / prevMentions;
+    const spike = currentMentions >= 5 && growth >= 0.4;
+    const eventScore = Math.max(0, Math.min(100, Math.round(growth * 45 + Math.sqrt(currentMentions) * 6 + (spike ? 20 : 0))));
+    derivedKeywords.push({
+      keyword,
+      mentions: currentMentions,
+      prevMentions,
+      growth,
+      delta: currentMentions - prevMentions,
+      spike,
+      eventScore,
+      articleCount,
+    });
+
+    const orderedBuckets = Array.from(series.mentions.entries()).sort((a, b) => a[0] - b[0]);
+    let previousBucketMentions = 0;
+    for (const [bucket, mentions] of orderedBuckets) {
+      if (mentions <= 0) continue;
+      const bucketGrowth = previousBucketMentions <= 0 ? (mentions > 0 ? 1 : 0) : (mentions - previousBucketMentions) / previousBucketMentions;
+      if (currentBucketSet.has(bucket) && bucketGrowth >= 0.35 && mentions >= 3) {
+        spikeKeywordSet.add(keyword);
+        spikeEvents.push({
+          bucket: Math.floor((new Date(articleBuckets[bucket]?.timestamp ?? 0).getTime() - startMs) / (cache.bucketMin * 60_000)),
+          keyword,
+          intensity: Math.min(1, Math.max(0.12, bucketGrowth)),
+          source: defaultEventSource,
+          currentMentions: mentions,
+          prevMentions: previousBucketMentions,
+          growth: bucketGrowth,
+          score: eventScore,
+        });
+      }
+      previousBucketMentions = mentions;
+    }
+  }
+
+  derivedKeywords.sort((a, b) => b.mentions - a.mentions || a.keyword.localeCompare(b.keyword));
+  const visibleEvents = spikeEvents
+    .filter((item) => item.bucket >= 0 && item.bucket < bucketCount)
+    .sort((a, b) => b.score - a.score || b.growth - a.growth);
+  const growth = prevArticles <= 0 ? (currentArticles > 0 ? 1 : 0) : (currentArticles - prevArticles) / prevArticles;
+  const spikeTopKeywords = derivedKeywords.filter((item) => item.spike).slice(0, 8).map((item) => item.keyword);
+  const lastUpdateMinutesAgo = lastUpdateAt ? Math.max(0, Math.floor((nowMs - new Date(lastUpdateAt).getTime()) / 60_000)) : null;
+
+  return {
+    kpis: {
+      totalArticles: currentArticles,
+      uniqueKeywords: derivedKeywords.filter((item) => item.mentions > 0).length,
+      spikeCount: spikeKeywordSet.size,
+      growth,
+      lastUpdateRelative: fmtAgo(lastUpdateMinutesAgo),
+      lastUpdateAbsolute: fmtAbsoluteKst(lastUpdateAt),
+    },
+    keywords: derivedKeywords.slice(0, limit),
+    spikes: {
+      topKeywords: spikeTopKeywords.length ? spikeTopKeywords : derivedKeywords.slice(0, 8).map((item) => item.keyword),
+      events: visibleEvents.slice(0, Math.max(limit, 32)),
+      range: {
+        id: "custom",
+        label: `${cache.bucket} custom`,
+        bucketMin: cache.bucketMin,
+        buckets: bucketCount,
+      },
+    },
+    cache,
+  };
 }
 
 function toDateTimeLocalInput(ms: number): string {
@@ -187,7 +376,7 @@ function fromDateTimeLocalInput(value: string): number | null {
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
-  const [range, setRange] = useState<RangeId>("1h");
+  const [rangePreset, setRangePreset] = useState<RangeId | null>("1h");
   const [domain, setDomain] = useState("ai_tech");
   const [search, setSearch] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
@@ -235,11 +424,119 @@ export default function App() {
   }, []);
 
   const filters = useAsyncData(() => api.filters(), []);
-  const kpis = useAsyncData(() => api.kpis(source, domain, range), [source, domain, range]);
-  const keywords = useAsyncData(() => api.keywords(source, domain, range, search, 30), [source, domain, range, search]);
-  const spikes = useAsyncData(() => api.spikes(source, domain, range), [source, domain, range]);
+  const activeFilters = filters.data ?? DEFAULT_FILTERS;
+  const activeRange = useMemo(
+    () => activeFilters.ranges.find((r) => r.id === (rangePreset ?? "1h")) ?? DEFAULT_FILTERS.ranges[2],
+    [activeFilters.ranges, rangePreset],
+  );
+
+  const [committedWindow, setCommittedWindow] = useState(trendWindow);
+  const rangeParam = rangePreset ?? "1h";
+  const trendDurationMs = trendWindow.endMs - trendWindow.startMs;
+  const activeWindowLabel = rangePreset ? activeRange.label : "사용자 기간";
+  const effectiveTrendBucket = useMemo<TrendBucketId>(() => {
+    const preferred = trendBucketMode === "auto" ? pickAutoTrendBucket(trendDurationMs) : trendBucketMode;
+    const preferredOption = TREND_BUCKET_OPTIONS.find((item) => item.id === preferred) ?? TREND_BUCKET_OPTIONS[1];
+    const maxAllowedMinutes = Math.ceil(trendDurationMs / MAX_POINTS_PER_QUERY / 60_000);
+    const safeOption =
+      TREND_BUCKET_OPTIONS.find((item) => item.minutes >= maxAllowedMinutes && item.minutes >= preferredOption.minutes) ??
+      TREND_BUCKET_OPTIONS[TREND_BUCKET_OPTIONS.length - 1];
+    return safeOption.id;
+  }, [trendBucketMode, trendDurationMs]);
+  const committedStartIso = useMemo(() => new Date(committedWindow.startMs).toISOString(), [committedWindow.startMs]);
+  const committedEndIso = useMemo(() => new Date(committedWindow.endMs).toISOString(), [committedWindow.endMs]);
+  const autoRefreshTick = Math.floor(now / AUTO_REFRESH_INTERVAL_MS);
+  const trendFetchClockMs = useMemo(() => {
+    if (!autoRefresh) return trendWindow.endMs;
+    const bucketMs = getTrendBucketMinutes(effectiveTrendBucket) * 60_000;
+    return Math.min(now, Math.floor(now / bucketMs) * bucketMs);
+  }, [autoRefresh, trendWindow.endMs, effectiveTrendBucket, now]);
+  const overviewFetchClockMs = useMemo(
+    () => (autoRefresh ? Math.min(now, autoRefreshTick * AUTO_REFRESH_INTERVAL_MS) : trendWindow.endMs),
+    [autoRefresh, now, autoRefreshTick, trendWindow.endMs],
+  );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setCommittedWindow((prev) =>
+        prev.startMs === trendWindow.startMs && prev.endMs === trendWindow.endMs ? prev : trendWindow,
+      );
+    }, DASHBOARD_WINDOW_COMMIT_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket]);
+
+  const [overviewFetchWindow, setOverviewFetchWindow] = useState(() =>
+    expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, trendWindow.endMs),
+  );
+
+  const overviewRequestKey = useMemo(
+    () => [
+      source,
+      domain,
+      rangeParam,
+      committedStartIso,
+      committedEndIso,
+      effectiveTrendBucket,
+      search,
+      overviewFetchWindow.startMs,
+      overviewFetchWindow.endMs,
+    ].join("::"),
+    [source, domain, rangeParam, committedStartIso, committedEndIso, effectiveTrendBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
+  );
+
+  useEffect(() => {
+    const desired = expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs);
+    const durationMs = Math.max(MIN_TREND_WINDOW_MS, trendWindow.endMs - trendWindow.startMs);
+    const edgeSlackMs = Math.max(10 * 60_000, Math.floor(durationMs * 0.2));
+    setOverviewFetchWindow((prev) => {
+      const shouldRefresh =
+        desired.startMs < prev.startMs ||
+        desired.endMs > prev.endMs ||
+        trendWindow.startMs <= prev.startMs + edgeSlackMs ||
+        trendWindow.endMs >= prev.endMs - edgeSlackMs;
+      return shouldRefresh ? desired : prev;
+    });
+  }, [trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs]);
+
+  const overview = useAsyncData(
+    () =>
+      api.overviewWindow(
+        source,
+        domain,
+        rangeParam,
+        committedStartIso,
+        committedEndIso,
+        effectiveTrendBucket,
+        search,
+        30,
+        new Date(overviewFetchWindow.startMs).toISOString(),
+        new Date(overviewFetchWindow.endMs).toISOString(),
+      ),
+    [source, domain, rangeParam, committedStartIso, committedEndIso, effectiveTrendBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
+    { cacheKey: overviewRequestKey, keepPreviousData: true },
+  );
+  const derivedOverview = useMemo(
+    () => deriveOverviewFromCache(source, overview.data?.cache, committedWindow.startMs, committedWindow.endMs, 30, now),
+    [source, overview.data?.cache, committedWindow.startMs, committedWindow.endMs, now],
+  );
+  const activeOverview = derivedOverview ?? overview.data;
   const system = useAsyncData(() => api.system(), []);
-  const rawKeywords = keywords.data ?? [];
+  const kpis: AsyncState<DashboardOverviewResponse["kpis"]> = {
+    data: activeOverview?.kpis ?? null,
+    loading: overview.loading,
+    error: overview.error,
+  };
+  const keywords: AsyncState<DashboardOverviewResponse["keywords"]> = {
+    data: activeOverview?.keywords ?? null,
+    loading: overview.loading,
+    error: overview.error,
+  };
+  const spikes: AsyncState<DashboardOverviewResponse["spikes"]> = {
+    data: activeOverview?.spikes ?? null,
+    loading: overview.loading,
+    error: overview.error,
+  };
+  const rawKeywords = activeOverview?.keywords ?? [];
   const rankedKeywords = useMemo(() => rankKeywords(rawKeywords, topSort), [rawKeywords, topSort]);
   const displayKeywords = useMemo(
     () =>
@@ -275,49 +572,59 @@ export default function App() {
       .slice(0, 5)
       .map((item) => item.keyword);
     setCheckedTrendKeywords(defaultTopFive);
-  }, [rankedKeywords, domain, source, range, search]);
+  }, [rankedKeywords, domain, source, rangeParam, search, committedStartIso, committedEndIso]);
 
   useEffect(() => {
     setTrendFetchLimit(topLimit);
-  }, [domain, source, range, topSort, search]);
+  }, [domain, source, rangeParam, topSort, search, committedStartIso, committedEndIso]);
 
   useEffect(() => {
     setTrendFetchLimit((prev) => Math.max(prev, topLimit));
   }, [topLimit]);
 
+  useEffect(() => {
+    if (!autoRefresh || rangePreset == null) return;
+    const selected = activeFilters.ranges.find((item) => item.id === rangePreset) ?? DEFAULT_FILTERS.ranges[2];
+    const endMs = Math.min(now, autoRefreshTick * AUTO_REFRESH_INTERVAL_MS);
+    const startMs = endMs - selected.bucketMin * selected.buckets * 60_000;
+    setTrendWindow((prev) => (prev.startMs === startMs && prev.endMs === endMs ? prev : { startMs, endMs }));
+  }, [autoRefresh, autoRefreshTick, activeFilters.ranges, now, rangePreset]);
+
   const preloadedTrendKeywords = useMemo(
     () => rankedKeywords.slice(0, trendFetchLimit).map((item) => item.keyword),
     [rankedKeywords, trendFetchLimit],
   );
-  const trendDurationMs = trendWindow.endMs - trendWindow.startMs;
-  const effectiveTrendBucket = useMemo<TrendBucketId>(() => {
-    const preferred = trendBucketMode === "auto" ? pickAutoTrendBucket(trendDurationMs) : trendBucketMode;
-    const preferredOption = TREND_BUCKET_OPTIONS.find((item) => item.id === preferred) ?? TREND_BUCKET_OPTIONS[1];
-    const maxAllowedMinutes = Math.ceil(trendDurationMs / MAX_POINTS_PER_QUERY / 60_000);
-    const safeOption =
-      TREND_BUCKET_OPTIONS.find((item) => item.minutes >= maxAllowedMinutes && item.minutes >= preferredOption.minutes) ??
-      TREND_BUCKET_OPTIONS[TREND_BUCKET_OPTIONS.length - 1];
-    return safeOption.id;
-  }, [trendBucketMode, trendDurationMs]);
-  const [debouncedTrendWindow, setDebouncedTrendWindow] = useState(trendWindow);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedTrendWindow(trendWindow), 180);
-    return () => window.clearTimeout(timer);
-  }, [trendWindow]);
-
   const trendCacheRef = useRef<Map<string, TrendResponse>>(new Map());
   const [trend, setTrend] = useState<AsyncState<TrendResponse>>({ data: null, loading: true, error: null });
+  const [trendFetchWindow, setTrendFetchWindow] = useState(() =>
+    expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, Date.now()),
+  );
+
+  useEffect(() => {
+    const desired = expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs);
+    const bucketMs = getTrendBucketMinutes(effectiveTrendBucket) * 60_000;
+    const visibleBuckets = Math.max(1, Math.ceil((trendWindow.endMs - trendWindow.startMs) / bucketMs));
+    const edgeSlackMs = bucketMs * Math.max(3, Math.min(10, Math.ceil(visibleBuckets * 0.2)));
+    setTrendFetchWindow((prev) => {
+      const shouldRefresh =
+        desired.startMs < prev.startMs ||
+        desired.endMs > prev.endMs ||
+        trendWindow.startMs <= prev.startMs + edgeSlackMs ||
+        trendWindow.endMs >= prev.endMs - edgeSlackMs;
+      return shouldRefresh ? desired : prev;
+    });
+  }, [trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs]);
+
   const trendRequestKey = useMemo(
     () => [
       source,
       domain,
-      debouncedTrendWindow.startMs,
-      debouncedTrendWindow.endMs,
+      trendFetchWindow.startMs,
+      trendFetchWindow.endMs,
       effectiveTrendBucket,
       preloadedTrendKeywords.join("|"),
     ].join("::"),
-    [source, domain, debouncedTrendWindow.startMs, debouncedTrendWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords],
+    [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords],
   );
 
   useEffect(() => {
@@ -336,8 +643,8 @@ export default function App() {
       .trendWindow(
         source,
         domain,
-        new Date(debouncedTrendWindow.startMs).toISOString(),
-        new Date(debouncedTrendWindow.endMs).toISOString(),
+        new Date(trendFetchWindow.startMs).toISOString(),
+        new Date(trendFetchWindow.endMs).toISOString(),
         effectiveTrendBucket,
         preloadedTrendKeywords,
       )
@@ -357,41 +664,35 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [source, domain, debouncedTrendWindow.startMs, debouncedTrendWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords, trendRequestKey]);
+  }, [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords, trendRequestKey]);
   const detailTrend = useAsyncData(
     () =>
       selectedKeyword
-        ? api.trend(source, domain, range, selectedKeyword, [selectedKeyword])
+        ? api.trendWindow(source, domain, committedStartIso, committedEndIso, effectiveTrendBucket, [selectedKeyword])
         : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
-    [source, domain, range, selectedKeyword],
+    [source, domain, selectedKeyword, effectiveTrendBucket, committedStartIso, committedEndIso],
   );
   const related = useAsyncData(
-    () => (selectedKeyword ? api.related(source, domain, range, selectedKeyword) : Promise.resolve([] as RelatedKeyword[])),
-    [source, domain, range, selectedKeyword],
+    () =>
+      (selectedKeyword
+        ? api.related(source, domain, rangeParam, selectedKeyword, committedStartIso, committedEndIso)
+        : Promise.resolve([] as RelatedKeyword[])),
+    [source, domain, rangeParam, selectedKeyword, committedStartIso, committedEndIso],
   );
   const themeDistribution = useAsyncData(
     () =>
       selectedKeyword
-        ? api.themeDistribution(source, range, selectedKeyword)
+        ? api.themeDistribution(source, rangeParam, selectedKeyword, committedStartIso, committedEndIso)
         : Promise.resolve(EMPTY_THEME_DISTRIBUTION),
-    [source, range, selectedKeyword],
+    [source, rangeParam, selectedKeyword, committedStartIso, committedEndIso],
   );
   const articles = useAsyncData(
-    () => (selectedKeyword ? api.articles(source, domain, range, selectedKeyword, articleSort) : Promise.resolve([] as ArticleItem[])),
-    [source, domain, range, selectedKeyword, articleSort],
+    () =>
+      (selectedKeyword
+        ? api.articles(source, domain, rangeParam, selectedKeyword, articleSort, committedStartIso, committedEndIso)
+        : Promise.resolve([] as ArticleItem[])),
+    [source, domain, rangeParam, selectedKeyword, articleSort, committedStartIso, committedEndIso],
   );
-
-  const activeFilters = filters.data ?? DEFAULT_FILTERS;
-  const activeRange = useMemo(
-    () => activeFilters.ranges.find((r) => r.id === range) ?? DEFAULT_FILTERS.ranges[2],
-    [activeFilters.ranges, range],
-  );
-  useEffect(() => {
-    const endMs = Date.now();
-    const startMs = endMs - activeRange.bucketMin * activeRange.buckets * 60_000;
-    setTrendWindow({ startMs, endMs });
-    setTrendBucketMode("auto");
-  }, [domain, source, range, activeRange.bucketMin, activeRange.buckets]);
   const activeKeyword = useMemo(
     () => displayKeywords.find((k) => k.keyword === selectedKeyword) ?? displayKeywords[0] ?? null,
     [displayKeywords, selectedKeyword],
@@ -478,6 +779,7 @@ export default function App() {
   function setTrendWindowBound(kind: "start" | "end", value: string) {
     const parsed = fromDateTimeLocalInput(value);
     if (parsed == null) return;
+    setRangePreset(null);
     setTrendWindow((prev) => {
       const next = kind === "start" ? { startMs: parsed, endMs: prev.endMs } : { startMs: prev.startMs, endMs: parsed };
       const [startMs, endMs] = clampTrendWindow(next.startMs, next.endMs, now);
@@ -485,7 +787,19 @@ export default function App() {
     });
   }
 
+  function applyRangePreset(nextRange: RangeId) {
+    setRangePreset(nextRange);
+    const selected = activeFilters.ranges.find((item) => item.id === nextRange) ?? DEFAULT_FILTERS.ranges[2];
+    const endMs = now;
+    const startMs = endMs - selected.bucketMin * selected.buckets * 60_000;
+    setTrendWindow({ startMs, endMs });
+    setCommittedWindow({ startMs, endMs });
+    setTrendBucketMode("auto");
+    setSelectedBucket(null);
+  }
+
   function handleTrendWheelZoom(direction: "in" | "out", anchorRatio: number) {
+    setRangePreset(null);
     setTrendWindow((prev) => {
       const currentDuration = prev.endMs - prev.startMs;
       const nextDuration = direction === "in" ? currentDuration * 0.8 : currentDuration * 1.25;
@@ -498,10 +812,25 @@ export default function App() {
     });
   }
 
+  function handleTrendDragPan(deltaRatio: number) {
+    if (!deltaRatio) return;
+    setRangePreset(null);
+    setTrendWindow((prev) => {
+      const duration = prev.endMs - prev.startMs;
+      const deltaMs = duration * deltaRatio;
+      const [startMs, endMs] = clampTrendWindow(prev.startMs - deltaMs, prev.endMs - deltaMs, now);
+      return { startMs, endMs };
+    });
+  }
+
   useEffect(() => {
     const visibleNames = new Set((trend.data?.series ?? []).map((series) => series.name));
     setHiddenSeries((prev) => prev.filter((name) => visibleNames.has(name)));
   }, [trend.data]);
+
+  useEffect(() => {
+    setSelectedBucket(null);
+  }, [committedStartIso, committedEndIso, effectiveTrendBucket]);
 
   function addToWatchlist(keyword: string) {
     if (!keyword.trim() || watchlist.includes(keyword)) return;
@@ -596,10 +925,21 @@ export default function App() {
           ))}
         </div>
         <span className="divider" />
-        <span className="subbar-label">RANGE</span>
-        <div className="seg">
+        <span className="subbar-label">DATE</span>
+        <div className="subbar-date">
+          <div className="field">
+            <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.startMs)} onChange={(e) => setTrendWindowBound("start", e.target.value)} />
+          </div>
+          <span className="subbar-date-sep">~</span>
+          <div className="field">
+            <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.endMs)} onChange={(e) => setTrendWindowBound("end", e.target.value)} />
+          </div>
+        </div>
+        <span className="divider" />
+        <span className="subbar-label">현 시간 기준</span>
+        <div className="range-buttons">
           {activeFilters.ranges.map((r) => (
-            <button key={r.id} className={range === r.id ? "is-active" : ""} onClick={() => setRange(r.id)}>
+            <button key={r.id} className={rangePreset === r.id ? "is-active" : ""} onClick={() => applyRangePreset(r.id)}>
               {r.label}
             </button>
           ))}
@@ -639,7 +979,7 @@ export default function App() {
         <div style={{ flex: 1 }} />
         <span className="subbar-label">AS OF</span>
         <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>
-          {fmtKST(now - activeRange.bucketMin * activeRange.buckets * 60_000)}
+          {fmtKST(trendWindow.endMs)}
         </span>
       </div>
 
@@ -844,14 +1184,6 @@ export default function App() {
             </div>
             <div className="panel-body">
               <div className="trend-toolbar">
-                <div className="trend-datetime">
-                  <div className="field">
-                    <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.startMs)} onChange={(e) => setTrendWindowBound("start", e.target.value)} />
-                  </div>
-                  <div className="field">
-                    <input type="datetime-local" value={toDateTimeLocalInput(trendWindow.endMs)} onChange={(e) => setTrendWindowBound("end", e.target.value)} />
-                  </div>
-                </div>
                 <div className="seg">
                   <button className={trendBucketMode === "auto" ? "is-active" : ""} onClick={() => setTrendBucketMode("auto")}>
                     자동
@@ -882,12 +1214,14 @@ export default function App() {
                 <TrendLine
                   series={visibleTrendSeries}
                   bucketMin={trend.data?.range.bucketMin ?? activeRange.bucketMin}
+                  viewStartMs={trendWindow.startMs}
+                  viewEndMs={trendWindow.endMs}
                   hidden={hiddenSeries}
                   onToggle={toggleSeries}
                   selectedBucket={selectedBucket}
                   onPointClick={setSelectedBucket}
                   onWheelZoom={handleTrendWheelZoom}
-                  nowMs={now}
+                  onDragPan={handleTrendDragPan}
                 />
               )}
             </div>
@@ -1033,7 +1367,7 @@ export default function App() {
                     ✓ 워치중
                   </button>
                 )}
-                <div className="rail-sub">KEYWORD DETAIL · {activeRange.label} window</div>
+                <div className="rail-sub">KEYWORD DETAIL · {activeWindowLabel} window</div>
               </div>
             </div>
             <button className="rail-close" onClick={() => setSelectedKeyword(null)}>
@@ -1068,7 +1402,7 @@ export default function App() {
 
           <div className="rail-section">
             <h4>
-              최근 추이<span>{activeRange.label}</span>
+              최근 추이<span>{activeWindowLabel}</span>
             </h4>
             <div style={{ height: 120, position: "relative" }}>
               {detailTrend.loading ? (
@@ -1076,10 +1410,9 @@ export default function App() {
               ) : detailTrendSeries?.points?.length ? (
                 <TrendLine
                   series={[detailTrendSeries]}
-                  bucketMin={activeRange.bucketMin}
+                  bucketMin={detailTrend.data?.range.bucketMin ?? activeRange.bucketMin}
                   mini={true}
                   hidden={[]}
-                  nowMs={now}
                 />
               ) : (
                 <EmptyState title="추이 없음" body="표시할 최근 추이 데이터가 없습니다." />

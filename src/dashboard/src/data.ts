@@ -62,7 +62,7 @@ export interface TrendSeries {
 
 export interface TrendResponse {
   series: TrendSeries[];
-  range: RangeOption;
+  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
 }
 
 export interface SpikeEvent {
@@ -79,7 +79,45 @@ export interface SpikeEvent {
 export interface SpikeResponse {
   topKeywords: string[];
   events: SpikeEvent[];
-  range: RangeOption;
+  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
+}
+
+export interface OverviewArticleBucket {
+  bucket: number;
+  timestamp: string;
+  articleCount: number;
+  lastUpdateAt: string | null;
+}
+
+export interface OverviewKeywordBucket {
+  keyword: string;
+  bucket: number;
+  timestamp: string;
+  mentions: number;
+  articleCount: number;
+}
+
+export interface OverviewCachePayload {
+  requestedStartAt: string;
+  requestedEndAt: string;
+  fetchStartAt: string;
+  fetchEndAt: string;
+  dataStartAt: string;
+  dataEndAt: string;
+  bucket: TrendBucketId;
+  bucketMin: number;
+  buckets: number;
+  candidateKeywords: string[];
+  articleBuckets: OverviewArticleBucket[];
+  keywordBuckets: OverviewKeywordBucket[];
+  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
+}
+
+export interface DashboardOverviewResponse {
+  kpis: KpiSummary;
+  keywords: KeywordSummary[];
+  spikes: SpikeResponse;
+  cache?: OverviewCachePayload;
 }
 
 export interface RelatedKeyword {
@@ -238,11 +276,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   filters: () => request<FiltersResponse>("/meta/filters"),
-  kpis: (source: SourceId, domain: string, range: RangeId) =>
-    request<KpiSummary>(`/dashboard/kpis?source=${source}&domain=${domain}&range=${range}`),
-  keywords: (source: SourceId, domain: string, range: RangeId, search: string, limit: number) =>
+  kpis: (source: SourceId, domain: string, range: RangeId, startAt?: string, endAt?: string) =>
+    request<KpiSummary>(
+      `/dashboard/kpis?source=${source}&domain=${domain}&range=${range}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }`,
+    ),
+  keywords: (source: SourceId, domain: string, range: RangeId, search: string, limit: number, startAt?: string, endAt?: string) =>
     request<KeywordSummary[]>(
-      `/dashboard/keywords?source=${source}&domain=${domain}&range=${range}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}`,
+      `/dashboard/keywords?source=${source}&domain=${domain}&range=${range}&limit=${limit}${search ? `&search=${encodeURIComponent(search)}` : ""}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }`,
+    ),
+  overviewWindow: (
+    source: SourceId,
+    domain: string,
+    range: RangeId,
+    startAt: string,
+    endAt: string,
+    bucket: TrendBucketId,
+    search: string,
+    limit: number,
+    fetchStartAt?: string,
+    fetchEndAt?: string,
+  ) =>
+    request<DashboardOverviewResponse>(
+      `/dashboard/overview-window?source=${source}&domain=${domain}&range=${range}&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}&bucket=${bucket}&limit=${limit}${
+        fetchStartAt && fetchEndAt
+          ? `&fetchStartAt=${encodeURIComponent(fetchStartAt)}&fetchEndAt=${encodeURIComponent(fetchEndAt)}`
+          : ""
+      }${
+        search ? `&search=${encodeURIComponent(search)}` : ""
+      }`,
     ),
   trend: (source: SourceId, domain: string, range: RangeId, keyword: string, keywords?: string[]) =>
     request<TrendResponse>(
@@ -261,19 +326,29 @@ export const api = {
     request<TrendResponse>(
       `/dashboard/trend-window?source=${source}&domain=${domain}&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}&bucket=${bucket}&keywords=${encodeURIComponent(keywords.join(","))}`,
     ),
-  spikes: (source: SourceId, domain: string, range: RangeId) =>
-    request<SpikeResponse>(`/dashboard/spikes?source=${source}&domain=${domain}&range=${range}`),
-  related: (source: SourceId, domain: string, range: RangeId, keyword: string) =>
+  spikes: (source: SourceId, domain: string, range: RangeId, startAt?: string, endAt?: string, bucket?: TrendBucketId) =>
+    request<SpikeResponse>(
+      `/dashboard/spikes?source=${source}&domain=${domain}&range=${range}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }${bucket ? `&bucket=${bucket}` : ""}`,
+    ),
+  related: (source: SourceId, domain: string, range: RangeId, keyword: string, startAt?: string, endAt?: string) =>
     request<RelatedKeyword[]>(
-      `/dashboard/related?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
+      `/dashboard/related?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }`,
     ),
-  themeDistribution: (source: SourceId, range: RangeId, keyword: string) =>
+  themeDistribution: (source: SourceId, range: RangeId, keyword: string, startAt?: string, endAt?: string) =>
     request<ThemeDistributionResponse>(
-      `/dashboard/theme-distribution?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}`,
+      `/dashboard/theme-distribution?source=${source}&range=${range}&keyword=${encodeURIComponent(keyword)}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }`,
     ),
-  articles: (source: SourceId, domain: string, range: RangeId, keyword: string, sort: "latest" | "relevance") =>
+  articles: (source: SourceId, domain: string, range: RangeId, keyword: string, sort: "latest" | "relevance", startAt?: string, endAt?: string) =>
     request<ArticleItem[]>(
-      `/dashboard/articles?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}&sort=${sort}`,
+      `/dashboard/articles?source=${source}&domain=${domain}&range=${range}&keyword=${encodeURIComponent(keyword)}&sort=${sort}${
+        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
+      }`,
     ),
   system: () => request<SystemStatusResponse>("/dashboard/system"),
   dictionary: () => request<DictionaryOverview>("/dictionary"),

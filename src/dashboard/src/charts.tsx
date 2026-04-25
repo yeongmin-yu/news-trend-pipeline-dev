@@ -129,8 +129,10 @@ export function TrendLine({
   selectedBucket,
   onPointClick,
   onWheelZoom,
+  onDragPan,
+  viewStartMs,
+  viewEndMs,
   mini = false,
-  nowMs,
 }: {
   series: TrendSeries[];
   bucketMin: number;
@@ -139,13 +141,19 @@ export function TrendLine({
   selectedBucket?: number | null;
   onPointClick?: (bucketIdx: number) => void;
   onWheelZoom?: (direction: "in" | "out", anchorRatio: number) => void;
+  onDragPan?: (deltaRatio: number) => void;
+  viewStartMs?: number;
+  viewEndMs?: number;
   mini?: boolean;
-  nowMs?: number;
 }) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 600, height: 280 });
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [pointer, setPointer] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{ pointerId: number; x: number } | null>(null);
+  const dragMovedRef = useRef(false);
+  const [dragOffsetX, setDragOffsetX] = useState(0);
 
   useEffect(() => {
     const resize = () => {
@@ -160,6 +168,12 @@ export function TrendLine({
 
   const visibleSeries = series.filter((s) => !hidden.includes(s.name));
   const points = series[0]?.points ?? [];
+  const viewStart = viewStartMs ?? (points[0] ? new Date(points[0].timestamp).getTime() : 0);
+  const fallbackViewEnd = points[points.length - 1]
+    ? new Date(points[points.length - 1].timestamp).getTime() + bucketMin * 60_000
+    : viewStart + bucketMin * 60_000;
+  const viewEnd = viewEndMs ?? fallbackViewEnd;
+  const viewDuration = Math.max(bucketMin * 60_000, viewEnd - viewStart);
   const maxValue = Math.max(1, ...visibleSeries.flatMap((s) => s.points.map((p) => p.value)));
   const pad = mini
     ? { top: 8, right: 8, bottom: 20, left: 30 }
@@ -167,13 +181,31 @@ export function TrendLine({
   const innerWidth = Math.max(10, size.width - pad.left - pad.right);
   const innerHeight = Math.max(10, size.height - pad.top - pad.bottom);
 
-  const x = (index: number) => pad.left + (index / Math.max(1, points.length - 1)) * innerWidth;
+  const xFromTimestamp = (timestampMs: number) =>
+    pad.left + ((timestampMs - viewStart) / viewDuration) * innerWidth + dragOffsetX;
   const y = (value: number) => pad.top + innerHeight - (value / maxValue) * innerHeight;
 
-  const linePath = (values: number[]) =>
-    values.map((v, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
-  const areaPath = (values: number[]) =>
-    `${linePath(values)} L ${x(values.length - 1).toFixed(1)} ${size.height - pad.bottom} L ${x(0).toFixed(1)} ${size.height - pad.bottom} Z`;
+  const plotSeries = visibleSeries.map((item) => ({
+    ...item,
+    plotPoints: item.points.map((point) => ({
+      ...point,
+      timestampMs: new Date(point.timestamp).getTime(),
+    })),
+  }));
+  const primarySeries = plotSeries[0];
+  const primaryVisiblePoints = (primarySeries?.plotPoints ?? []).filter(
+    (point) => point.timestampMs >= viewStart && point.timestampMs < viewEnd,
+  );
+  const bucketCount = Math.max(1, Math.ceil(viewDuration / (bucketMin * 60_000)));
+
+  const linePath = (plotPoints: Array<{ timestampMs: number; value: number }>) =>
+    plotPoints
+      .map((point, i) => `${i === 0 ? "M" : "L"} ${xFromTimestamp(point.timestampMs).toFixed(1)} ${y(point.value).toFixed(1)}`)
+      .join(" ");
+  const areaPath = (plotPoints: Array<{ timestampMs: number; value: number }>) =>
+    plotPoints.length
+      ? `${linePath(plotPoints)} L ${xFromTimestamp(plotPoints[plotPoints.length - 1].timestampMs).toFixed(1)} ${size.height - pad.bottom} L ${xFromTimestamp(plotPoints[0].timestampMs).toFixed(1)} ${size.height - pad.bottom} Z`
+      : "";
 
   // Y-axis ticks (fewer in mini mode)
   const yTicks = mini ? 2 : 4;
@@ -181,25 +213,36 @@ export function TrendLine({
 
   // X-axis ticks
   const xTicks = useMemo(() => {
-    const step = Math.ceil(points.length / 6);
+    const step = Math.max(1, Math.ceil(bucketCount / 6));
     const ticks: number[] = [];
-    for (let i = 0; i < points.length; i += step) ticks.push(i);
-    if (ticks[ticks.length - 1] !== points.length - 1) ticks.push(points.length - 1);
+    for (let i = 0; i < bucketCount; i += step) ticks.push(i);
+    if (ticks[ticks.length - 1] !== bucketCount - 1) ticks.push(bucketCount - 1);
     return ticks;
-  }, [points]);
+  }, [bucketCount]);
 
-  const xLabel = (index: number) => {
-    const minutesBack = (points.length - 1 - index) * bucketMin;
-    if (nowMs != null) {
-      const kst = new Date(nowMs - minutesBack * 60_000 + 9 * 3_600_000);
-      return `${String(kst.getUTCHours()).padStart(2, "0")}:${String(kst.getUTCMinutes()).padStart(2, "0")}`;
-    }
-    if (minutesBack === 0) return "now";
-    if (minutesBack < 60) return `-${minutesBack}m`;
-    return `-${Math.round(minutesBack / 60)}h`;
+  const formatTimestampLabel = (timestampMs: number, compact = false) => {
+    const date = new Date(timestampMs);
+    const kst = new Date(date.getTime() + 9 * 3_600_000);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const dateLabel = `${pad(kst.getUTCMonth() + 1)}-${pad(kst.getUTCDate())}`;
+    const timeLabel = `${pad(kst.getUTCHours())}:${pad(kst.getUTCMinutes())}`;
+    return compact ? `${dateLabel} ${timeLabel}` : `${kst.getUTCFullYear()}-${dateLabel} ${timeLabel} KST`;
   };
-
-  const primarySeries = visibleSeries[0];
+  const xLabel = (index: number) => formatTimestampLabel(viewStart + index * bucketMin * 60_000, true);
+  const hoverTimestamp = hoverIndex != null ? viewStart + hoverIndex * bucketMin * 60_000 : null;
+  const hoverPointLookup = useMemo(() => {
+    const lookup = new Map<string, number>();
+    if (hoverTimestamp == null) return lookup;
+    const normalizedHover = Math.floor((hoverTimestamp - viewStart) / (bucketMin * 60_000));
+    for (const item of plotSeries) {
+      const match = item.plotPoints.find((point) => {
+        const bucket = Math.floor((point.timestampMs - viewStart) / (bucketMin * 60_000));
+        return bucket === normalizedHover;
+      });
+      lookup.set(item.name, match?.value ?? 0);
+    }
+    return lookup;
+  }, [plotSeries, hoverTimestamp, viewStart, bucketMin]);
 
   return (
     <div className="trend-wrap">
@@ -207,8 +250,42 @@ export function TrendLine({
       <svg
         className="trend-svg"
         viewBox={`0 0 ${size.width} ${size.height}`}
-        style={{ cursor: onPointClick ? "pointer" : "default" }}
-        onMouseLeave={() => setHoverIndex(null)}
+        style={{ cursor: isDragging ? "grabbing" : onDragPan ? "grab" : onPointClick ? "pointer" : "default" }}
+        onMouseLeave={() => {
+          if (!isDragging) setHoverIndex(null);
+        }}
+        onPointerDown={(e) => {
+          if (!onDragPan || mini) return;
+          dragRef.current = { pointerId: e.pointerId, x: e.clientX };
+          dragMovedRef.current = false;
+          setDragOffsetX(0);
+          setIsDragging(true);
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (dragRef.current?.pointerId !== e.pointerId || !onDragPan || mini) return;
+          const totalDeltaX = e.clientX - dragRef.current.x;
+          setDragOffsetX(totalDeltaX);
+          if (Math.abs(totalDeltaX) > 0) {
+            dragMovedRef.current = true;
+          }
+        }}
+        onPointerUp={(e) => {
+          if (dragRef.current?.pointerId !== e.pointerId) return;
+          const totalDeltaX = dragOffsetX;
+          dragRef.current = null;
+          setIsDragging(false);
+          setDragOffsetX(0);
+          e.currentTarget.releasePointerCapture(e.pointerId);
+          if (Math.abs(totalDeltaX) > 0) onDragPan?.(totalDeltaX / Math.max(1, innerWidth));
+        }}
+        onPointerCancel={(e) => {
+          if (dragRef.current?.pointerId !== e.pointerId) return;
+          dragRef.current = null;
+          setIsDragging(false);
+          setDragOffsetX(0);
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }}
         onWheel={(e) => {
           if (!onWheelZoom || mini) return;
           e.preventDefault();
@@ -218,15 +295,20 @@ export function TrendLine({
           onWheelZoom(e.deltaY > 0 ? "out" : "in", anchorRatio);
         }}
         onMouseMove={(e) => {
+          if (isDragging) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const localX = e.clientX - rect.left;
           const localY = e.clientY - rect.top;
           if (localX < pad.left || localX > size.width - pad.right) { setHoverIndex(null); return; }
-          const ratio = Math.min(1, Math.max(0, (localX - pad.left) / innerWidth));
-          setHoverIndex(Math.round(ratio * Math.max(0, points.length - 1)));
+          const ratio = Math.min(1, Math.max(0, (localX - pad.left - dragOffsetX) / innerWidth));
+          setHoverIndex(Math.round(ratio * Math.max(0, bucketCount - 1)));
           setPointer({ x: localX, y: localY });
         }}
         onClick={() => {
+          if (isDragging || dragMovedRef.current) {
+            dragMovedRef.current = false;
+            return;
+          }
           if (hoverIndex != null && onPointClick) onPointClick(hoverIndex);
         }}
       >
@@ -245,27 +327,27 @@ export function TrendLine({
         ))}
         {/* X-axis labels */}
         {xTicks.map((i) => (
-          <text key={i} x={x(i)} y={size.height - pad.bottom + 14} fill="var(--text-4)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">
+          <text key={i} x={xFromTimestamp(viewStart + i * bucketMin * 60_000)} y={size.height - pad.bottom + 14} fill="var(--text-4)" fontSize="9" textAnchor="middle" fontFamily="var(--font-mono)">
             {xLabel(i)}
           </text>
         ))}
         {/* Selected bucket line */}
         {selectedBucket != null && (
           <line
-            x1={x(selectedBucket)} x2={x(selectedBucket)}
+            x1={xFromTimestamp(viewStart + selectedBucket * bucketMin * 60_000)} x2={xFromTimestamp(viewStart + selectedBucket * bucketMin * 60_000)}
             y1={pad.top} y2={size.height - pad.bottom}
             stroke="var(--accent)" strokeWidth="1" strokeDasharray="3 2" opacity="0.6"
           />
         )}
         {/* Areas */}
-        {visibleSeries.map((s) => (
-          <path key={s.name + "-area"} d={areaPath(s.points.map((p) => p.value))} fill={s.color} opacity="0.08" />
+        {plotSeries.map((s) => (
+          <path key={s.name + "-area"} d={areaPath(s.plotPoints)} fill={s.color} opacity="0.08" />
         ))}
         {/* Lines */}
-        {visibleSeries.map((s) => (
+        {plotSeries.map((s) => (
           <path
             key={s.name}
-            d={linePath(s.points.map((p) => p.value))}
+            d={linePath(s.plotPoints)}
             fill="none"
             stroke={s.color}
             strokeWidth="1.5"
@@ -274,28 +356,28 @@ export function TrendLine({
           />
         ))}
         {/* Dots on primary series */}
-        {primarySeries && primarySeries.points.map((p, i) => (
+        {primaryVisiblePoints.map((p, i) => (
           <circle
-            key={i}
-            cx={x(i)} cy={y(p.value)}
+            key={`${p.timestamp}-${i}`}
+            cx={xFromTimestamp(p.timestampMs)} cy={y(p.value)}
             r="2"
-            fill={primarySeries.color}
-            opacity={hoverIndex === i ? 1 : 0.55}
+            fill={primarySeries?.color ?? "var(--accent)"}
+            opacity={hoverTimestamp === p.timestampMs ? 1 : 0.55}
           />
         ))}
         {/* Hover guideline */}
-        {hoverIndex != null && (
+        {hoverIndex != null && hoverTimestamp != null && (
           <g>
             <line
-              x1={x(hoverIndex)} x2={x(hoverIndex)}
+              x1={xFromTimestamp(hoverTimestamp)} x2={xFromTimestamp(hoverTimestamp)}
               y1={pad.top} y2={size.height - pad.bottom}
               stroke="var(--text-3)" strokeWidth="1" strokeDasharray="2 2"
             />
-            {visibleSeries.map((s) => (
+            {plotSeries.map((s) => (
               <circle
                 key={s.name + "-h"}
-                cx={x(hoverIndex)}
-                cy={y(s.points[hoverIndex]?.value ?? 0)}
+                cx={xFromTimestamp(hoverTimestamp)}
+                cy={y(hoverPointLookup.get(s.name) ?? 0)}
                 r="3.5"
                 fill={s.color}
                 stroke="var(--bg-1)"
@@ -315,14 +397,14 @@ export function TrendLine({
             top: Math.max(8, pointer.y - 20),
           }}
         >
-          <div className="t-head">{xLabel(hoverIndex)} · bucket {hoverIndex + 1}/{points.length}</div>
-          {visibleSeries.map((s) => (
+          <div className="t-head">{formatTimestampLabel(hoverTimestamp ?? viewStart)} · bucket {(hoverIndex ?? 0) + 1}/{bucketCount}</div>
+          {plotSeries.map((s) => (
             <div className="t-row" key={s.name}>
               <span>
                 <span className="sw" style={{ background: s.color }} />
                 {s.name}
               </span>
-              <span className="v">{fmtNum(s.points[hoverIndex]?.value ?? 0)}</span>
+              <span className="v">{fmtNum(hoverPointLookup.get(s.name) ?? 0)}</span>
             </div>
           ))}
         </div>

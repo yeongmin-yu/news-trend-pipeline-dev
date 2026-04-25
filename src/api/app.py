@@ -19,6 +19,7 @@ from api.service import (
     delete_compound_noun,
     delete_stopword,
     get_articles,
+    get_dashboard_overview,
     get_collection_metrics_overview,
     get_dictionary_overview,
     get_filters,
@@ -67,8 +68,10 @@ def dashboard_kpis(
     source: str = Query(default="all"),
     domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
 ) -> dict:
-    return get_kpis(source=source, domain=domain, range_id=range_id)
+    return get_kpis(source=source, domain=domain, range_id=range_id, start_at=start_at, end_at=end_at)
 
 
 @app.get("/api/v1/dashboard/keywords")
@@ -78,8 +81,45 @@ def dashboard_keywords(
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=30, ge=1, le=100),
     search: str | None = Query(default=None),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
 ) -> list[dict]:
-    return get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit, search=search)
+    return get_top_keywords(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        limit=limit,
+        search=search,
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+
+@app.get("/api/v1/dashboard/overview-window")
+def dashboard_overview_window(
+    source: str = Query(default="all"),
+    domain: str = Query(default="all"),
+    range_id: str = Query(default="1h", alias="range"),
+    start_at: datetime = Query(alias="startAt"),
+    end_at: datetime = Query(alias="endAt"),
+    fetch_start_at: datetime | None = Query(default=None, alias="fetchStartAt"),
+    fetch_end_at: datetime | None = Query(default=None, alias="fetchEndAt"),
+    bucket: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict:
+    return get_dashboard_overview(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        start_at=start_at,
+        end_at=end_at,
+        fetch_start_at=fetch_start_at,
+        fetch_end_at=fetch_end_at,
+        bucket_id=bucket,
+        search=search,
+        limit=limit,
+    )
 
 
 @app.get("/api/v1/dashboard/trend")
@@ -128,8 +168,19 @@ def dashboard_spikes(
     domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=32, ge=1, le=100),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
+    bucket: str | None = Query(default=None),
 ) -> dict:
-    return get_spike_events(source=source, domain=domain, range_id=range_id, limit=limit)
+    return get_spike_events(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        limit=limit,
+        start_at=start_at,
+        end_at=end_at,
+        bucket_id=bucket,
+    )
 
 
 @app.get("/api/v1/dashboard/related")
@@ -139,8 +190,18 @@ def dashboard_related(
     domain: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
     limit: int = Query(default=10, ge=1, le=50),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
 ) -> list[dict]:
-    return get_related_keywords(source=source, domain=domain, range_id=range_id, keyword=keyword, limit=limit)
+    return get_related_keywords(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        keyword=keyword,
+        limit=limit,
+        start_at=start_at,
+        end_at=end_at,
+    )
 
 
 @app.get("/api/v1/dashboard/theme-distribution")
@@ -148,8 +209,10 @@ def dashboard_theme_distribution(
     keyword: str,
     source: str = Query(default="all"),
     range_id: str = Query(default="1h", alias="range"),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
 ) -> dict:
-    return get_theme_distribution(source=source, range_id=range_id, keyword=keyword)
+    return get_theme_distribution(source=source, range_id=range_id, keyword=keyword, start_at=start_at, end_at=end_at)
 
 
 @app.get("/api/v1/dashboard/articles")
@@ -160,8 +223,19 @@ def dashboard_articles(
     keyword: str | None = Query(default=None),
     limit: int = Query(default=30, ge=1, le=100),
     sort: str = Query(default="latest"),
+    start_at: datetime | None = Query(default=None, alias="startAt"),
+    end_at: datetime | None = Query(default=None, alias="endAt"),
 ) -> list[dict]:
-    return get_articles(source=source, domain=domain, range_id=range_id, keyword=keyword, limit=limit, sort=sort)
+    return get_articles(
+        source=source,
+        domain=domain,
+        range_id=range_id,
+        keyword=keyword,
+        limit=limit,
+        sort=sort,
+        start_at=start_at,
+        end_at=end_at,
+    )
 
 
 @app.get("/api/v1/dashboard/system")
