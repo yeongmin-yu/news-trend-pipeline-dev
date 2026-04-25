@@ -513,7 +513,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     </td>
                   </tr>
                 ))}
-                {!activeLoading && (compound.data?.items.length ?? 0) === 0 && (
+                {!activeLoading && (compound.data?.items?.length ?? 0) === 0 && (
                   <tr><td colSpan={5} className="empty">검색 결과가 없습니다</td></tr>
                 )}
               </tbody>
@@ -554,7 +554,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     </td>
                   </tr>
                 ))}
-                {!activeLoading && (stopword.data?.items.length ?? 0) === 0 && (
+                {!activeLoading && (stopword.data?.items?.length ?? 0) === 0 && (
                   <tr><td colSpan={5} className="empty">검색 결과가 없습니다</td></tr>
                 )}
               </tbody>
@@ -623,7 +623,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     </td>
                   </tr>
                 ))}
-                {!activeLoading && (candidates.data?.items.length ?? 0) === 0 && (
+                {!activeLoading && (candidates.data?.items?.length ?? 0) === 0 && (
                   <tr><td colSpan={8} className="empty">검색 결과가 없습니다</td></tr>
                 )}
               </tbody>
