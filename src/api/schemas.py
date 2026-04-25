@@ -138,6 +138,25 @@ class StopwordItem(BaseModel):
     created_at: datetime = Field(serialization_alias="createdAt")
 
 
+class StopwordCandidateItem(BaseModel):
+    id: int
+    word: str
+    domain: str = "all"
+    language: str = "ko"
+    score: float
+    domain_breadth: float = Field(serialization_alias="domainBreadth")
+    repetition_rate: float = Field(serialization_alias="repetitionRate")
+    trend_stability: float = Field(serialization_alias="trendStability")
+    cooccurrence_breadth: float = Field(serialization_alias="cooccurrenceBreadth")
+    short_word: bool = Field(serialization_alias="shortWord")
+    frequency: int
+    status: str
+    first_seen_at: datetime = Field(serialization_alias="firstSeenAt")
+    last_seen_at: datetime = Field(serialization_alias="lastSeenAt")
+    reviewed_at: datetime | None = Field(serialization_alias="reviewedAt")
+    reviewed_by: str | None = Field(serialization_alias="reviewedBy")
+
+
 class DictionaryVersions(BaseModel):
     compound_noun_dict: int = Field(serialization_alias="compoundNounDict")
     stopword_dict: int = Field(serialization_alias="stopwordDict")

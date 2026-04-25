@@ -487,7 +487,7 @@ def upsert_compound_candidates(candidates: dict[str, tuple[int, int]], domain: s
         SET frequency = frequency + %s,
             doc_count = doc_count + %s,
             last_seen_at = %s
-        WHERE word = %s AND domain = %s AND status = 'pending'
+        WHERE word = %s AND domain = %s AND status = 'needs_review'
     """
     with get_connection() as conn:
         with conn.cursor() as cursor:
@@ -501,6 +501,48 @@ def upsert_compound_candidates(candidates: dict[str, tuple[int, int]], domain: s
                         updated_count += 1
 
     return new_count, updated_count
+
+
+def fetch_stopword_candidate_item(item_id: int) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                SELECT id, word, domain, language, score, domain_breadth, repetition_rate,
+                       trend_stability, cooccurrence_breadth, short_word, frequency,
+                       status, first_seen_at, last_seen_at, reviewed_at, reviewed_by
+                FROM stopword_candidates
+                WHERE id = %s
+                """,
+                (item_id,),
+            )
+            return cursor.fetchone()
+
+
+def review_stopword_candidate(candidate_id: int, action: str, reviewed_by: str) -> dict[str, Any] | None:
+    reviewed_at = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE stopword_candidates
+                SET status = %s, reviewed_at = %s, reviewed_by = %s
+                WHERE id = %s
+                RETURNING id, word, domain, language, score, status, reviewed_at, reviewed_by
+                """,
+                (action, reviewed_at, reviewed_by, candidate_id),
+            )
+            row = cursor.fetchone()
+            if row and action == "approved":
+                cursor.execute(
+                    """
+                    INSERT INTO stopword_dict (word, domain, language)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (word, domain, language) DO NOTHING
+                    """,
+                    (row["word"], row["domain"], row["language"]),
+                )
+    return row
 
 
 def fetch_query_keyword_by_id(item_id: int) -> dict[str, Any] | None:

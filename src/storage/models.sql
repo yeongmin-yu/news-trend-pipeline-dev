@@ -166,11 +166,11 @@ CREATE TABLE IF NOT EXISTS compound_noun_candidates (
     doc_count     INTEGER      NOT NULL DEFAULT 1,
     first_seen_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     last_seen_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    status        VARCHAR(20)  NOT NULL DEFAULT 'pending',
+    status        VARCHAR(20)  NOT NULL DEFAULT 'needs_review',
     reviewed_at   TIMESTAMPTZ,
     reviewed_by   VARCHAR(100),
     CONSTRAINT uq_compound_noun_candidates_word_domain UNIQUE (word, domain),
-    CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('pending', 'approved', 'rejected'))
+    CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('needs_review', 'approved', 'rejected'))
 );
 
 CREATE TABLE IF NOT EXISTS stopword_dict (
@@ -222,6 +222,7 @@ BEGIN
     END IF;
 END $$;
 
+
 CREATE INDEX IF NOT EXISTS idx_compound_noun_dict_domain
     ON compound_noun_dict(domain);
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status
@@ -246,6 +247,34 @@ CREATE TABLE IF NOT EXISTS dictionary_audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_dictionary_audit_logs_entity
     ON dictionary_audit_logs(entity_type, entity_id, acted_at DESC);
+
+CREATE TABLE IF NOT EXISTS stopword_candidates (
+    id                   SERIAL PRIMARY KEY,
+    word                 VARCHAR(50)  NOT NULL,
+    domain               VARCHAR(50)  NOT NULL DEFAULT 'all',
+    language             VARCHAR(10)  NOT NULL DEFAULT 'ko',
+    score                FLOAT        NOT NULL DEFAULT 0,
+    domain_breadth       FLOAT        NOT NULL DEFAULT 0,
+    repetition_rate      FLOAT        NOT NULL DEFAULT 0,
+    trend_stability      FLOAT        NOT NULL DEFAULT 0,
+    cooccurrence_breadth FLOAT        NOT NULL DEFAULT 0,
+    short_word           BOOLEAN      NOT NULL DEFAULT FALSE,
+    frequency            INTEGER      NOT NULL DEFAULT 0,
+    status               VARCHAR(20)  NOT NULL DEFAULT 'needs_review',
+    first_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    reviewed_at          TIMESTAMPTZ,
+    reviewed_by          VARCHAR(100),
+    CONSTRAINT uq_stopword_candidates_word_domain_lang UNIQUE (word, domain, language),
+    CONSTRAINT ck_stopword_candidates_status CHECK (status IN ('needs_review', 'approved', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_status
+    ON stopword_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_score
+    ON stopword_candidates(score DESC);
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_domain
+    ON stopword_candidates(domain);
 
 CREATE TABLE IF NOT EXISTS collection_metrics (
     id              BIGSERIAL PRIMARY KEY,

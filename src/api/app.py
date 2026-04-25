@@ -13,6 +13,7 @@ from api.schemas import (
     UpsertStopwordRequest,
 )
 from api.service import (
+    approve_stopword_candidate,
     create_query_keyword,
     create_compound_noun,
     create_stopword,
@@ -24,6 +25,7 @@ from api.service import (
     get_collection_metrics_overview,
     get_dictionary_overview,
     list_compound_nouns_paged,
+    list_stopword_candidates_paged,
     list_stopwords_paged,
     list_candidates_paged,
     get_filters,
@@ -36,7 +38,10 @@ from api.service import (
     get_top_keywords,
     get_trend_series,
     get_trend_window_series,
+    reject_stopword_candidate,
     review_compound_candidate,
+    trigger_compound_auto_approve,
+    trigger_stopword_recommender,
     update_compound_noun_domain,
     update_stopword_domain,
     update_query_keyword,
@@ -345,6 +350,39 @@ def dictionary_update_stopword_domain(item_id: int, payload: UpdateDomainRequest
 def dictionary_delete_stopword(item_id: int) -> dict[str, str]:
     delete_stopword(item_id)
     return {"status": "ok"}
+
+
+@app.get("/api/v1/dictionary/stopword-candidates")
+def dict_list_stopword_candidates(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    domain: str = Query(default=""),
+) -> dict:
+    return list_stopword_candidates_paged(page=page, limit=limit, q=q, status=status, domain=domain)
+
+
+@app.post("/api/v1/dictionary/stopword-candidates/{candidate_id}/approve")
+def dictionary_approve_stopword_candidate(candidate_id: int, payload: ReviewCandidateRequest) -> dict[str, str]:
+    approve_stopword_candidate(candidate_id, payload.reviewed_by)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/dictionary/stopword-candidates/{candidate_id}/reject")
+def dictionary_reject_stopword_candidate(candidate_id: int, payload: ReviewCandidateRequest) -> dict[str, str]:
+    reject_stopword_candidate(candidate_id, payload.reviewed_by)
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/admin/run-compound-auto-approve")
+def admin_run_compound_auto_approve() -> dict:
+    return trigger_compound_auto_approve()
+
+
+@app.post("/api/v1/admin/run-stopword-recommender")
+def admin_run_stopword_recommender() -> dict:
+    return trigger_stopword_recommender()
 
 
 @app.get("/api/v1/admin/query-keywords")

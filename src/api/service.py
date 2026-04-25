@@ -24,9 +24,11 @@ from storage.db import (
     fetch_dictionary_versions,
     fetch_domain_catalog,
     fetch_query_keyword_audit_logs,
+    fetch_stopword_candidate_item,
     fetch_stopword_item,
     get_connection,
     log_dictionary_audit,
+    review_stopword_candidate as db_review_stopword_candidate,
     update_compound_noun_domain as db_update_compound_noun_domain,
     update_stopword_domain as db_update_stopword_domain,
     update_query_keyword as db_update_query_keyword,
@@ -1457,6 +1459,76 @@ def delete_stopword(item_id: int, actor: str = "dashboard-admin") -> None:
         after=None,
         actor=actor,
     )
+
+
+def list_stopword_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status: str = "", domain: str = "") -> dict[str, Any]:
+    offset = (page - 1) * limit
+    like = f"%{q}%" if q else "%"
+    params: list[Any] = [like]
+    extra_clauses = ""
+    if status and status != "all":
+        extra_clauses += " AND status = %s"
+        params.append(status)
+    if domain and domain != "all":
+        extra_clauses += " AND domain = %s"
+        params.append(domain)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM stopword_candidates WHERE word ILIKE %s{extra_clauses}",
+                params,
+            )
+            total = int(cursor.fetchone()["cnt"])
+            cursor.execute(
+                f"""
+                SELECT id, word, domain, language, score, domain_breadth, repetition_rate,
+                       trend_stability, cooccurrence_breadth, short_word, frequency,
+                       status, first_seen_at, last_seen_at, reviewed_at, reviewed_by
+                FROM stopword_candidates
+                WHERE word ILIKE %s{extra_clauses}
+                ORDER BY score DESC, word ASC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            items = list(cursor.fetchall())
+    return {"items": items, "total": total, "page": page, "limit": limit}
+
+
+def approve_stopword_candidate(candidate_id: int, reviewed_by: str) -> None:
+    before = fetch_stopword_candidate_item(candidate_id)
+    after = db_review_stopword_candidate(candidate_id, "approved", reviewed_by)
+    log_dictionary_audit(
+        entity_type="stopword_candidate",
+        entity_id=candidate_id,
+        action="approved",
+        before=before,
+        after=after,
+        actor=reviewed_by,
+    )
+
+
+def reject_stopword_candidate(candidate_id: int, reviewed_by: str) -> None:
+    before = fetch_stopword_candidate_item(candidate_id)
+    after = db_review_stopword_candidate(candidate_id, "rejected", reviewed_by)
+    log_dictionary_audit(
+        entity_type="stopword_candidate",
+        entity_id=candidate_id,
+        action="rejected",
+        before=before,
+        after=after,
+        actor=reviewed_by,
+    )
+
+
+def trigger_compound_auto_approve() -> dict[str, int]:
+    from analytics.compound_auto_approver import run_compound_auto_approve
+    return run_compound_auto_approve()
+
+
+def trigger_stopword_recommender() -> dict[str, int]:
+    from analytics.stopword_recommender import run_stopword_recommender
+    return run_stopword_recommender()
 
 
 def create_query_keyword(domain_id: str, query: str, sort_order: int, actor: str) -> dict[str, Any]:

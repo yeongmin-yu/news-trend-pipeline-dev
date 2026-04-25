@@ -195,6 +195,25 @@ export interface StopwordItem {
   createdAt: string;
 }
 
+export interface StopwordCandidateItem {
+  id: number;
+  word: string;
+  domain: string;
+  language: string;
+  score: number;
+  domain_breadth: number;
+  repetition_rate: number;
+  trend_stability: number;
+  cooccurrence_breadth: number;
+  short_word: boolean;
+  frequency: number;
+  status: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+}
+
 export interface DictionaryMeta {
   compoundNounCount: number;
   candidateCount: number;
@@ -408,6 +427,24 @@ export const api = {
     }),
   deleteStopword: (id: number) =>
     request(`/dictionary/stopwords/${id}`, { method: "DELETE" }),
+  dictionaryStopwordCandidates: (page: number, limit: number, q: string, status: string, domain?: string) =>
+    request<DictionaryPage<StopwordCandidateItem>>(
+      `/dictionary/stopword-candidates?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}${domain && domain !== "all" ? `&domain=${encodeURIComponent(domain)}` : ""}`,
+    ),
+  approveStopwordCandidate: (id: number) =>
+    request(`/dictionary/stopword-candidates/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+    }),
+  rejectStopwordCandidate: (id: number) =>
+    request(`/dictionary/stopword-candidates/${id}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+    }),
+  runCompoundAutoApprove: () =>
+    request<Record<string, number>>("/admin/run-compound-auto-approve", { method: "POST" }),
+  runStopwordRecommender: () =>
+    request<Record<string, number>>("/admin/run-stopword-recommender", { method: "POST" }),
   createQueryKeyword: (payload: { domainId: string; query: string; sortOrder: number; isActive?: boolean }) =>
     request<QueryKeywordItem>("/admin/query-keywords", {
       method: "POST",

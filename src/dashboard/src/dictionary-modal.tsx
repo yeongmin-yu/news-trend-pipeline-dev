@@ -6,22 +6,37 @@ import {
   type DictionaryMeta,
   type DictionaryPage,
   type DomainOption,
+  type StopwordCandidateItem,
   type StopwordItem,
 } from "./data";
 import { Icon, LoadingState } from "./ui";
 
-type TabId = "compound" | "stopword" | "candidates";
+type TabId = "compound" | "stopword" | "candidates" | "stopword-candidates";
 
 const PAGE_SIZE = 50;
 
 const CANDIDATE_STATUS_LABEL: Record<string, string> = {
-  pending: "대기",
+  needs_review: "검토필요",
+  auto_approved: "자동승인",
   approved: "승인됨",
   rejected: "반려됨",
 };
 
 const CANDIDATE_STATUS_CHIP: Record<string, string> = {
-  pending: "warn",
+  needs_review: "warn",
+  auto_approved: "info",
+  approved: "up",
+  rejected: "muted",
+};
+
+const SW_CANDIDATE_STATUS_LABEL: Record<string, string> = {
+  needs_review: "검토필요",
+  approved: "승인됨",
+  rejected: "반려됨",
+};
+
+const SW_CANDIDATE_STATUS_CHIP: Record<string, string> = {
+  needs_review: "warn",
   approved: "up",
   rejected: "muted",
 };
@@ -105,7 +120,7 @@ function DomainBadge({ domain, domains, itemId, onUpdate }: {
           border: "1px solid var(--border)",
           background: domain === "all" ? "var(--bg-3)" : "var(--accent-weak)",
           color: domain === "all" ? "var(--text-3)" : "var(--accent)",
-          fontSize: 10,
+          fontSize: 11,
           cursor: "pointer",
           fontFamily: "var(--font-mono)",
         }}
@@ -160,8 +175,9 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
   const [compound, setCompound] = useState<TabState<CompoundNounItem>>(emptyTab);
   const [stopword, setStopword] = useState<TabState<StopwordItem>>(emptyTab);
   const [candidates, setCandidates] = useState<TabState<CompoundCandidateItem>>(emptyTab);
+  const [swCandidates, setSwCandidates] = useState<TabState<StopwordCandidateItem>>(emptyTab);
 
-  const [pages, setPages] = useState({ compound: 1, stopword: 1, candidates: 1 });
+  const [pages, setPages] = useState({ compound: 1, stopword: 1, candidates: 1, "stopword-candidates": 1 });
   const [searchQ, setSearchQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -230,6 +246,17 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
     return () => { alive = false; };
   }, [tab, pages.candidates, debouncedQ, statusFilter, domainFilter]);
 
+  // load stopword candidates
+  useEffect(() => {
+    if (tab !== "stopword-candidates") return;
+    let alive = true;
+    setSwCandidates((p) => ({ ...p, loading: true, error: null }));
+    api.dictionaryStopwordCandidates(pages["stopword-candidates"], PAGE_SIZE, debouncedQ, statusFilter, domainFilter !== "all" ? domainFilter : undefined)
+      .then((data) => { if (alive) setSwCandidates({ data, loading: false, error: null }); })
+      .catch((e: unknown) => { if (alive) setSwCandidates((p) => ({ ...p, loading: false, error: e instanceof Error ? e.message : "오류" })); });
+    return () => { alive = false; };
+  }, [tab, pages["stopword-candidates"], debouncedQ, statusFilter, domainFilter]);
+
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
@@ -237,16 +264,17 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
 
   async function reloadCurrentTab() {
     await loadMeta();
-    const reset = (setter: typeof setCompound | typeof setStopword | typeof setCandidates, fetcher: () => Promise<DictionaryPage<CompoundNounItem | StopwordItem | CompoundCandidateItem>>) => {
+    const reset = (setter: (fn: (p: TabState<never>) => TabState<never>) => void, fetcher: () => Promise<DictionaryPage<never>>) => {
       setter((p) => ({ ...p, loading: true }));
       fetcher()
-        .then((data) => setter({ data: data as never, loading: false, error: null }))
+        .then((data) => setter(() => ({ data, loading: false, error: null })))
         .catch((e: unknown) => setter((p) => ({ ...p, loading: false, error: e instanceof Error ? e.message : "오류" })));
     };
     const df = domainFilter !== "all" ? domainFilter : undefined;
-    if (tab === "compound") reset(setCompound as never, () => api.dictionaryCompoundNouns(pages.compound, PAGE_SIZE, debouncedQ, df));
-    if (tab === "stopword") reset(setStopword as never, () => api.dictionaryStopwords(pages.stopword, PAGE_SIZE, debouncedQ, df));
-    if (tab === "candidates") reset(setCandidates as never, () => api.dictionaryCandidates(pages.candidates, PAGE_SIZE, debouncedQ, statusFilter, df));
+    if (tab === "compound") reset(setCompound as never, () => api.dictionaryCompoundNouns(pages.compound, PAGE_SIZE, debouncedQ, df) as Promise<never>);
+    if (tab === "stopword") reset(setStopword as never, () => api.dictionaryStopwords(pages.stopword, PAGE_SIZE, debouncedQ, df) as Promise<never>);
+    if (tab === "candidates") reset(setCandidates as never, () => api.dictionaryCandidates(pages.candidates, PAGE_SIZE, debouncedQ, statusFilter, df) as Promise<never>);
+    if (tab === "stopword-candidates") reset(setSwCandidates as never, () => api.dictionaryStopwordCandidates(pages["stopword-candidates"], PAGE_SIZE, debouncedQ, statusFilter, df) as Promise<never>);
   }
 
   async function run(key: string, action: () => Promise<unknown>, successMsg: string) {
@@ -268,21 +296,33 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
     setShowAddForm(false);
     setStatusFilter("");
     setSearchQ("");
+    setDebouncedQ("");
   }
 
-  function setPage(t: TabId, p: number) {
+  function setPage(t: string, p: number) {
     setPages((prev) => ({ ...prev, [t]: p }));
   }
 
-  const activeError = tab === "compound" ? compound.error : tab === "stopword" ? stopword.error : candidates.error;
-  const activeLoading = tab === "compound" ? compound.loading : tab === "stopword" ? stopword.loading : candidates.loading;
+  const activeError =
+    tab === "compound" ? compound.error
+    : tab === "stopword" ? stopword.error
+    : tab === "candidates" ? candidates.error
+    : swCandidates.error;
+  const activeLoading =
+    tab === "compound" ? compound.loading
+    : tab === "stopword" ? stopword.loading
+    : tab === "candidates" ? candidates.loading
+    : swCandidates.loading;
 
   // badge counts
   const compoundTotal = debouncedQ ? (compound.data?.total ?? meta?.compoundNounCount ?? 0) : (meta?.compoundNounCount ?? compound.data?.total ?? 0);
   const stopwordTotal = debouncedQ ? (stopword.data?.total ?? meta?.stopwordCount ?? 0) : (meta?.stopwordCount ?? stopword.data?.total ?? 0);
   const candidateTotal = (debouncedQ || statusFilter) ? (candidates.data?.total ?? meta?.candidateCount ?? 0) : (meta?.candidateCount ?? candidates.data?.total ?? 0);
+  const swCandidateTotal = swCandidates.data?.total ?? 0;
 
-  const domainOptions = [{ id: "all", label: "전체", available: true }, ...domains];
+  const domainOptions = domains.some((d) => d.id === "all")
+    ? domains
+    : [{ id: "all", label: "전체", available: true }, ...domains];
 
   return (
     <div
@@ -322,15 +362,16 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
             ["compound", "복합명사 사전", compoundTotal],
             ["stopword", "불용어 사전", stopwordTotal],
             ["candidates", "복합명사 후보", candidateTotal],
-          ] as const).map(([id, label, count]) => (
+            ["stopword-candidates", "불용어 후보", swCandidateTotal],
+          ] as [TabId, string, number][]).map(([id, label, count]) => (
             <button
               key={id}
               onClick={() => switchTab(id)}
-              style={{ padding: "10px 18px", fontSize: 12, fontWeight: 500, borderBottom: tab === id ? "2px solid var(--accent)" : "2px solid transparent", color: tab === id ? "var(--text)" : "var(--text-3)", marginBottom: -1, background: "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+              style={{ padding: "10px 18px", fontSize: 12, fontWeight: 500, borderTop: "none", borderLeft: "none", borderRight: "none", borderBottom: tab === id ? "2px solid var(--accent)" : "2px solid transparent", color: tab === id ? "var(--text)" : "var(--text-3)", marginBottom: -1, background: "transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
             >
               {label}
               {!metaLoading && (
-                <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 9, background: "var(--bg-3)", color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
+                <span style={{ fontSize: 11, padding: "1px 5px", borderRadius: 9, background: "var(--bg-3)", color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
                   {count}
                 </span>
               )}
@@ -364,7 +405,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
           </div>
           {tab === "candidates" && (
             <div className="seg">
-              {(["", "pending", "approved", "rejected"] as const).map((v) => (
+              {(["", "needs_review", "auto_approved", "approved", "rejected"]).map((v) => (
                 <button
                   key={v}
                   className={statusFilter === v ? "is-active" : ""}
@@ -376,8 +417,22 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           )}
+          {tab === "stopword-candidates" && (
+            <div className="seg">
+              {(["", "needs_review", "approved", "rejected"]).map((v) => (
+                <button
+                  key={v}
+                  className={statusFilter === v ? "is-active" : ""}
+                  onClick={() => { setStatusFilter(v); setPages((p) => ({ ...p, "stopword-candidates": 1 })); }}
+                  style={{ fontSize: 11 }}
+                >
+                  {v === "" ? "전체" : SW_CANDIDATE_STATUS_LABEL[v] ?? v}
+                </button>
+              ))}
+            </div>
+          )}
           <div style={{ flex: 1 }} />
-          {tab !== "candidates" && (
+          {tab !== "candidates" && tab !== "stopword-candidates" && (
             <button
               onClick={() => setShowAddForm(!showAddForm)}
               style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid var(--accent)", color: "var(--accent)", fontSize: 11, fontFamily: "var(--font-mono)", background: showAddForm ? "var(--accent-weak)" : "transparent", cursor: "pointer" }}
@@ -475,7 +530,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
 
         {/* Table area */}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {activeLoading && !compound.data && !stopword.data && !candidates.data ? (
+          {activeLoading && !compound.data && !stopword.data && !candidates.data && !swCandidates.data ? (
             <LoadingState label="사전 데이터를 불러오는 중..." />
           ) : tab === "compound" ? (
             <table className="table" style={{ fontSize: 12 }}>
@@ -500,8 +555,8 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                         onUpdate={(id, d) => void run(`domain-c-${id}`, () => api.updateCompoundDomain(id, d), `도메인 변경 완료`)}
                       />
                     </td>
-                    <td><span className="chip muted" style={{ fontSize: 10 }}>{c.source}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{c.createdAt?.slice(0, 16).replace("T", " ") ?? "—"}</td>
+                    <td><span className="chip muted" style={{ fontSize: 11 }}>{c.source}</span></td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.createdAt?.slice(0, 16).replace("T", " ") ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-c-${c.id}`}
@@ -541,8 +596,8 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                         onUpdate={(id, d) => void run(`domain-s-${id}`, () => api.updateStopwordDomain(id, d), `도메인 변경 완료`)}
                       />
                     </td>
-                    <td><span className="chip info" style={{ fontSize: 10 }}>{s.language}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{s.createdAt?.slice(0, 10) ?? "—"}</td>
+                    <td><span className="chip info" style={{ fontSize: 11 }}>{s.language}</span></td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{s.createdAt?.slice(0, 10) ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-s-${s.id}`}
@@ -559,7 +614,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                 )}
               </tbody>
             </table>
-          ) : (
+          ) : tab === "candidates" ? (
             <table className="table" style={{ fontSize: 12 }}>
               <thead>
                 <tr>
@@ -585,7 +640,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                           border: "1px solid var(--border)",
                           background: (c.domain ?? "all") === "all" ? "var(--bg-3)" : "var(--accent-weak)",
                           color: (c.domain ?? "all") === "all" ? "var(--text-3)" : "var(--accent)",
-                          fontSize: 10,
+                          fontSize: 11,
                           fontFamily: "var(--font-mono)",
                         }}
                       >
@@ -594,15 +649,15 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     </td>
                     <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.frequency?.toLocaleString() ?? "—"}</td>
                     <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.docCount?.toLocaleString() ?? "—"}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{c.lastSeenAt?.slice(0, 10) ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.lastSeenAt?.slice(0, 10) ?? "—"}</td>
                     <td>
-                      <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 10 }}>
+                      <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
                         {CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
                       </span>
                     </td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{c.reviewedBy ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.reviewedBy ?? "—"}</td>
                     <td style={{ display: "flex", gap: 4 }}>
-                      {c.status === "pending" && (
+                      {c.status === "needs_review" && (
                         <>
                           <button
                             disabled={busy === `approve-${c.id}`}
@@ -628,11 +683,70 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                 )}
               </tbody>
             </table>
+          ) : (
+            <table className="table" style={{ fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>후보어</th>
+                  <th>도메인</th>
+                  <th className="num">점수</th>
+                  <th className="num">도메인폭</th>
+                  <th className="num">반복률</th>
+                  <th className="num">안정성</th>
+                  <th className="num">공출현</th>
+                  <th className="num">빈도</th>
+                  <th>상태</th>
+                  <th>작업</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(swCandidates.data?.items ?? []).map((c) => (
+                  <tr key={c.id}>
+                    <td><span style={{ fontFamily: "var(--font-mono)", color: "var(--down)", fontWeight: 600 }}>{c.word}</span></td>
+                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-3)" }}>{c.domain ?? "all"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: c.score >= 0.6 ? "var(--down)" : "var(--text-2)" }}>{c.score?.toFixed(3) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.domain_breadth?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.repetition_rate?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.trend_stability?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.cooccurrence_breadth?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.frequency.toLocaleString()}</td>
+                    <td>
+                      <span className={"chip " + (SW_CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
+                        {SW_CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
+                      </span>
+                    </td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      {c.status === "needs_review" && (
+                        <>
+                          <button
+                            disabled={busy === `approve-sw-${c.id}`}
+                            onClick={() => void run(`approve-sw-${c.id}`, () => api.approveStopwordCandidate(c.id), `"${c.word}" 불용어 승인됨`)}
+                            className="table-action approve"
+                          >
+                            {busy === `approve-sw-${c.id}` ? "…" : "승인"}
+                          </button>
+                          <button
+                            disabled={busy === `reject-sw-${c.id}`}
+                            onClick={() => void run(`reject-sw-${c.id}`, () => api.rejectStopwordCandidate(c.id), `"${c.word}" 반려됨`)}
+                            className="table-action danger"
+                          >
+                            {busy === `reject-sw-${c.id}` ? "…" : "반려"}
+                          </button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {!activeLoading && (swCandidates.data?.items?.length ?? 0) === 0 && (
+                  <tr><td colSpan={10} className="empty">추천된 불용어 후보가 없습니다 (분석 실행 후 표시됩니다)</td></tr>
+                )}
+              </tbody>
+            </table>
           )}
         </div>
 
         {/* Footer */}
-        <div style={{ padding: "8px 20px", borderTop: "1px solid var(--border)", display: "flex", gap: 14, fontSize: 10, color: "var(--text-4)", fontFamily: "var(--font-mono)", background: "var(--bg-2)", alignItems: "center", flexShrink: 0 }}>
+        <div style={{ padding: "8px 20px", borderTop: "1px solid var(--border)", display: "flex", gap: 14, fontSize: 11, color: "var(--text-4)", fontFamily: "var(--font-mono)", background: "var(--bg-2)", alignItems: "center", flexShrink: 0 }}>
           {tab === "compound" && (
             <>
               <span>
@@ -655,6 +769,14 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                 {candidates.data ? `${candidates.data.total.toLocaleString()}건 전체 · ${pages.candidates}페이지` : "—"}
               </span>
               <Paginator page={pages.candidates} total={candidates.data?.total ?? 0} limit={PAGE_SIZE} onChange={(p) => setPage("candidates", p)} />
+            </>
+          )}
+          {tab === "stopword-candidates" && (
+            <>
+              <span>
+                {swCandidates.data ? `${swCandidates.data.total.toLocaleString()}건 전체 · ${pages["stopword-candidates"]}페이지` : "—"}
+              </span>
+              <Paginator page={pages["stopword-candidates"]} total={swCandidates.data?.total ?? 0} limit={PAGE_SIZE} onChange={(p) => setPage("stopword-candidates", p)} />
             </>
           )}
           <div style={{ flex: 1 }} />
