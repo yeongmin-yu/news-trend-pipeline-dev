@@ -18,24 +18,49 @@ Airflow의 역할:
 
 ```mermaid
 flowchart LR
-    A[Airflow Scheduler] --> B[news_ingest_dag]
-    B --> C[check_kafka_health]
-    C --> D[produce_naver]
-    D --> E[Kafka Topic: news_topic]
-    D --> F[collection_metrics]
-    F --> G[PostgreSQL]
-    D --> H[summarize_results]
-    D --> I[check_dead_letter]
-    I --> J[dead_letter.jsonl]
+    S["Airflow Scheduler<br/>schedule: */15 * * * *<br/>catchup=false<br/>max_active_runs=1"] --> D["DAG: news_ingest_dag<br/>15분 단위 수집 cycle"]
+
+    D --> H["Task: check_kafka_health<br/>실행 조건: DAG 시작<br/>검증: Kafka broker 연결 / topic 조회"]
+    H -->|"Kafka 정상"| P["Task: produce_naver<br/>실행 조건: check_kafka_health 성공"]
+    H -.->|"Kafka 비정상"| R["Airflow Retry<br/>retries=3<br/>5m → 10m → 20m"]
+
+    P --> Q["query_keywords 조회<br/>provider/domain/query 단위"]
+    Q --> N["Naver News API 호출"]
+    N --> M["메시지 정규화<br/>schema_version 포함"]
+    M --> V["Producer 내부 검증<br/>schema validation<br/>provider+domain+url dedup"]
+    V -->|"정상 메시지"| K["Kafka Producer<br/>key=url<br/>acks=all<br/>enable_idempotence=true"]
+    V -.->|"validation 실패 / publish 실패"| DL["dead_letter.jsonl"]
+
+    K --> T["Kafka Topic: news_topic"]
+    P --> CM["collection_metrics 저장<br/>request/success/article/duplicate/publish/error count"]
+    CM --> DB1["PostgreSQL<br/>운영 지표"]
+
+    P --> X["XCom: naver_count"]
+    X --> SUM["Task: summarize_results<br/>발행 건수 요약"]
+    P --> CDL["Task: check_dead_letter<br/>trigger_rule=all_done"]
+    CDL --> DL
+
+    T --> SP["Spark Structured Streaming<br/>상시 실행 / Kafka consume"]
+    SP --> PP["전처리 / 키워드 추출<br/>복합명사 사전 + 불용어 적용"]
+    PP --> STG["PostgreSQL Staging<br/>stg_news_raw<br/>stg_keywords<br/>stg_keyword_trends<br/>stg_keyword_relations"]
+    STG --> UPS["Storage Upsert<br/>dedup / merge"]
+    UPS --> DB2["PostgreSQL Analysis Tables<br/>news_raw<br/>keywords<br/>keyword_trends<br/>keyword_relations"]
 ```
 
 설명:
 
-- Airflow는 `news_ingest_dag`를 15분 주기로 실행한다.
-- 먼저 Kafka broker 연결 상태를 확인한다.
-- Kafka가 정상일 때만 Naver producer를 실행한다.
-- Producer는 query keyword 기반 수집, 중복 제거, Kafka 발행, 수집 지표 저장을 내부에서 수행한다.
-- 실행 후 발행 건수를 요약하고 dead letter 누적 상태를 확인한다.
+- `news_ingest_dag`는 Airflow Scheduler에 의해 15분마다 실행된다.
+- `catchup=false`이므로 과거 누락 구간을 자동으로 몰아서 실행하지 않는다.
+- `max_active_runs=1`로 동시에 여러 수집 cycle이 실행되지 않게 한다.
+- DAG는 먼저 `check_kafka_health`로 Kafka broker 연결과 topic 조회 가능 여부를 확인한다.
+- Kafka가 정상일 때만 `produce_naver`가 실행된다.
+- `produce_naver`는 `query_keywords`를 읽고 Naver News API를 호출한 뒤, schema validation과 `provider + domain + url` 중복 검증을 거쳐 Kafka `news_topic`에 발행한다.
+- 발행 실패 또는 validation 실패 메시지는 `dead_letter.jsonl`에 기록한다.
+- `summarize_results`는 XCom의 `naver_count`를 읽어 발행 건수를 요약한다.
+- `check_dead_letter`는 `trigger_rule=all_done`이므로 producer 성공/실패와 관계없이 실행되어 dead letter 누적 상태를 확인한다.
+- Spark Structured Streaming은 Airflow가 매번 실행하는 batch task가 아니라 상시 실행되는 consume/processing 계층이다.
+- Spark는 Kafka `news_topic`을 읽어 전처리, 키워드 추출, window 집계를 수행하고 PostgreSQL staging table에 적재한다.
+- Storage 계층은 staging 데이터를 dedup/upsert하여 최종 analysis table에 반영한다.
 
 ---
 
@@ -318,6 +343,10 @@ check_kafka_health
 → produce_naver
 → summarize_results
 → check_dead_letter
+→ Kafka news_topic
+→ Spark Structured Streaming
+→ PostgreSQL staging
+→ PostgreSQL analysis tables
 ```
 
 결과:
@@ -325,6 +354,7 @@ check_kafka_health
 - Kafka `news_topic`에 메시지 발행
 - `collection_metrics` 저장
 - producer state 갱신
+- Spark가 메시지를 consume해 처리 결과를 PostgreSQL에 저장
 
 ### Kafka 장애
 
@@ -349,6 +379,7 @@ produce_naver 내부에서 validation/publish 실패
 동일 실행 구간 재시도
 → producer state와 URL 중복 기준 적용
 → 이미 발행한 기사는 skip
+→ storage upsert로 최종 테이블 중복 방지
 ```
 
 ---
@@ -356,5 +387,7 @@ produce_naver 내부에서 validation/publish 실패
 ## 10. 요약
 
 현재 Airflow DAG의 핵심 구조는 `check_kafka_health → produce_naver → summarize_results / check_dead_letter`이다.
+
+`news_ingest_dag`는 Kafka로 메시지를 발행하는 수집 entry point이며, 이후 Spark Structured Streaming과 PostgreSQL 저장 계층으로 이어지는 전체 파이프라인의 시작점이다.
 
 `validate`는 별도 task가 아니라 Kafka 사전 검증, 메시지 schema 검증, 중복 검증, dead letter 사후 확인으로 나뉘어 구현되어 있다.
