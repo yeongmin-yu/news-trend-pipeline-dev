@@ -1,266 +1,249 @@
-# News Trend Pipeline 
+# News Trend Pipeline
 
-현재 저장소에는 전체 파이프라인 중 1단계인 `뉴스 수집 -> Kafka 적재 -> 적재 확인` 범위까지 구현한 내용이 들어 있습니다.
+도메인별 뉴스 키워드를 수집하고, Kafka-Spark-PostgreSQL 파이프라인으로 처리한 뒤 FastAPI와 Dashboard로 조회하는 뉴스 트렌드 분석 프로젝트입니다.
 
-## 프로젝트 개요
+현재 구현은 다음 범위를 포함합니다.
 
-본 프로젝트는 특정 도메인(테마)을 정의하고, 해당 도메인 내에서의 키워드 트렌드를 분석하는 뉴스 트렌드 분석 파이프라인을 구축하는 것을 목표로 합니다.
+- Airflow 기반 수집 오케스트레이션
+- Naver News API 수집과 Kafka 적재
+- Spark Structured Streaming 기반 기사 전처리와 키워드 집계
+- PostgreSQL staging + upsert 기반 저장 계층
+- 복합명사/불용어 사전 관리와 후보 추천
+- 이벤트 탐지 배치
+- FastAPI 조회/관리 API
+- React + Vite Dashboard
 
-"전체 뉴스 키워드 분석"이 아닌 **"도메인(테마) 기반 뉴스 트렌드 분석"** 으로, 검색 API 구조의 편향을 의도된 필터로 전환하여 실제 활용 가능한 인사이트를 제공합니다.
+`README_REFACTOR.md`는 중간 정리 초안으로 남아 있으며, 현재 기준 문서는 이 `README.md`와 `docs/design/*`입니다.
 
-도메인별 키워드 집합(Keyword Pool)을 기반으로 뉴스를 수집하고, 스트리밍/배치 처리를 통해 키워드 트렌드와 급상승 이슈를 탐지한 뒤 API와 대시보드로 제공합니다. 프로젝트의 부가적인 의미는 안정적인 데이터 파이프라인 구축을 연습하기 위함입니다.
-
-전체 프로젝트는 아래와 같은 흐름을 목표로 합니다.
+## 전체 구조
 
 ```mermaid
 flowchart LR
-    N["Naver News APIs"] --> B["Kafka Producer"]
-    A["Google News APIs"] --> B["Kafka Producer"]
-    B --> C["Kafka"]
-    C --> D["Spark Streaming / Batch"]
-    D --> E["PostgreSQL"]
-    E --> F["FastAPI"]
-    F --> G["Dashboard"]
-    H["Airflow"] --> B
-    H --> D
+    A["Airflow<br/>news_ingest_dag"] --> B["Naver News API"]
+    B --> C["Kafka Producer"]
+    C --> D["Kafka<br/>news_topic"]
+    D --> E["Spark Structured Streaming"]
+    E --> F["PostgreSQL<br/>staging tables"]
+    F --> G["PostgreSQL<br/>analysis tables"]
+    G --> H["FastAPI"]
+    H --> I["Dashboard"]
+
+    J["Airflow<br/>compound_noun_extraction"] --> K["compound_noun_candidates"]
+    K --> L["compound_noun_dict / stopword_dict"]
+    L -. dictionary version reload .-> E
+
+    M["Airflow<br/>keyword_event_detection"] --> N["keyword_events"]
+    G --> N
 ```
-## 단계별 진행 현황
 
-| 단계 | 상태 | 내용 |
+## 단계별 구성
+
+| 단계 | 현재 상태 | 설명 |
 | --- | --- | --- |
-| 1단계 | `완료` | 뉴스 수집과 Kafka 적재 |
-| 2단계 | `완료` | Spark 기반 기본 집계 |
-| 3단계 | `예정` | 이벤트 분석 |
-| 4단계 | `예정` | API 조회 계층 |
-| 5단계 | `예정` | 대시보드 완성 |
+| STEP1 Ingestion | 구현 완료 | `query_keywords` 기반 수집, Kafka 발행, dead letter replay |
+| STEP2 Processing | 구현 완료 | Spark 스트리밍, 전처리, 키워드/트렌드/연관어 집계 |
+| STEP3 Storage | 구현 완료 | PostgreSQL 스키마, staging upsert, 재처리 유틸 |
+| STEP4 Analytics | 구현 완료 | `keyword_events` 기반 이벤트 탐지 배치 |
+| STEP5 Serving | 구현 완료 | FastAPI API, Dashboard, 사전/검색어 관리 기능 |
+| STEP6 Monitoring | 부분 반영 | Health API, Airflow UI, Spark UI, 운영 지표 조회 |
 
-### 1단계. 뉴스 수집과 Kafka 적재 `완료`
+## 핵심 데이터 흐름
 
-현재 이 저장소에서 구현된 단계입니다.
+### 1. 수집
 
-- Airflow DAG 기반 수집 작업 스케줄링
-- Naver News API 테마 키워드 병렬 호출 (STEP1_KAFKA_2)
-- Kafka `news_topic` 적재 (partition key = URL)
-- 실패 메시지 `runtime/state/dead_letter.jsonl`에 기록
-- Auto replay DAG로 자동 재처리 (15분 주기)
-- Consumer 스크립트로 Kafka 적재 결과 확인
+1. Airflow `news_ingest_dag`가 주기적으로 실행됩니다.
+2. 활성화된 검색어를 `query_keywords`에서 읽습니다.
+3. Naver News API를 호출해 기사를 수집합니다.
+4. `provider + domain + url` 기준으로 중복을 제어합니다.
+5. Kafka `news_topic`에 기사 메시지를 발행합니다.
+6. 실패 건은 `runtime/state/dead_letter.jsonl`에 기록하고 `auto_replay_dag`가 재처리합니다.
 
-### 2단계. Spark 기반 기본 집계 `예정`
+### 2. 처리
 
-앞으로 구현할 단계입니다.
+1. Spark가 Kafka 메시지를 읽습니다.
+2. `title + summary`를 기반으로 `tokenize(text, domain)`를 수행합니다.
+3. 복합명사 사전과 불용어 사전을 적용합니다.
+4. `keywords`, `keyword_trends`, `keyword_relations`를 계산합니다.
+5. 결과를 `stg_*` 테이블에 적재한 뒤 DB upsert 함수로 반영합니다.
 
-- Kafka 메시지를 읽어 기사 스키마로 파싱
-- `published_at` 기준 event time 정규화
-- 제목/요약/본문 텍스트 정제
-- HTML 제거, 불용어 제거, 토큰화 등 전처리
-- 공급원별 특성에 맞는 키워드 추출
-- Spark 스트리밍에서 10분 단위 윈도우 기본 집계 생성
-- 상위 키워드, 키워드 트렌드, 연관 키워드 계산
-- PostgreSQL에 기사 원문과 집계 결과 저장
+### 3. 분석과 서빙
 
-### 3단계. 이벤트 분석 `예정`
+1. Airflow `keyword_event_detection` DAG가 `keyword_trends`를 기반으로 이벤트를 계산합니다.
+2. 결과는 `keyword_events`에 저장됩니다.
+3. FastAPI가 대시보드 조회 API와 사전/검색어 관리 API를 제공합니다.
+4. React Dashboard가 API를 호출해 KPI, 트렌드, 급상승 키워드, 연관어, 기사 목록을 표시합니다.
 
-앞으로 구현할 단계입니다.
+## 주요 테이블
 
-- 급상승 키워드 탐지 로직 구현
-- 직전 구간 대비 증가율 계산
-- 임계치 기반 이벤트 후보 탐지
-- 공급원별 이벤트 비교
+| 분류 | 테이블 |
+| --- | --- |
+| 기준 데이터 | `domain_catalog`, `query_keywords`, `query_keyword_audit_logs` |
+| 기사/분석 데이터 | `news_raw`, `keywords`, `keyword_trends`, `keyword_relations`, `keyword_events` |
+| 사전 데이터 | `compound_noun_dict`, `compound_noun_candidates`, `stopword_dict`, `stopword_candidates`, `dictionary_versions`, `dictionary_audit_logs` |
+| 운영 데이터 | `collection_metrics` |
+| staging | `stg_news_raw`, `stg_keywords`, `stg_keyword_trends`, `stg_keyword_relations` |
 
-### 4단계. API 조회 계층 `예정`
+자세한 ERD와 단계 문서는 `docs/design` 아래에 정리되어 있습니다.
 
-앞으로 구현할 단계입니다.
+## 주요 서비스와 포트
 
-- FastAPI 조회 API 구현
-- 저장된 집계 결과를 10분, 30분, 1시간, 6시간, 12시간, 1일 단위로 재구성해 제공
-- 키워드, 트렌드, 이벤트, 관련 기사 조회 API 구성
+| 서비스 | 포트 | 설명 |
+| --- | --- | --- |
+| Dashboard | `3000` | React + Vite 개발 서버 |
+| FastAPI | `8000` | 조회/관리 API |
+| Airflow UI/API | `9080` | DAG 실행과 운영 확인 |
+| Spark Master UI | `8080` | Spark 클러스터 상태 |
+| Spark History UI | `18080` | Spark 실행 이력 |
+| Kafka | `9092` | 로컬 접근용 Kafka 브로커 |
+| App PostgreSQL | `5432` | 애플리케이션 DB |
 
-### 5단계. 대시보드 완성 `예정`
-
-앞으로 구현할 단계입니다.
-
-- FrontEnd 대시보드 구현
-- 공급원 선택: 글로벌 뉴스(NewsAPI) / 네이버 뉴스
-- 상위 키워드 막대 차트
-- 키워드 트렌드 선 차트
-- 급상승 키워드 타임라인 차트
-- 선택 시간대의 급상승 키워드 목록
-- 선택 키워드의 연관 키워드 차트
-- 선택 키워드와 시간대에 해당하는 관련 기사 목록 및 원문 링크
-
-## 디렉토리 구조
-
+## 디렉터리 구조
 
 ```text
-news-trend-pipeline/
-├─ src/                       # dev mount -> /opt/news-trend-pipeline/src
-│  ├─ core/                   # 공통 설정, 로거, 유틸
-│  ├─ ingestion/              # API client / Kafka producer / replay
-│  ├─ processing/             # Spark 집계
-│  ├─ analytics/              # 복합명사 / 이벤트 분석
-│  ├─ api/                    # FastAPI 조회 계층
-│  ├─ storage/                # DB 스키마 / 접근 계층
-│  └─ dashboard/              # FrontEnd 대시보드 앱
+news-trend-pipeline-v2/
 ├─ airflow/
-│  └─ dags/                   # dev mount -> /opt/airflow/dags
-├─ infra/
-│  └─ airflow/
-│     ├─ Dockerfile.airflow   # Airflow 이미지
-│     ├─ config/              # dev mount -> /opt/airflow/config
-│     └─ plugins/             # dev mount -> /opt/airflow/plugins
-├─ runtime/
-│  ├─ state/                  # dev mount -> /opt/news-trend-pipeline/runtime/state
-│  ├─ checkpoints/            # dev mount -> /opt/news-trend-pipeline/runtime/checkpoints
-│  ├─ logs/                   # dev mount -> /opt/airflow/logs
-│  └─ spark-events/           # dev mount -> /tmp/spark-events
-├─ tests/
-│  ├─ unit/
-│  └─ integration/
-├─ scripts/                   # dev mount -> /opt/news-trend-pipeline/scripts
+│  └─ dags/                  # news_ingest_dag, auto_replay_dag, compound_noun_extraction, keyword_event_detection
 ├─ docs/
-│  ├─ DIRECTION.md
-│  ├─ DISASTER_RECOVERY.md
-│  ├─ FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md
-│  ├─ FULL_RESET_AND_REBOOTSTRAP_GUIDE.md
-│  ├─ STEP1_KAFKA.md
-│  ├─ STEP1_KAFKA_2.md
-│  ├─ STEP2_PREPROCESSING.md
-│  └─ STEP2_SPARK.md
-├─ requirements/              # Docker 빌드에서 사용
-├─ pyproject.toml             # setuptools src layout 패키지 설정
+│  ├─ design/                # 최종 구현 기준 설계 문서
+│  └─ develop/               # 설계 변경 이력 / 운영 메모
+├─ infra/                    # Airflow, Spark, API Dockerfile과 설정
+├─ runtime/
+│  ├─ checkpoints/           # Spark checkpoint
+│  ├─ logs/                  # Airflow 로그
+│  ├─ spark-events/          # Spark event log
+│  └─ state/                 # dead letter, replay 상태
+├─ scripts/
+│  ├─ consumer_check.py
+│  └─ run_processing.py
+├─ src/
+│  ├─ analytics/             # compound extractor, stopword recommender, event detector
+│  ├─ api/                   # FastAPI app, schema, service
+│  ├─ core/                  # config, schema, domain definition
+│  ├─ dashboard/             # React + Vite dashboard
+│  ├─ ingestion/             # API client, producer, replay
+│  ├─ processing/            # Spark job, preprocessing
+│  └─ storage/               # models.sql, db.py
+├─ tests/
 ├─ docker-compose.yml
-├─ .env / .env.example
-└─ README.md
+├─ README.md
+└─ README_REFACTOR.md
 ```
 
-개발용 `docker-compose.yml` 은 전체 프로젝트를 통째로 mount 하지 않고, 서비스별로 필요한 폴더만 부분 mount 합니다.
+## 빠른 시작
 
-### 개발용 mount 매핑
-
-| 서비스 그룹 | 실제 컨테이너 | 호스트 디렉터리 | 컨테이너 경로 | 용도 |
-| --- | --- | --- | --- | --- |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./src` | `/opt/news-trend-pipeline/src` | DAG 내부에서 애플리케이션 패키지 import |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./runtime/state` | `/opt/news-trend-pipeline/runtime/state` | producer 상태, dead letter, replay 상태 파일 유지 |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./airflow/dags` | `/opt/airflow/dags` | 수집/재처리/사전 추출 DAG 로딩 |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./runtime/logs` | `/opt/airflow/logs` | Airflow 실행 로그 저장 |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./infra/airflow/config` | `/opt/airflow/config` | Airflow 설정 파일 제공 |
-| Airflow 공통 | `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init` | `./infra/airflow/plugins` | `/opt/airflow/plugins` | Airflow 커스텀 플러그인 로딩 |
-| Spark 처리 | `spark-streaming` | `./src` | `/opt/news-trend-pipeline/src` | 스트리밍 애플리케이션 import |
-| Spark 처리 | `spark-streaming` | `./scripts` | `/opt/news-trend-pipeline/scripts` | `spark-submit` 진입 스크립트 실행 |
-| Spark 처리 | `spark-streaming` | `./runtime/checkpoints` | `/opt/news-trend-pipeline/runtime/checkpoints` | Structured Streaming 체크포인트 유지 |
-| Spark 처리 | `spark-streaming` | `./runtime/spark-events` | `/tmp/spark-events` | Spark event log 저장 |
-| Spark 클러스터 | `spark-master`, `spark-worker-1`, `spark-worker-2` | `./src` | `/opt/news-trend-pipeline/src` | 공통 코드 참조 및 실행 환경 일치 |
-| Spark 클러스터 | `spark-master`, `spark-worker-1`, `spark-worker-2` | `./runtime/spark-events` | `/tmp/spark-events` | Spark event log 공유 |
-| Spark UI | `spark-history` | `./runtime/spark-events` | `/tmp/spark-events` | 저장된 event log 기반 History UI 제공 |
-
-정리하면:
-- Airflow는 `src`, `dags`, `runtime/state`, `runtime/logs`, `config`, `plugins`만 봅니다.
-- `spark-streaming` 은 `src`, `scripts`, `runtime/checkpoints`, `runtime/spark-events`만 봅니다.
-- `spark-master`, `spark-worker-*`, `spark-history` 는 클러스터 동작에 필요한 최소 경로만 공유합니다.
-
-컨테이너 내부 import 경로는 `PYTHONPATH=/opt/news-trend-pipeline/src` 기준입니다. 로컬 개발 시에는 `pip install -e .` 를 사용하거나 `PYTHONPATH=src` 환경변수를 설정하세요.
-
-요약:
-- 개발 단계에서는 코드 변경을 빠르게 반영하기 위해 필요한 디렉터리만 bind mount 합니다.
-- 운영 전환 단계에서는 bind mount 의존을 줄이고 이미지 `COPY` 중심으로 바꾸는 것을 권장합니다.
-- 운영 전환 체크리스트는 [`docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md`](./docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md) 에 정리되어 있습니다.
-
-## Docker 서비스 구성
-
-현재 `docker-compose.yml` 기준으로 아래 서비스들이 함께 올라갑니다.
-
-### 서비스별 역할
-
-| 서비스 | 주요 포트 | 역할 |
-| --- | --- | --- |
-| `zookeeper` | `2181` | Kafka 브로커 메타데이터 관리 |
-| `kafka` | `9092` | 뉴스 메시지 적재용 Kafka 브로커 |
-| `kafka-init` | 없음 | 부팅 시 `news_topic` 토픽 생성 보장 |
-| `app-postgres` | `5432` | 기사 원문, 키워드, 트렌드, 연관 키워드 저장용 애플리케이션 DB |
-| `airflow-postgres` | 내부 전용 | Airflow 메타데이터 DB |
-| `spark-master` | `7077`, `8080` | Spark standalone master 및 클러스터 UI |
-| `spark-worker-1` | `8081` | Spark worker 1 |
-| `spark-worker-2` | `8082` | Spark worker 2 |
-| `spark-history` | `18080` | Spark event log 기반 History UI |
-| `spark-streaming` | 없음 | Kafka를 읽어 Spark 집계를 수행하고 PostgreSQL에 적재 |
-| `airflow-apiserver` | `9080` | Airflow API/UI 제공 |
-| `airflow-scheduler` | 내부 전용 | 수집/재처리/사전 추출 DAG 스케줄링 |
-| `airflow-dag-processor` | 내부 전용 | DAG 파싱 및 처리 |
-| `airflow-triggerer` | 내부 전용 | deferrable task/trigger 처리 |
-| `airflow-init` | 없음 | Airflow DB 마이그레이션, 관리자 계정 생성, 초기 디렉터리 준비 |
-
-### 서비스 묶음 관점
-
-- 메시징 계층: `zookeeper`, `kafka`, `kafka-init`
-- 저장 계층: `app-postgres`, `airflow-postgres`
-- 처리 계층: `spark-master`, `spark-worker-1`, `spark-worker-2`, `spark-history`, `spark-streaming`
-- 오케스트레이션 계층: `airflow-apiserver`, `airflow-scheduler`, `airflow-dag-processor`, `airflow-triggerer`, `airflow-init`
-
-구성 흐름 요약:
-- Airflow가 뉴스 수집과 재처리 DAG를 실행합니다.
-- 수집된 뉴스는 Kafka `news_topic` 으로 들어갑니다.
-- `spark-streaming` 이 Kafka를 소비해 PostgreSQL 집계 테이블을 갱신합니다.
-- Airflow와 Spark는 서로 다른 역할을 가지며, Airflow는 오케스트레이션, Spark는 스트리밍 처리에 집중합니다.
-
-## 실행
-
-### 1. 환경 파일 준비
-
-- `.env.example`을 복사해 `.env`를 생성합니다.
-
-#### 필수 입력값
-
-- `NAVER_CLIENT_ID`: Naver 검색 API Client ID
-- `NAVER_CLIENT_SECRET`: Naver 검색 API Client Secret1
-
-#### 주요 설정값
-
-- `NEWS_PROVIDERS`: 사용할 수집원 목록 (기본값 `naver`, STEP1_KAFKA_2에서 NewsAPI 제거)
-- `NAVER_THEME_KEYWORDS`: 병렬 호출 대상 테마 키워드 (콤마 구분)
-- `NAVER_MAX_WORKERS`: Naver 병렬 호출 워커 수 (기본 8)
-- `NAVER_NEWS_MAX_PAGES`: 키워드당 최대 페이지 수
-- `KAFKA_BOOTSTRAP_SERVERS`: Kafka 접속 주소
-- `KAFKA_TOPIC`: 정상 메시지 topic
-- `STATE_DIR`: 수집 상태/Dead Letter 파일 경로 (기본 `./runtime/state`)
-- `DICTIONARY_REFRESH_INTERVAL_SECONDS`: 복합명사/불용어 사전 버전 확인 주기 (기본 60초)
+### 1. 환경 변수 준비
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
+최소한 다음 값은 채워야 합니다.
 
-### 2. 컨테이너 실행
+- `NAVER_CLIENT_ID`
+- `NAVER_CLIENT_SECRET`
 
-주의: 아래 명령은 `docker-compose.yml`이 있는 프로젝트 루트에서 실행합니다.
+자주 쓰는 설정은 다음과 같습니다.
+
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `KAFKA_TOPIC`
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `SPARK_CHECKPOINT_DIR`
+- `KEYWORD_WINDOW_DURATION`
+- `RELATION_KEYWORD_LIMIT`
+- `DICTIONARY_REFRESH_INTERVAL_SECONDS`
+
+### 2. 전체 스택 실행
 
 ```powershell
 docker compose up --build -d
 ```
 
-### 3. 로컬에서 패키지 실행 (선택)
+실행 후 확인 포인트:
+
+- Dashboard: `http://localhost:3000`
+- FastAPI: `http://localhost:8000/health`
+- Airflow: `http://localhost:9080`
+- Spark Master UI: `http://localhost:8080`
+- Spark History UI: `http://localhost:18080`
+
+### 3. 로컬 스크립트 실행 예시
 
 ```bash
 pip install -e .
-python -m ingestion.producer          # Kafka로 뉴스 적재
-python -m ingestion.replay            # Dead Letter 재처리
-python scripts/consumer_check.py --max-messages 5         # 적재 결과 확인
+python scripts/consumer_check.py --max-messages 5
+python scripts/run_processing.py
 ```
 
-`pip install -e .` 이 여의치 않다면 환경변수로 대체할 수 있습니다.
-
+수집 producer를 직접 실행하려면:
 
 ```bash
-export PYTHONPATH="$(pwd)/src"
 python -m ingestion.producer
 ```
 
+dead letter replay를 직접 실행하려면:
+
+```bash
+python -m ingestion.replay
+```
+
+## 제공 API 범위
+
+현재 FastAPI는 다음 범위를 제공합니다.
+
+- 대시보드 필터, KPI, 상위 키워드, 트렌드, 급상승 이벤트, 연관어, 기사 목록
+- 시스템 상태 조회
+- 사전 조회/등록/삭제/도메인 변경
+- 복합명사 후보 승인/반려
+- 불용어 후보 승인/반려
+- 검색어 관리와 수집 메트릭 조회
+- 관리자용 추천/자동승인 트리거
+
+기본 health check:
+
+```text
+GET /health
+GET /api/v1/meta/filters
+GET /api/v1/dashboard/overview-window
+GET /api/v1/dashboard/system
+```
 
 ## 문서
-- [단계 1: Kafka 수집](./docs/STEP1_KAFKA.md) - 뉴스 API 수집, Kafka 적재, 적재 결과 확인
-- [단계 1: Kafka 수집 Rev.2](./docs/STEP1_KAFKA_2.md) - Naver 병렬 호출, URL partition key, src layout 구조 리팩토링
-- [단계 1: 장애 대응 및 복구](./docs/STEP1_RECOVERY.md) - Dead Letter 처리, 자동/수동 재처리, 모니터링 가이드
-- [단계 1: 방향 전환 배경](./docs/STEP1_DIRECTION_CHANGE.md) - 도메인 기반 뉴스 트렌드 분석으로 방향을 전환한 이유
-- [단계 2: Spark 처리 계층](./docs/STEP2_SPARK.md) - Kafka 이후 Spark 처리, 저장소 설계, 실행 코드
-- [단계 2: 전처리 상세](./docs/STEP2_PREPROCESSING.md) - 텍스트 정제, 토큰화, 복합명사, 연관 키워드 집계
-- [운영 전환 체크리스트](./docs/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md) - bind mount 축소와 이미지 중심 운영 전환 체크리스트
-- [전체 초기화/재부트스트랩 가이드](./docs/FULL_RESET_AND_REBOOTSTRAP_GUIDE.md) - 로컬 환경을 처음부터 다시 세팅하는 절차
+
+### 설계 문서
+
+- `docs/design/ERD.md`
+- `docs/design/STEP1_INGESTION.md`
+- `docs/design/STEP1-1_AIRFLOW.md`
+- `docs/design/STEP1-2_KAFKA.md`
+- `docs/design/STEP2_PROCESSING.md`
+- `docs/design/STEP2-1_SPARK.md`
+- `docs/design/STEP2-2_PREPROCESSING.md`
+- `docs/design/STEP2-3_DICTIONARY.md`
+- `docs/design/STEP3_STORAGE.md`
+- `docs/design/STEP3-1_DATABASE.md`
+- `docs/design/STEP4_ANALYTICS.md`
+- `docs/design/STEP4-1_EVENT.md`
+- `docs/design/STEP5_SERVING.md`
+- `docs/design/STEP5-1_FastAPI_구현.md`
+- `docs/design/STEP5-1_추가기능구현.md`
+- `docs/design/STEP5-2_DASHBOARD.md`
+- `docs/design/STEP6_MONITORING.md`
+
+### 변경 이력 / 운영 문서
+
+- `docs/develop/STEP1_DIRECTION_CHANGE_history.md`
+- `docs/develop/STEP1_INGESTION_history.md`
+- `docs/develop/STEP2_PROCESSING_history.md`
+- `docs/develop/STEP3_STORAGE_history.md`
+- `docs/develop/STEP1_RECOVERY.md`
+- `docs/develop/FULL_RESET_AND_REBOOTSTRAP_GUIDE.md`
+- `docs/develop/FINAL_PRODUCTION_IMAGE_TRANSITION_CHECKLIST.md`
+
+## 현재 기준 메모
+
+- 수집 provider는 현재 `naver` 기준입니다.
+- 검색어는 코드 하드코딩이 아니라 `query_keywords` 테이블 기준으로 관리됩니다.
+- Spark 전처리는 Kiwi와 DB 사전을 함께 사용합니다.
+- `docs/design`에는 최종 구현만 기록하고, 변경 과정은 `docs/develop`에 기록합니다.
