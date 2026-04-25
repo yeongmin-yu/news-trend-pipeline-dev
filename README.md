@@ -231,7 +231,7 @@ GET /api/v1/dashboard/system
 - `docs/design/STEP5-2_DASHBOARD.md`
 - `docs/design/STEP6_MONITORING.md`
 
-### 변경 이력 / 운영 문서
+### 변경 이력 / 개발 문서
 
 - `docs/develop/STEP1_DIRECTION_CHANGE_history.md`
 - `docs/develop/STEP1_INGESTION_history.md`
