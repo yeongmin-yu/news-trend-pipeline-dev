@@ -166,6 +166,22 @@ export function TrendLine({
     return () => observer.disconnect();
   }, []);
 
+  const wheelGeomRef = useRef({ padLeft: 0, innerWidth: 1 });
+  useEffect(() => {
+    const node = canvasRef.current;
+    if (!node || !onWheelZoom || mini) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = node.getBoundingClientRect();
+      const localX = e.clientX - rect.left;
+      const { padLeft, innerWidth: iw } = wheelGeomRef.current;
+      const anchorRatio = Math.min(1, Math.max(0, (localX - padLeft) / Math.max(1, iw)));
+      onWheelZoom(e.deltaY > 0 ? "out" : "in", anchorRatio);
+    };
+    node.addEventListener("wheel", handler, { passive: false });
+    return () => node.removeEventListener("wheel", handler);
+  }, [onWheelZoom, mini]);
+
   const visibleSeries = series.filter((s) => !hidden.includes(s.name));
   const points = series[0]?.points ?? [];
   const viewStart = viewStartMs ?? (points[0] ? new Date(points[0].timestamp).getTime() : 0);
@@ -180,6 +196,7 @@ export function TrendLine({
     : { top: 14, right: 16, bottom: 26, left: 40 };
   const innerWidth = Math.max(10, size.width - pad.left - pad.right);
   const innerHeight = Math.max(10, size.height - pad.top - pad.bottom);
+  wheelGeomRef.current = { padLeft: pad.left, innerWidth };
 
   const xFromTimestamp = (timestampMs: number) =>
     pad.left + ((timestampMs - viewStart) / viewDuration) * innerWidth + dragOffsetX;
@@ -285,14 +302,6 @@ export function TrendLine({
           setIsDragging(false);
           setDragOffsetX(0);
           e.currentTarget.releasePointerCapture(e.pointerId);
-        }}
-        onWheel={(e) => {
-          if (!onWheelZoom || mini) return;
-          e.preventDefault();
-          const rect = e.currentTarget.getBoundingClientRect();
-          const localX = e.clientX - rect.left;
-          const anchorRatio = Math.min(1, Math.max(0, (localX - pad.left) / innerWidth));
-          onWheelZoom(e.deltaY > 0 ? "out" : "in", anchorRatio);
         }}
         onMouseMove={(e) => {
           if (isDragging) return;

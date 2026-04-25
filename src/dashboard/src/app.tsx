@@ -64,6 +64,8 @@ const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
   items: [],
 };
 
+const EMPTY_KEYWORD_LIST: DashboardOverviewResponse["keywords"] = [];
+
 const DOMAIN_COLORS: Record<string, string> = {
   all: "#a78bfa",
   ai_tech: "#5eead4",
@@ -498,9 +500,11 @@ export default function App() {
     });
   }, [trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs]);
 
-  const overview = useAsyncData(
-    () =>
-      api.overviewWindow(
+  const overviewIdentityKey = `${source}::${domain}::${effectiveTrendBucket}::${search}::${overviewFetchWindow.startMs}::${overviewFetchWindow.endMs}`;
+
+  const overviewRaw = useAsyncData<{ data: DashboardOverviewResponse; identity: string }>(
+    async () => {
+      const data = await api.overviewWindow(
         source,
         domain,
         rangeParam,
@@ -511,10 +515,19 @@ export default function App() {
         30,
         new Date(overviewFetchWindow.startMs).toISOString(),
         new Date(overviewFetchWindow.endMs).toISOString(),
-      ),
+      );
+      return { data, identity: overviewIdentityKey };
+    },
     [source, domain, rangeParam, committedStartIso, committedEndIso, effectiveTrendBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
     { cacheKey: overviewRequestKey, keepPreviousData: true },
   );
+
+  const overviewIsStale = overviewRaw.data != null && overviewRaw.data.identity !== overviewIdentityKey;
+  const overview: AsyncState<DashboardOverviewResponse> = {
+    data: overviewIsStale ? null : (overviewRaw.data?.data ?? null),
+    loading: overviewRaw.loading || overviewIsStale,
+    error: overviewRaw.error,
+  };
   const derivedOverview = useMemo(
     () => deriveOverviewFromCache(source, overview.data?.cache, committedWindow.startMs, committedWindow.endMs, 30, now),
     [source, overview.data?.cache, committedWindow.startMs, committedWindow.endMs, now],
@@ -536,7 +549,7 @@ export default function App() {
     loading: overview.loading,
     error: overview.error,
   };
-  const rawKeywords = activeOverview?.keywords ?? [];
+  const rawKeywords = useMemo(() => activeOverview?.keywords ?? EMPTY_KEYWORD_LIST, [activeOverview]);
   const rankedKeywords = useMemo(() => rankKeywords(rawKeywords, topSort), [rawKeywords, topSort]);
   const displayKeywords = useMemo(
     () =>
