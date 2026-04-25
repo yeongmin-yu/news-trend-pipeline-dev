@@ -1,115 +1,87 @@
-# STEP3 EVENT
+# STEP 4-1: Event Storage Layer
 
-## 개요
+## 1. 목적
 
-STEP3의 목표는 시간대별 키워드 변화를 기반으로 급상승 이벤트를 계산하고, 대시보드/API에서 바로 활용할 수 있는 이벤트 레이어를 만드는 것이다.
+STEP4-1은 이벤트 탐지 결과를 저장하고 조회 가능한 형태로 유지하는 저장 레이어다.
 
-2026-04-23 기준으로 STEP3 관련 추가 구현을 완료했다.
+이 문서는 최종 구현 기준만 설명하며, 구현 과정이나 검증 로그는 포함하지 않는다.
 
-## 구현 내용
+## 2. 역할
 
-### 1. 이벤트 저장 테이블 추가
+- `analytics.event_detector`가 계산한 이벤트 결과를 저장한다.
+- 동일 시간 범위에 대해 재계산 시 기존 데이터를 교체한다.
+- FastAPI와 Dashboard가 직접 조회하는 분석 결과 테이블을 제공한다.
 
-추가 테이블:
+## 3. 테이블: `keyword_events`
 
-- `keyword_events`
+이벤트 저장을 위한 핵심 테이블이다.
 
-컬럼:
+### 주요 컬럼
 
-- `provider`
-- `domain`
-- `keyword`
-- `event_time`
-- `window_start`
-- `window_end`
-- `current_mentions`
-- `prev_mentions`
-- `growth`
-- `event_score`
-- `is_spike`
-- `detected_at`
+| 컬럼 | 설명 |
+| --- | --- |
+| `provider` | 뉴스 제공자 |
+| `domain` | 도메인 ID |
+| `keyword` | 이벤트 대상 키워드 |
+| `event_time` | 이벤트 기준 시각 (`window_end`) |
+| `window_start` | 분석 윈도우 시작 |
+| `window_end` | 분석 윈도우 종료 |
+| `current_mentions` | 현재 윈도우 언급량 |
+| `prev_mentions` | 직전 윈도우 언급량 |
+| `growth` | 증가율 |
+| `event_score` | 이벤트 점수 |
+| `is_spike` | 급상승 여부 |
+| `detected_at` | 탐지 시각 |
 
-반영 파일:
+### 인덱스 및 제약
 
-- [src/storage/models.sql](C:/Project/news-trend-pipeline-v2/src/storage/models.sql)
-- [src/storage/db.py](C:/Project/news-trend-pipeline-v2/src/storage/db.py)
+- `(provider, domain, keyword, window_start)` unique
+- 조회 성능을 위해 `(provider, domain, event_time DESC, event_score DESC)` 인덱스 사용
 
-### 2. 이벤트 탐지 배치 구현
+## 4. 적재 방식
 
-추가 파일:
+이벤트는 append 방식이 아니라 **범위 교체(replace)** 방식으로 적재된다.
 
-- [src/analytics/event_detector.py](C:/Project/news-trend-pipeline-v2/src/analytics/event_detector.py)
+동작:
 
-동작 방식:
+1. 특정 시간 범위의 기존 이벤트 삭제
+2. 동일 범위의 신규 이벤트 insert
+3. 동일 키 충돌 시 upsert
 
-- `keyword_trends`를 최근 24시간 범위로 읽는다.
-- `(provider, domain, keyword)` 단위로 시계열을 묶는다.
-- 현재 구간 언급량과 직전 구간 언급량을 비교해 성장률을 계산한다.
-- 급상승 여부(`is_spike`)와 이벤트 점수(`event_score`)를 계산한다.
-- 결과를 `keyword_events`에 교체 적재한다.
+이 방식은 다음을 보장한다.
 
-### 3. Airflow DAG 추가
+- 재실행 시 중복 누적 방지
+- 동일 조건 실행 시 동일 결과
 
-추가 파일:
+## 5. 데이터 생성 주체
 
-- [airflow/dags/keyword_event_detection_dag.py](C:/Project/news-trend-pipeline-v2/airflow/dags/keyword_event_detection_dag.py)
+이 테이블은 다음 컴포넌트에 의해 생성된다.
 
-DAG 정보:
+- `src/analytics/event_detector.py`
+- Airflow DAG `keyword_event_detection`
 
-- DAG ID: `keyword_event_detection`
-- 스케줄: 15분 주기
-- 태그: `event`, `analytics`, `step3`
+Spark나 API에서 직접 insert하지 않는다.
 
-역할:
+## 6. 조회 방식
 
-- 최근 24시간 키워드 트렌드를 기준으로 이벤트 후보를 재생성한다.
-- STEP5 대시보드의 급상승 키워드 데이터 품질을 높인다.
-
-### 4. API 연동
-
-수정 파일:
-
-- [src/api/service.py](C:/Project/news-trend-pipeline-v2/src/api/service.py)
-
-적용 방식:
-
-- 기존 급상승 계산 API는 우선 `keyword_events`를 조회한다.
-- 이벤트 테이블 데이터가 없을 때만 기존 `keyword_trends` 기반 폴백 계산을 수행한다.
-
-사용 엔드포인트:
+주요 사용 API:
 
 - `GET /api/v1/dashboard/spikes`
+- `GET /api/v1/dashboard/kpis`
 
-## 검증 결과
+FastAPI는 `keyword_events`를 우선 조회한다.
 
-2026-04-23(Asia/Seoul) 기준 확인 사항:
+데이터가 없거나 특정 조건에서만 `keyword_trends` 기반 fallback 계산이 수행된다.
 
-### DAG 등록
+## 7. 설계 포인트
 
-- `airflow dags list`에서 `keyword_event_detection` 등록 확인
+- 이벤트 테이블은 분석 결과 캐시 역할을 한다.
+- window 기반 집계를 그대로 저장하여 재계산 비용을 줄인다.
+- domain 단위로 분리된 이벤트를 유지한다.
+- API 조회 성능을 고려해 필요한 필드를 사전에 계산해 저장한다.
 
-### 수동 실행 검증
+## 8. 현재 구현 기준 메모
 
-컨테이너 내부에서 이벤트 탐지 작업을 직접 실행해 아래 결과를 확인했다.
-
-- source rows: `87872`
-- event rows: `33301`
-
-### 데이터 적재 확인
-
-- `keyword_events = 33301`
-
-### 대시보드 연동 확인
-
-- STEP5 대시보드 급상승 API는 `keyword_events`를 우선 사용하도록 반영됨
-
-## 현재 판단
-
-STEP3는 “이벤트 저장 레이어 + 배치 계산 + Airflow 스케줄링 + 대시보드 API 연결”까지 구현된 상태다.
-
-남은 개선 포인트는 품질 튜닝 영역이다.
-
-- 도메인별 임계치 분리
-- 노이즈 키워드 자동 억제
-- 알림/배너 연동
-- 이벤트 score 해석 기준 고도화
+- 이벤트 탐지 로직은 STEP4 본문에서 정의된다.
+- 본 문서는 저장 구조만 다룬다.
+- 임계치, score 공식, 실험 이력은 `docs/develop` 문서에서 관리한다.
