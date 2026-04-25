@@ -289,10 +289,16 @@ def fetch_collection_metrics_summary(hours: int = 24, provider: str = "naver") -
             return list(cursor.fetchall())
 
 
-def fetch_compound_nouns() -> list[str]:
+def fetch_compound_nouns(domain: str = "all") -> list[str]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("SELECT word FROM compound_noun_dict ORDER BY word")
+            if domain == "all":
+                cursor.execute("SELECT word FROM compound_noun_dict ORDER BY word")
+            else:
+                cursor.execute(
+                    "SELECT word FROM compound_noun_dict WHERE domain = %s OR domain = 'all' ORDER BY word",
+                    (domain,),
+                )
             return [row[0] for row in cursor.fetchall()]
 
 
@@ -301,7 +307,7 @@ def fetch_compound_noun_item(item_id: int) -> dict[str, Any] | None:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT id, word, source, created_at
+                SELECT id, word, domain, source, created_at
                 FROM compound_noun_dict
                 WHERE id = %s
                 """,
@@ -310,13 +316,19 @@ def fetch_compound_noun_item(item_id: int) -> dict[str, Any] | None:
             return cursor.fetchone()
 
 
-def fetch_stopwords(language: str = "ko") -> set[str]:
+def fetch_stopwords(language: str = "ko", domain: str = "all") -> set[str]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                "SELECT word FROM stopword_dict WHERE language = %s",
-                (language,),
-            )
+            if domain == "all":
+                cursor.execute(
+                    "SELECT word FROM stopword_dict WHERE language = %s",
+                    (language,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT word FROM stopword_dict WHERE language = %s AND (domain = %s OR domain = 'all')",
+                    (language, domain),
+                )
             return {row[0] for row in cursor.fetchall()}
 
 
@@ -325,7 +337,7 @@ def fetch_stopword_item(item_id: int) -> dict[str, Any] | None:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT id, word, language, created_at
+                SELECT id, word, domain, language, created_at
                 FROM stopword_dict
                 WHERE id = %s
                 """,
@@ -339,11 +351,39 @@ def fetch_compound_candidate_item(item_id: int) -> dict[str, Any] | None:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT id, word, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
+                SELECT id, word, domain, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
                 FROM compound_noun_candidates
                 WHERE id = %s
                 """,
                 (item_id,),
+            )
+            return cursor.fetchone()
+
+
+def update_compound_noun_domain(*, item_id: int, domain: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE compound_noun_dict SET domain = %s
+                WHERE id = %s
+                RETURNING id, word, domain, source, created_at
+                """,
+                (domain, item_id),
+            )
+            return cursor.fetchone()
+
+
+def update_stopword_domain(*, item_id: int, domain: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                UPDATE stopword_dict SET domain = %s
+                WHERE id = %s
+                RETURNING id, word, domain, language, created_at
+                """,
+                (domain, item_id),
             )
             return cursor.fetchone()
 
@@ -429,7 +469,7 @@ def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict
             return list(cursor.fetchall())
 
 
-def upsert_compound_candidates(candidates: dict[str, tuple[int, int]]) -> tuple[int, int]:
+def upsert_compound_candidates(candidates: dict[str, tuple[int, int]], domain: str = "all") -> tuple[int, int]:
     if not candidates:
         return 0, 0
 
@@ -438,25 +478,25 @@ def upsert_compound_candidates(candidates: dict[str, tuple[int, int]]) -> tuple[
     updated_count = 0
 
     insert_sql = """
-        INSERT INTO compound_noun_candidates (word, frequency, doc_count, first_seen_at, last_seen_at)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (word) DO NOTHING
+        INSERT INTO compound_noun_candidates (word, domain, frequency, doc_count, first_seen_at, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (word, domain) DO NOTHING
     """
     update_sql = """
         UPDATE compound_noun_candidates
         SET frequency = frequency + %s,
             doc_count = doc_count + %s,
             last_seen_at = %s
-        WHERE word = %s AND status = 'pending'
+        WHERE word = %s AND domain = %s AND status = 'pending'
     """
     with get_connection() as conn:
         with conn.cursor() as cursor:
             for word, (freq, doc_cnt) in candidates.items():
-                cursor.execute(insert_sql, (word, freq, doc_cnt, now, now))
+                cursor.execute(insert_sql, (word, domain, freq, doc_cnt, now, now))
                 if cursor.rowcount > 0:
                     new_count += 1
                 else:
-                    cursor.execute(update_sql, (freq, doc_cnt, now, word))
+                    cursor.execute(update_sql, (freq, doc_cnt, now, word, domain))
                     if cursor.rowcount > 0:
                         updated_count += 1
 
@@ -582,9 +622,9 @@ def _seed_compound_nouns_from_file() -> None:
         with conn.cursor() as cursor:
             cursor.executemany(
                 """
-                INSERT INTO compound_noun_dict (word, source)
-                VALUES (%s, 'manual')
-                ON CONFLICT (word) DO NOTHING
+                INSERT INTO compound_noun_dict (word, domain, source)
+                VALUES (%s, 'all', 'manual')
+                ON CONFLICT (word, domain) DO NOTHING
                 """,
                 [(word,) for word in words],
             )
@@ -595,9 +635,9 @@ def _seed_stopwords() -> None:
         with conn.cursor() as cursor:
             cursor.executemany(
                 """
-                INSERT INTO stopword_dict (word, language)
-                VALUES (%s, 'ko')
-                ON CONFLICT (word, language) DO NOTHING
+                INSERT INTO stopword_dict (word, domain, language)
+                VALUES (%s, 'all', 'ko')
+                ON CONFLICT (word, domain, language) DO NOTHING
                 """,
                 [(word,) for word in _STOPWORD_SEED],
             )
@@ -1016,7 +1056,7 @@ def rebuild_keywords_for_date(
         if not article_url:
             continue
         article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        counts = Counter(tokenize(article_text))
+        counts = Counter(tokenize(article_text, article.get("domain", "all")))
         rows.extend(
             (
                 article.get("provider"),
@@ -1116,7 +1156,7 @@ def rebuild_keyword_trends_for_date(
         bucket_start = normalized.replace(minute=minute_bucket)
         bucket_end = bucket_start + timedelta(minutes=10)
         article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        for keyword, count in Counter(tokenize(article_text)).items():
+        for keyword, count in Counter(tokenize(article_text, article.get("domain", "all"))).items():
             window_counts[(article.get("provider"), article.get("domain", "ai_tech"), bucket_start, bucket_end, keyword)] += count
 
     rows = [
@@ -1156,7 +1196,7 @@ def rebuild_keyword_relations_for_date(
         bucket_start = normalized.replace(minute=minute_bucket)
         bucket_end = bucket_start + timedelta(minutes=10)
         article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        keyword_counts = Counter(tokenize(article_text))
+        keyword_counts = Counter(tokenize(article_text, article.get("domain", "all")))
         representative_keywords = [
             keyword
             for keyword, _ in sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[: settings.relation_keyword_limit]

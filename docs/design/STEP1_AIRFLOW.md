@@ -76,14 +76,14 @@ flowchart LR
 #### 입력 / 출력
 
 - 입력
-- Naver News API
-- 환경변수 기반 수집 설정
-- `runtime/state/producer_state.json`의 provider/query별 마지막 수집 시각
+    - Naver News API
+    - 환경변수 기반 수집 설정
+    - `runtime/state/producer_state.json`의 provider/query별 마지막 수집 시각
 - 출력
-- Kafka `news_topic`
-- `collection_metrics` 테이블
-- 실패 시 `runtime/state/dead_letter.jsonl`
-- 상태 갱신용 `runtime/state/producer_state.json`
+    - Kafka `news_topic`
+    - `collection_metrics` 테이블
+    - 실패 시 `runtime/state/dead_letter.jsonl`
+    - 상태 갱신용 `runtime/state/producer_state.json`
 
 #### DAG 구조
 

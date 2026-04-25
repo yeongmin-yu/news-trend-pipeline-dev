@@ -169,6 +169,7 @@ export interface SystemStatusResponse {
 export interface CompoundNounItem {
   id: number;
   word: string;
+  domain: string;
   source: string;
   createdAt: string;
 }
@@ -176,6 +177,7 @@ export interface CompoundNounItem {
 export interface CompoundCandidateItem {
   id: number;
   word: string;
+  domain: string;
   frequency: number;
   docCount: number;
   firstSeenAt: string;
@@ -188,28 +190,33 @@ export interface CompoundCandidateItem {
 export interface StopwordItem {
   id: number;
   word: string;
+  domain: string;
   language: string;
   createdAt: string;
 }
 
-export interface DictionaryOverview {
-  compoundNouns: CompoundNounItem[];
-  compoundCandidates: CompoundCandidateItem[];
-  stopwords: StopwordItem[];
-  auditLogs?: Array<{
-    id: number;
-    entity_type: string;
-    entity_id: number | null;
-    action: string;
-    before_json: Record<string, unknown> | null;
-    after_json: Record<string, unknown> | null;
-    actor: string;
-    acted_at: string;
-  }>;
+export interface DictionaryMeta {
+  compoundNounCount: number;
+  candidateCount: number;
+  stopwordCount: number;
   versions: {
     compoundNounDict: number;
     stopwordDict: number;
   };
+}
+
+export interface DictionaryPage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+/** @deprecated 페이징 전환 전 호환용 — 신규 코드에서는 DictionaryMeta 사용 */
+export interface DictionaryOverview extends DictionaryMeta {
+  compoundNouns: CompoundNounItem[];
+  compoundCandidates: CompoundCandidateItem[];
+  stopwords: StopwordItem[];
 }
 
 export interface QueryKeywordItem {
@@ -351,12 +358,31 @@ export const api = {
       }`,
     ),
   system: () => request<SystemStatusResponse>("/dashboard/system"),
+  dictionaryMeta: () => request<DictionaryMeta>("/dictionary"),
+  dictionaryCompoundNouns: (page: number, limit: number, q: string, domain?: string) =>
+    request<DictionaryPage<CompoundNounItem>>(
+      `/dictionary/compound-nouns?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}${domain && domain !== "all" ? `&domain=${encodeURIComponent(domain)}` : ""}`,
+    ),
+  dictionaryStopwords: (page: number, limit: number, q: string, domain?: string) =>
+    request<DictionaryPage<StopwordItem>>(
+      `/dictionary/stopwords?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}${domain && domain !== "all" ? `&domain=${encodeURIComponent(domain)}` : ""}`,
+    ),
+  dictionaryCandidates: (page: number, limit: number, q: string, status: string, domain?: string) =>
+    request<DictionaryPage<CompoundCandidateItem>>(
+      `/dictionary/candidates?page=${page}&limit=${limit}&q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}${domain && domain !== "all" ? `&domain=${encodeURIComponent(domain)}` : ""}`,
+    ),
+  /** @deprecated */
   dictionary: () => request<DictionaryOverview>("/dictionary"),
   queryKeywordAdmin: () => request<QueryKeywordAdminOverview>("/admin/query-keywords"),
-  createCompound: (word: string) =>
+  createCompound: (word: string, domain = "all") =>
     request("/dictionary/compound-nouns", {
       method: "POST",
-      body: JSON.stringify({ word, source: "manual", actor: "dashboard-admin" }),
+      body: JSON.stringify({ word, domain, source: "manual", actor: "dashboard-admin" }),
+    }),
+  updateCompoundDomain: (id: number, domain: string) =>
+    request(`/dictionary/compound-nouns/${id}/domain`, {
+      method: "PATCH",
+      body: JSON.stringify({ domain, actor: "dashboard-admin" }),
     }),
   deleteCompound: (id: number) =>
     request(`/dictionary/compound-nouns/${id}`, { method: "DELETE" }),
@@ -370,10 +396,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
     }),
-  createStopword: (word: string) =>
+  createStopword: (word: string, domain = "all") =>
     request("/dictionary/stopwords", {
       method: "POST",
-      body: JSON.stringify({ word, language: "ko", actor: "dashboard-admin" }),
+      body: JSON.stringify({ word, domain, language: "ko", actor: "dashboard-admin" }),
+    }),
+  updateStopwordDomain: (id: number, domain: string) =>
+    request(`/dictionary/stopwords/${id}/domain`, {
+      method: "PATCH",
+      body: JSON.stringify({ domain, actor: "dashboard-admin" }),
     }),
   deleteStopword: (id: number) =>
     request(`/dictionary/stopwords/${id}`, { method: "DELETE" }),

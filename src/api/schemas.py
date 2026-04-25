@@ -112,6 +112,7 @@ class SystemStatusResponse(BaseModel):
 class CompoundNounItem(BaseModel):
     id: int
     word: str
+    domain: str = "all"
     source: str
     created_at: datetime = Field(serialization_alias="createdAt")
 
@@ -119,6 +120,7 @@ class CompoundNounItem(BaseModel):
 class CompoundCandidateItem(BaseModel):
     id: int
     word: str
+    domain: str = "all"
     frequency: int
     doc_count: int = Field(serialization_alias="docCount")
     first_seen_at: datetime = Field(serialization_alias="firstSeenAt")
@@ -131,6 +133,7 @@ class CompoundCandidateItem(BaseModel):
 class StopwordItem(BaseModel):
     id: int
     word: str
+    domain: str = "all"
     language: str
     created_at: datetime = Field(serialization_alias="createdAt")
 
@@ -149,12 +152,19 @@ class DictionaryOverviewResponse(BaseModel):
 
 class UpsertCompoundNounRequest(BaseModel):
     word: str
+    domain: str = "all"
     source: str = "manual"
+    actor: str = "dashboard-admin"
+
+
+class UpdateDomainRequest(BaseModel):
+    domain: str
     actor: str = "dashboard-admin"
 
 
 class UpsertStopwordRequest(BaseModel):
     word: str
+    domain: str = "all"
     language: str = "ko"
     actor: str = "dashboard-admin"
 

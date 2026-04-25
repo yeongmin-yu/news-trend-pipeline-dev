@@ -387,6 +387,7 @@ export default function App() {
   const [selectedBucket, setSelectedBucket] = useState<number | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<string | null>(null);
   const [articleSort, setArticleSort] = useState<"latest" | "relevance">("latest");
+  const [spikeSort, setSpikeSort] = useState<"score" | "growth">("score");
   const [relatedView, setRelatedView] = useState<"network" | "bar">("network");
   const [topSort, setTopSort] = useState<"mentions" | "growth">("mentions");
   const [topLimit, setTopLimit] = useState(20);
@@ -742,11 +743,18 @@ export default function App() {
     const currentKeywords = displayKeywords;
     const filteredEvents = filteredSpikeEvents.filter((e) => selectedBucket == null || e.bucket === selectedBucket);
     const eventKeywords = new Set(filteredEvents.map((e) => e.keyword));
-    return (selectedBucket == null
+    const rows = selectedBucket == null
       ? currentKeywords.filter((k) => k.spike)
-      : currentKeywords.filter((k) => eventKeywords.has(k.keyword))
-    ).slice(0, 12);
-  }, [displayKeywords, filteredSpikeEvents, selectedBucket]);
+      : currentKeywords.filter((k) => eventKeywords.has(k.keyword));
+    return rows
+      .slice()
+      .sort((a, b) =>
+        spikeSort === "growth"
+          ? b.growth - a.growth
+          : (b.eventScore ?? 0) - (a.eventScore ?? 0),
+      )
+      .slice(0, 12);
+  }, [displayKeywords, filteredSpikeEvents, selectedBucket, spikeSort]);
 
   const themeBarItems = useMemo(() => {
     const items = themeDistribution.data?.items ?? [];
@@ -1290,8 +1298,8 @@ export default function App() {
               </div>
               <div className="panel-tools">
                 <div className="seg">
-                  <button className="is-active">이벤트 점수</button>
-                  <button>증가율</button>
+                  <button className={spikeSort === "score" ? "is-active" : ""} onClick={() => setSpikeSort("score")}>이벤트 점수</button>
+                  <button className={spikeSort === "growth" ? "is-active" : ""} onClick={() => setSpikeSort("growth")}>증가율</button>
                 </div>
               </div>
             </div>

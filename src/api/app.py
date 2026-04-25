@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
     ReviewCandidateRequest,
+    UpdateDomainRequest,
     UpsertCompoundNounRequest,
     UpsertQueryKeywordRequest,
     UpsertStopwordRequest,
@@ -22,6 +23,9 @@ from api.service import (
     get_dashboard_overview,
     get_collection_metrics_overview,
     get_dictionary_overview,
+    list_compound_nouns_paged,
+    list_stopwords_paged,
+    list_candidates_paged,
     get_filters,
     get_kpis,
     get_query_keyword_admin_overview,
@@ -33,6 +37,8 @@ from api.service import (
     get_trend_series,
     get_trend_window_series,
     review_compound_candidate,
+    update_compound_noun_domain,
+    update_stopword_domain,
     update_query_keyword,
 )
 from storage.db import safe_initialize_database
@@ -250,8 +256,39 @@ def dictionary_overview() -> dict:
 
 @app.get("/api/v1/dictionary/history")
 def dictionary_history(limit: int = Query(default=100, ge=1, le=500)) -> dict:
-    overview = get_dictionary_overview()
-    return {"items": overview.get("auditLogs", [])[:limit]}
+    from storage.db import fetch_dictionary_audit_logs
+    return {"items": fetch_dictionary_audit_logs(limit=limit)}
+
+
+@app.get("/api/v1/dictionary/compound-nouns")
+def dict_list_compound_nouns(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    q: str = Query(default=""),
+    domain: str = Query(default=""),
+) -> dict:
+    return list_compound_nouns_paged(page=page, limit=limit, q=q, domain=domain)
+
+
+@app.get("/api/v1/dictionary/stopwords")
+def dict_list_stopwords(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    q: str = Query(default=""),
+    domain: str = Query(default=""),
+) -> dict:
+    return list_stopwords_paged(page=page, limit=limit, q=q, domain=domain)
+
+
+@app.get("/api/v1/dictionary/candidates")
+def dict_list_candidates(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    domain: str = Query(default=""),
+) -> dict:
+    return list_candidates_paged(page=page, limit=limit, q=q, status=status, domain=domain)
 
 
 @app.post("/api/v1/dictionary/compound-nouns", status_code=201)
@@ -260,7 +297,14 @@ def dictionary_create_compound_noun(payload: UpsertCompoundNounRequest) -> dict[
         word=payload.word.strip(),
         source=payload.source.strip() or "manual",
         actor=payload.actor.strip() or "dashboard-admin",
+        domain=payload.domain.strip() or "all",
     )
+    return {"status": "ok"}
+
+
+@app.patch("/api/v1/dictionary/compound-nouns/{item_id}/domain")
+def dictionary_update_compound_noun_domain(item_id: int, payload: UpdateDomainRequest) -> dict[str, str]:
+    update_compound_noun_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
     return {"status": "ok"}
 
 
@@ -286,7 +330,14 @@ def dictionary_create_stopword(payload: UpsertStopwordRequest) -> dict[str, str]
         word=payload.word.strip(),
         language=payload.language.strip() or "ko",
         actor=payload.actor.strip() or "dashboard-admin",
+        domain=payload.domain.strip() or "all",
     )
+    return {"status": "ok"}
+
+
+@app.patch("/api/v1/dictionary/stopwords/{item_id}/domain")
+def dictionary_update_stopword_domain(item_id: int, payload: UpdateDomainRequest) -> dict[str, str]:
+    update_stopword_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
     return {"status": "ok"}
 
 

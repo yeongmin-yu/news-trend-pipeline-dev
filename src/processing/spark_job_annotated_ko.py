@@ -66,7 +66,7 @@ def extract_tokens(text: str | None) -> list[str]:
     - Spark UDF는 "파이썬 함수"를 인자로 받아 실행합니다.
     - 전처리 로직은 preprocessing.tokenize에 있으므로 그대로 위임합니다.
     """
-    return tokenize(text)
+    return tokenize(text, "all")
 
 
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:

@@ -174,13 +174,13 @@ def _load_user_dictionary_from_file(path: Path = KOREAN_USER_DICT_PATH) -> list[
     return words
 
 
-@lru_cache(maxsize=1)
-def get_user_dictionary() -> tuple[str, ...]:
-    """DB에서 승인된 복합명사를 로드한다. DB 불가 시 파일 fallback."""
+@lru_cache(maxsize=8)
+def get_user_dictionary(domain: str = "all") -> tuple[str, ...]:
+    """DB에서 승인된 복합명사를 로드한다 (도메인별 + 'all' 포함). DB 불가 시 파일 fallback."""
     try:
         # db.py가 preprocessing.py를 import하므로 순환 참조 방지를 위해 lazy import
         from storage.db import fetch_compound_nouns  # noqa: PLC0415
-        words = fetch_compound_nouns()
+        words = fetch_compound_nouns(domain=domain)
         if words:
             return tuple(words)
     except Exception:
@@ -188,26 +188,26 @@ def get_user_dictionary() -> tuple[str, ...]:
     return tuple(_load_user_dictionary_from_file())
 
 
-@lru_cache(maxsize=1)
-def get_user_dictionary_set() -> frozenset[str]:
-    return frozenset(get_user_dictionary())
+@lru_cache(maxsize=8)
+def get_user_dictionary_set(domain: str = "all") -> frozenset[str]:
+    return frozenset(get_user_dictionary(domain))
 
 
-@lru_cache(maxsize=1)
-def _get_max_compound_len() -> int:
-    user_words = get_user_dictionary()
+@lru_cache(maxsize=8)
+def _get_max_compound_len(domain: str = "all") -> int:
+    user_words = get_user_dictionary(domain)
     if not user_words:
         return 0
     max_chars = max(len(word) for word in user_words)
     return min(max(max_chars, 2), 6)
 
 
-@lru_cache(maxsize=1)
-def get_kiwi() -> Kiwi | None:
+@lru_cache(maxsize=8)
+def get_kiwi(domain: str = "all") -> "Kiwi | None":
     if Kiwi is None:
         return None
     kiwi = Kiwi()
-    for word in get_user_dictionary():
+    for word in get_user_dictionary(domain):
         try:
             kiwi.add_user_word(word, "NNP", USER_WORD_SCORE)
         except Exception:  # pragma: no cover
@@ -215,12 +215,12 @@ def get_kiwi() -> Kiwi | None:
     return kiwi
 
 
-@lru_cache(maxsize=1)
-def _get_stopwords() -> frozenset[str]:
-    """DB에서 불용어를 로드한다. DB 불가 시 기본값 fallback."""
+@lru_cache(maxsize=8)
+def _get_stopwords(domain: str = "all") -> frozenset[str]:
+    """DB에서 불용어를 로드한다 (도메인별 + 'all' 포함). DB 불가 시 기본값 fallback."""
     try:
         from storage.db import fetch_stopwords  # noqa: PLC0415
-        words = fetch_stopwords(language="ko")
+        words = fetch_stopwords(language="ko", domain=domain)
         if words:
             return frozenset(words)
     except Exception:
@@ -285,11 +285,11 @@ def clean_text(text: str | None) -> str:
     return text
 
 
-def tokenize(text: str | None) -> list[str]:
+def tokenize(text: str | None, domain: str = "all") -> list[str]:
     _refresh_dictionary_caches_if_needed()
     cleaned = clean_text(text)
-    stopwords = _get_stopwords()
-    kiwi = get_kiwi()
+    stopwords = _get_stopwords(domain)
+    kiwi = get_kiwi(domain)
     if kiwi is not None:
         raw_nouns: list[str] = []
         raw_spans: list[tuple[int, int]] = []
@@ -298,7 +298,7 @@ def tokenize(text: str | None) -> list[str]:
             if token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
                 raw_nouns.append(normalized)
                 raw_spans.append((token.start, token.start + token.len))
-        merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(), spans=raw_spans)
+        merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(domain), spans=raw_spans)
         nouns = [token for token in merged if len(token) > 1 and token not in stopwords]
         if nouns:
             return nouns
@@ -308,5 +308,5 @@ def tokenize(text: str | None) -> list[str]:
         for token in cleaned.split()
         if token and token not in stopwords and len(token) > 1 and re.fullmatch(KOREAN_TOKEN_PATTERN, token)
     ]
-    merged_fallback = merge_compound_nouns(fallback_tokens, get_user_dictionary_set())
+    merged_fallback = merge_compound_nouns(fallback_tokens, get_user_dictionary_set(domain))
     return [token for token in merged_fallback if len(token) > 1 and token not in stopwords]

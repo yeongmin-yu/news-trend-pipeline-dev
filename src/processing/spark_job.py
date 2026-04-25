@@ -42,8 +42,8 @@ ARTICLE_SCHEMA = StructType(
 )
 
 
-def extract_tokens(text: str | None) -> list[str]:
-    return tokenize(text)
+def extract_tokens(text: str | None, domain: str | None = None) -> list[str]:
+    return tokenize(text, domain or "all")
 
 
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
@@ -63,7 +63,7 @@ def run_streaming_job() -> None:
     spark = build_spark_session()
     spark.sparkContext.setLogLevel("WARN")
     safe_initialize_database()
-    tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
+    tokenize_udf = udf(extract_tokens, ArrayType(StringType())).asNondeterministic()
 
     jdbc_url = settings.spark_jdbc_url
     jdbc_props = {
@@ -92,7 +92,7 @@ def run_streaming_job() -> None:
         .withColumn("ingested_at", to_timestamp("ingested_at"))
         .withColumn("event_time", col("published_at"))
         .withColumn("article_text", expr("concat_ws(' ', title, summary)"))
-        .withColumn("tokens", tokenize_udf(col("article_text")))
+        .withColumn("tokens", tokenize_udf(col("article_text"), col("domain")))
         .dropna(subset=["event_time", "url"])
     )
 

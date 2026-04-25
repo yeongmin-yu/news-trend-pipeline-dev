@@ -27,6 +27,8 @@ from storage.db import (
     fetch_stopword_item,
     get_connection,
     log_dictionary_audit,
+    update_compound_noun_domain as db_update_compound_noun_domain,
+    update_stopword_domain as db_update_stopword_domain,
     update_query_keyword as db_update_query_keyword,
 )
 
@@ -1200,41 +1202,112 @@ def get_trend_window_series(
 def get_dictionary_overview() -> dict[str, Any]:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT id, word, source, created_at
-                FROM compound_noun_dict
-                ORDER BY created_at DESC, word ASC
-                """
-            )
-            compound_nouns = list(cursor.fetchall())
-            cursor.execute(
-                """
-                SELECT id, word, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
-                FROM compound_noun_candidates
-                ORDER BY status ASC, frequency DESC, word ASC
-                """
-            )
-            compound_candidates = list(cursor.fetchall())
-            cursor.execute(
-                """
-                SELECT id, word, language, created_at
-                FROM stopword_dict
-                ORDER BY created_at DESC, word ASC
-                """
-            )
-            stopwords = list(cursor.fetchall())
+            cursor.execute("SELECT COUNT(*) AS cnt FROM compound_noun_dict")
+            compound_noun_count = int(cursor.fetchone()["cnt"])
+            cursor.execute("SELECT COUNT(*) AS cnt FROM compound_noun_candidates")
+            candidate_count = int(cursor.fetchone()["cnt"])
+            cursor.execute("SELECT COUNT(*) AS cnt FROM stopword_dict")
+            stopword_count = int(cursor.fetchone()["cnt"])
     versions = fetch_dictionary_versions()
     return {
-        "compoundNouns": compound_nouns,
-        "compoundCandidates": compound_candidates,
-        "stopwords": stopwords,
-        "auditLogs": fetch_dictionary_audit_logs(limit=100),
+        "compoundNounCount": compound_noun_count,
+        "candidateCount": candidate_count,
+        "stopwordCount": stopword_count,
         "versions": {
             "compoundNounDict": int(versions.get("compound_noun_dict", 0)),
             "stopwordDict": int(versions.get("stopword_dict", 0)),
         },
     }
+
+
+def list_compound_nouns_paged(*, page: int = 1, limit: int = 50, q: str = "", domain: str = "") -> dict[str, Any]:
+    offset = (page - 1) * limit
+    like = f"%{q}%" if q else "%"
+    params: list[Any] = [like]
+    domain_clause = ""
+    if domain and domain != "all":
+        domain_clause = "AND domain = %s"
+        params.append(domain)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM compound_noun_dict WHERE word ILIKE %s {domain_clause}",
+                params,
+            )
+            total = int(cursor.fetchone()["cnt"])
+            cursor.execute(
+                f"""
+                SELECT id, word, domain, source, created_at
+                FROM compound_noun_dict
+                WHERE word ILIKE %s {domain_clause}
+                ORDER BY created_at DESC, word ASC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            items = list(cursor.fetchall())
+    return {"items": items, "total": total, "page": page, "limit": limit}
+
+
+def list_stopwords_paged(*, page: int = 1, limit: int = 50, q: str = "", domain: str = "") -> dict[str, Any]:
+    offset = (page - 1) * limit
+    like = f"%{q}%" if q else "%"
+    params: list[Any] = [like]
+    domain_clause = ""
+    if domain and domain != "all":
+        domain_clause = "AND domain = %s"
+        params.append(domain)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM stopword_dict WHERE word ILIKE %s {domain_clause}",
+                params,
+            )
+            total = int(cursor.fetchone()["cnt"])
+            cursor.execute(
+                f"""
+                SELECT id, word, domain, language, created_at
+                FROM stopword_dict
+                WHERE word ILIKE %s {domain_clause}
+                ORDER BY created_at DESC, word ASC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            items = list(cursor.fetchall())
+    return {"items": items, "total": total, "page": page, "limit": limit}
+
+
+def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status: str = "", domain: str = "") -> dict[str, Any]:
+    offset = (page - 1) * limit
+    like = f"%{q}%" if q else "%"
+    params: list[Any] = [like]
+    extra_clauses = ""
+    if status and status != "all":
+        extra_clauses += " AND status = %s"
+        params.append(status)
+    if domain and domain != "all":
+        extra_clauses += " AND domain = %s"
+        params.append(domain)
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM compound_noun_candidates WHERE word ILIKE %s{extra_clauses}",
+                params,
+            )
+            total = int(cursor.fetchone()["cnt"])
+            cursor.execute(
+                f"""
+                SELECT id, word, domain, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
+                FROM compound_noun_candidates
+                WHERE word ILIKE %s{extra_clauses}
+                ORDER BY status ASC, frequency DESC, word ASC
+                LIMIT %s OFFSET %s
+                """,
+                params + [limit, offset],
+            )
+            items = list(cursor.fetchall())
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 
 def get_query_keyword_admin_overview() -> dict[str, Any]:
@@ -1250,17 +1323,17 @@ def get_collection_metrics_overview(hours: int = 24) -> dict[str, Any]:
     return {"items": fetch_collection_metrics_summary(hours=hours, provider="naver")}
 
 
-def create_compound_noun(word: str, source: str, actor: str = "dashboard-admin") -> None:
+def create_compound_noun(word: str, source: str, actor: str = "dashboard-admin", domain: str = "all") -> None:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                INSERT INTO compound_noun_dict (word, source)
-                VALUES (%s, %s)
-                ON CONFLICT (word) DO UPDATE SET source = EXCLUDED.source
-                RETURNING id, word, source, created_at
+                INSERT INTO compound_noun_dict (word, domain, source)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (word, domain) DO UPDATE SET source = EXCLUDED.source
+                RETURNING id, word, domain, source, created_at
                 """,
-                (word, source),
+                (word, domain, source),
             )
             after = cursor.fetchone()
     log_dictionary_audit(
@@ -1306,11 +1379,11 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
             if row and action == "approved":
                 cursor.execute(
                     """
-                    INSERT INTO compound_noun_dict (word, source)
-                    VALUES (%s, 'candidate-approved')
-                    ON CONFLICT (word) DO NOTHING
+                    INSERT INTO compound_noun_dict (word, domain, source)
+                    VALUES (%s, %s, 'candidate-approved')
+                    ON CONFLICT (word, domain) DO NOTHING
                     """,
-                    (row["word"],),
+                    (row["word"], row.get("domain", "all")),
                 )
     log_dictionary_audit(
         entity_type="compound_candidate",
@@ -1322,17 +1395,17 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
     )
 
 
-def create_stopword(word: str, language: str, actor: str = "dashboard-admin") -> None:
+def create_stopword(word: str, language: str, actor: str = "dashboard-admin", domain: str = "all") -> None:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                INSERT INTO stopword_dict (word, language)
-                VALUES (%s, %s)
-                ON CONFLICT (word, language) DO UPDATE SET language = EXCLUDED.language
-                RETURNING id, word, language, created_at
+                INSERT INTO stopword_dict (word, domain, language)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (word, domain, language) DO UPDATE SET language = EXCLUDED.language
+                RETURNING id, word, domain, language, created_at
                 """,
-                (word, language),
+                (word, domain, language),
             )
             after = cursor.fetchone()
     log_dictionary_audit(
@@ -1340,6 +1413,32 @@ def create_stopword(word: str, language: str, actor: str = "dashboard-admin") ->
         entity_id=int(after["id"]) if after else None,
         action="upsert",
         before=None,
+        after=after,
+        actor=actor,
+    )
+
+
+def update_compound_noun_domain(item_id: int, domain: str, actor: str = "dashboard-admin") -> None:
+    before = fetch_compound_noun_item(item_id)
+    after = db_update_compound_noun_domain(item_id=item_id, domain=domain)
+    log_dictionary_audit(
+        entity_type="compound_noun",
+        entity_id=item_id,
+        action="update_domain",
+        before=before,
+        after=after,
+        actor=actor,
+    )
+
+
+def update_stopword_domain(item_id: int, domain: str, actor: str = "dashboard-admin") -> None:
+    before = fetch_stopword_item(item_id)
+    after = db_update_stopword_domain(item_id=item_id, domain=domain)
+    log_dictionary_audit(
+        entity_type="stopword",
+        entity_id=item_id,
+        action="update_domain",
+        before=before,
         after=after,
         actor=actor,
     )

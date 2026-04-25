@@ -151,40 +151,87 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_relations_unique
 
 CREATE TABLE IF NOT EXISTS compound_noun_dict (
     id         SERIAL PRIMARY KEY,
-    word       VARCHAR(50) NOT NULL,
-    source     VARCHAR(20) NOT NULL DEFAULT 'manual',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_compound_noun_dict_word UNIQUE (word)
+    word       VARCHAR(50)  NOT NULL,
+    domain     VARCHAR(50)  NOT NULL DEFAULT 'all',
+    source     VARCHAR(20)  NOT NULL DEFAULT 'manual',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_compound_noun_dict_word_domain UNIQUE (word, domain)
 );
 
 CREATE TABLE IF NOT EXISTS compound_noun_candidates (
     id            SERIAL PRIMARY KEY,
-    word          VARCHAR(50) NOT NULL,
-    frequency     INTEGER NOT NULL DEFAULT 1,
-    doc_count     INTEGER NOT NULL DEFAULT 1,
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    status        VARCHAR(20) NOT NULL DEFAULT 'pending',
+    word          VARCHAR(50)  NOT NULL,
+    domain        VARCHAR(50)  NOT NULL DEFAULT 'all',
+    frequency     INTEGER      NOT NULL DEFAULT 1,
+    doc_count     INTEGER      NOT NULL DEFAULT 1,
+    first_seen_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status        VARCHAR(20)  NOT NULL DEFAULT 'pending',
     reviewed_at   TIMESTAMPTZ,
     reviewed_by   VARCHAR(100),
-    CONSTRAINT uq_compound_noun_candidates_word UNIQUE (word),
+    CONSTRAINT uq_compound_noun_candidates_word_domain UNIQUE (word, domain),
     CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('pending', 'approved', 'rejected'))
 );
 
 CREATE TABLE IF NOT EXISTS stopword_dict (
     id         SERIAL PRIMARY KEY,
-    word       VARCHAR(50) NOT NULL,
-    language   VARCHAR(10) NOT NULL DEFAULT 'ko',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_stopword_dict_word_lang UNIQUE (word, language)
+    word       VARCHAR(50)  NOT NULL,
+    domain     VARCHAR(50)  NOT NULL DEFAULT 'all',
+    language   VARCHAR(10)  NOT NULL DEFAULT 'ko',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_stopword_dict_word_domain_lang UNIQUE (word, domain, language)
 );
 
+-- Idempotent migrations for existing deployments without domain column
+ALTER TABLE compound_noun_dict ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'all';
+ALTER TABLE compound_noun_candidates ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'all';
+ALTER TABLE stopword_dict ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'all';
+
+-- Drop old single-column unique constraints and add new domain-aware ones
+DO $$
+BEGIN
+    -- Drop old single-column unique constraints (various possible names)
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'compound_noun_dict_word_key' AND conrelid = 'compound_noun_dict'::regclass) THEN
+        ALTER TABLE compound_noun_dict DROP CONSTRAINT compound_noun_dict_word_key;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_compound_noun_dict_word' AND conrelid = 'compound_noun_dict'::regclass) THEN
+        ALTER TABLE compound_noun_dict DROP CONSTRAINT uq_compound_noun_dict_word;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_compound_noun_dict_word_domain' AND conrelid = 'compound_noun_dict'::regclass) THEN
+        ALTER TABLE compound_noun_dict ADD CONSTRAINT uq_compound_noun_dict_word_domain UNIQUE (word, domain);
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'compound_noun_candidates_word_key' AND conrelid = 'compound_noun_candidates'::regclass) THEN
+        ALTER TABLE compound_noun_candidates DROP CONSTRAINT compound_noun_candidates_word_key;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_compound_noun_candidates_word' AND conrelid = 'compound_noun_candidates'::regclass) THEN
+        ALTER TABLE compound_noun_candidates DROP CONSTRAINT uq_compound_noun_candidates_word;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_compound_noun_candidates_word_domain' AND conrelid = 'compound_noun_candidates'::regclass) THEN
+        ALTER TABLE compound_noun_candidates ADD CONSTRAINT uq_compound_noun_candidates_word_domain UNIQUE (word, domain);
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'stopword_dict_word_language_key' AND conrelid = 'stopword_dict'::regclass) THEN
+        ALTER TABLE stopword_dict DROP CONSTRAINT stopword_dict_word_language_key;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_stopword_dict_word_lang' AND conrelid = 'stopword_dict'::regclass) THEN
+        ALTER TABLE stopword_dict DROP CONSTRAINT uq_stopword_dict_word_lang;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_stopword_dict_word_domain_lang' AND conrelid = 'stopword_dict'::regclass) THEN
+        ALTER TABLE stopword_dict ADD CONSTRAINT uq_stopword_dict_word_domain_lang UNIQUE (word, domain, language);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_compound_noun_dict_domain
+    ON compound_noun_dict(domain);
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status
     ON compound_noun_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_domain
+    ON compound_noun_candidates(domain);
 CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency
     ON compound_noun_candidates(frequency DESC);
-CREATE INDEX IF NOT EXISTS idx_stopword_dict_language
-    ON stopword_dict(language);
+CREATE INDEX IF NOT EXISTS idx_stopword_dict_domain_language
+    ON stopword_dict(domain, language);
 
 CREATE TABLE IF NOT EXISTS dictionary_audit_logs (
     id          BIGSERIAL PRIMARY KEY,
