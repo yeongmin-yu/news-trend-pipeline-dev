@@ -76,6 +76,17 @@ def _append_replayed(record: dict[str, Any]) -> None:
         file.write(json.dumps(record_copy, ensure_ascii=False) + "\n")
 
 
+def _append_permanent_failed(records: list[dict[str, Any]]) -> None:
+    """영구 실패 레코드를 별도 파일에 남깁니다."""
+    if not records:
+        return
+
+    ensure_dir(PERMANENTLY_FAILED_FILE.parent)
+    with PERMANENTLY_FAILED_FILE.open("a", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def run_replay(dry_run: bool = False) -> dict[str, int] | None:
     """Dead Letter 메시지를 다시 Kafka로 전송합니다."""
     records = _read_dead_letters()
@@ -117,7 +128,20 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
 
     for record in records:
         payload = record.get("payload", {})
-        article = NormalizedNewsArticle.from_dict(payload)
+        try:
+            article = NormalizedNewsArticle.from_dict(payload)
+        except ValueError as exc:
+            logger.error("잘못된 Dead Letter payload 영구 실패 처리: error=%s payload=%s", exc, payload)
+            permanent_failed.append(
+                {
+                    **record,
+                    "error": str(exc),
+                    "permanent_fail_at": utc_now_iso(),
+                }
+            )
+            permanent_fail_count += 1
+            continue
+
         url = article.url
         provider = article.provider
         unique_key = f"{provider}::{url}"
@@ -165,12 +189,7 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
             remaining.append({**record, "attempt": attempt, "last_retry_at": utc_now_iso()})
 
     _rewrite_dead_letter(remaining)
-
-    if permanent_failed:
-        ensure_dir(PERMANENTLY_FAILED_FILE.parent)
-        with PERMANENTLY_FAILED_FILE.open("a", encoding="utf-8") as file:
-            for record in permanent_failed:
-                file.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append_permanent_failed(permanent_failed)
 
     logger.info(
         "재전송 결과: 성공=%d 중복=%d 재시도대기=%d 영구실패=%d",
