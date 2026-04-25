@@ -45,6 +45,15 @@ function Restore-GitKeep {
     New-Item -ItemType File -Path $gitkeep -Force | Out-Null
 }
 
+function Invoke-Docker {
+    param([string[]]$DockerArgs)
+    $cmdLine = "docker " + ($DockerArgs -join ' ')
+    cmd /c "$cmdLine 2>nul"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$cmdLine failed with exit code $LASTEXITCODE"
+    }
+}
+
 Assert-ProjectRoot
 
 $composeUpArgs = @("compose", "up", "-d")
@@ -55,7 +64,7 @@ if ($BuildImages) {
 Write-Host "[1/4] docker compose down -v --remove-orphans"
 Push-Location $projectRoot
 try {
-    docker compose down -v --remove-orphans
+    Invoke-Docker @("compose", "down", "-v", "--remove-orphans")
 
     Write-Host "[2/4] runtime directory cleanup"
     $runtimeDirs = @(
@@ -71,10 +80,10 @@ try {
     }
 
     Write-Host "[3/4] docker compose up -d$(if ($BuildImages) { ' --build' })"
-    & docker @composeUpArgs
+    Invoke-Docker $composeUpArgs
 
     Write-Host "[4/4] docker compose ps"
-    docker compose ps
+    Invoke-Docker @("compose", "ps")
 }
 finally {
     Pop-Location

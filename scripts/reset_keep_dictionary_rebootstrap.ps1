@@ -90,10 +90,19 @@ if ($BuildImages) {
     $composeUpArgs += "--build"
 }
 
+function Invoke-Docker {
+    param([string[]]$DockerArgs)
+    $cmdLine = "docker " + ($DockerArgs -join ' ')
+    cmd /c "$cmdLine 2>nul"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$cmdLine failed with exit code $LASTEXITCODE"
+    }
+}
+
 Write-Host "[1/6] docker compose down --remove-orphans"
 Push-Location $projectRoot
 try {
-    docker compose down --remove-orphans
+    Invoke-Docker @("compose", "down", "--remove-orphans")
 
     Write-Host "[2/6] remove Airflow metadata volume only"
     Remove-DockerVolumeIfExists -VolumeName $airflowVolumeName
@@ -118,7 +127,7 @@ try {
     $dbUpArgs += @($appPostgresService, $airflowPostgresService)
 
     Write-Host "[4/6] start PostgreSQL services$(if ($BuildImages) { ' --build' })"
-    & docker @dbUpArgs
+    Invoke-Docker $dbUpArgs
     Wait-ForContainerHealthy -ServiceName $appPostgresService
 
     Write-Host "[5/6] truncate article and aggregate tables, preserve dictionaries"
@@ -130,17 +139,20 @@ TRUNCATE TABLE
     stg_news_raw,
     keyword_relations,
     keyword_trends,
+    keyword_events,
+    collection_metrics,
     keywords,
     news_raw
 RESTART IDENTITY;
 "@
-    $truncateSql | docker compose exec -T $appPostgresService psql -U postgres -d news_pipeline
+    $truncateSql | cmd /c "docker compose exec -T $appPostgresService psql -U postgres -d news_pipeline 2>nul"
+    if ($LASTEXITCODE -ne 0) { throw "TRUNCATE failed" }
 
     Write-Host "[6/6] docker compose up -d$(if ($BuildImages) { ' --build' })"
-    & docker @composeUpArgs
+    Invoke-Docker $composeUpArgs
 
     Write-Host "[done] docker compose ps"
-    docker compose ps
+    Invoke-Docker @("compose", "ps")
 }
 finally {
     Pop-Location
