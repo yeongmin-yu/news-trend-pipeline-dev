@@ -17,18 +17,40 @@ const PAGE_SIZE = 50;
 
 const CANDIDATE_STATUS_LABEL: Record<string, string> = {
   needs_review: "검토필요",
-  auto_approved: "자동승인",
   approved: "승인됨",
   rejected: "반려됨",
 };
 
 const CANDIDATE_STATUS_CHIP: Record<string, string> = {
   needs_review: "warn",
-  auto_approved: "info",
   approved: "up",
   rejected: "muted",
 };
+const AUTO_DECISION_LABEL: Record<string, string> = {
+  high_confidence: "고신뢰",
+  needs_manual_review: "수동검토",
+  low_confidence: "낮은신뢰",
+  api_error: "API오류",
+};
 
+const AUTO_DECISION_CHIP: Record<string, string> = {
+  high_confidence: "up",
+  needs_manual_review: "warn",
+  low_confidence: "muted",
+  api_error: "down",
+};
+
+function renderAutoEvidence(c: CompoundCandidateItem) {
+  const e = c.auto_evidence_summary;
+  if (!e) return "—";
+
+  return [
+    e.has_exact_compact_match ? "exact" : "no exact",
+    e.naver_total != null ? `total ${e.naver_total}` : null,
+    e.frequency_per_doc != null ? `f/d ${e.frequency_per_doc}` : null,
+    e.matched_field ? `${e.matched_field}` : null,
+  ].filter(Boolean).join(" · ");
+}
 const SW_CANDIDATE_STATUS_LABEL: Record<string, string> = {
   needs_review: "검토필요",
   approved: "승인됨",
@@ -459,7 +481,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
           </div>
           {tab === "candidates" && (
             <div className="seg">
-              {(["", "needs_review", "auto_approved", "approved", "rejected"]).map((v) => (
+              {(["", "needs_review",  "approved", "rejected"]).map((v) => (
                 <button
                   key={v}
                   className={statusFilter === v ? "is-active" : ""}
@@ -669,74 +691,139 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
               </tbody>
             </table>
           ) : tab === "candidates" ? (
-            <table className="table" style={{ fontSize: 12 }}>
-              <thead>
-                <tr>
-                  <th>후보어</th>
-                  <th>도메인</th>
-                  <th className="num">빈도</th>
-                  <th className="num">문서 수</th>
-                  <th>마지막 확인</th>
-                  <th>상태</th>
-                  <th>검토자</th>
-                  <th>작업</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(candidates.data?.items ?? []).map((c) => (
-                  <tr key={c.id}>
-                    <td><span style={{ fontFamily: "var(--font-mono)", color: "var(--text)", fontWeight: 600 }}>{c.word}</span></td>
-                    <td>
-                      <span
-                        style={{
-                          padding: "2px 8px",
-                          borderRadius: 4,
-                          border: "1px solid var(--border)",
-                          background: (c.domain ?? "all") === "all" ? "var(--bg-3)" : "var(--accent-weak)",
-                          color: (c.domain ?? "all") === "all" ? "var(--text-3)" : "var(--accent)",
-                          fontSize: 11,
-                          fontFamily: "var(--font-mono)",
-                        }}
-                      >
-                        {domains.find((d) => d.id === c.domain)?.label ?? (c.domain === "all" || !c.domain ? "전체" : c.domain)}
-                      </span>
-                    </td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.frequency?.toLocaleString() ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.doc_count?.toLocaleString() ?? "—"}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.last_seen_at?.slice(0, 10) ?? "—"}</td>
-                    <td>
-                      <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
-                        {CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
-                      </span>
-                    </td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.reviewed_by ?? "—"}</td>
-                    <td style={{ display: "flex", gap: 4 }}>
-                      {c.status === "needs_review" && (
-                        <>
-                          <button
-                            disabled={busy === `approve-${c.id}`}
-                            onClick={() => void run(`approve-${c.id}`, () => api.approveCandidate(c.id), `"${c.word}" 승인됨`)}
-                            className="table-action approve"
-                          >
-                            {busy === `approve-${c.id}` ? "…" : "승인"}
-                          </button>
-                          <button
-                            disabled={busy === `reject-${c.id}`}
-                            onClick={() => void run(`reject-${c.id}`, () => api.rejectCandidate(c.id), `"${c.word}" 반려됨`)}
-                            className="table-action danger"
-                          >
-                            {busy === `reject-${c.id}` ? "…" : "반려"}
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {!activeLoading && (candidates.data?.items?.length ?? 0) === 0 && (
-                  <tr><td colSpan={8} className="empty">검색 결과가 없습니다</td></tr>
+  <table className="table" style={{ fontSize: 12 }}>
+    <thead>
+      <tr>
+        <th>후보어</th>
+        <th>도메인</th>
+        <th className="num">빈도</th>
+        <th className="num">문서 수</th>
+        <th>마지막 확인</th>
+        <th>상태</th>
+        <th className="num">자동점수</th>
+        <th>자동판정</th>
+        <th>판단근거</th>
+        <th>평가시각</th>
+        <th>검토자</th>
+        <th>작업</th>
+      </tr>
+    </thead>
+    <tbody>
+      {(candidates.data?.items ?? []).map((c) => (
+        <tr key={c.id}>
+          <td>
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--text)", fontWeight: 600 }}>
+              {c.word}
+            </span>
+          </td>
+          <td>
+            <span
+              style={{
+                padding: "2px 8px",
+                borderRadius: 4,
+                border: "1px solid var(--border)",
+                background: (c.domain ?? "all") === "all" ? "var(--bg-3)" : "var(--accent-weak)",
+                color: (c.domain ?? "all") === "all" ? "var(--text-3)" : "var(--accent)",
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {domains.find((d) => d.id === c.domain)?.label ?? (c.domain === "all" || !c.domain ? "전체" : c.domain)}
+            </span>
+          </td>
+          <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+            {c.frequency?.toLocaleString() ?? "—"}
+          </td>
+          <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+            {c.doc_count?.toLocaleString() ?? "—"}
+          </td>
+          <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
+            {c.last_seen_at?.slice(0, 10) ?? "—"}
+          </td>
+          <td>
+            <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
+              {CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
+            </span>
+          </td>
+          <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
+            {c.auto_score != null ? Math.round(Number(c.auto_score)).toLocaleString() : "—"}
+          </td>
+          <td>
+            {c.auto_decision ? (
+              <span className={"chip " + (AUTO_DECISION_CHIP[c.auto_decision] ?? "muted")} style={{ fontSize: 11 }}>
+                {AUTO_DECISION_LABEL[c.auto_decision] ?? c.auto_decision}
+              </span>
+            ) : (
+              <span style={{ color: "var(--text-4)", fontSize: 11 }}>—</span>
+            )}
+          </td>
+          <td style={{ minWidth: 220, maxWidth: 320 }}>
+            <div style={{ fontSize: 11, color: "var(--text-2)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
+              {renderAutoEvidence(c)}
+            </div>
+            {c.auto_evidence_summary?.matched_title && (
+              <div
+                title={c.auto_evidence_summary.matched_title}
+                style={{
+                  marginTop: 2,
+                  fontSize: 10,
+                  color: "var(--text-4)",
+                  maxWidth: 300,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {c.auto_evidence_summary?.matched_link ? (
+                  <a
+                    href={c.auto_evidence_summary.matched_link}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "inherit", textDecoration: "underline" }}
+                  >
+                    {c.auto_evidence_summary.matched_title}
+                  </a>
+                ) : (
+                  c.auto_evidence_summary.matched_title
                 )}
-              </tbody>
-            </table>
+              </div>
+            )}
+          </td>
+          <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
+            {c.auto_checked_at?.slice(0, 16).replace("T", " ") ?? "—"}
+          </td>
+          <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
+            {c.reviewed_by ?? "—"}
+          </td>
+          <td style={{ display: "flex", gap: 4 }}>
+            {c.status === "needs_review" && (
+              <>
+                <button
+                  disabled={busy === `approve-${c.id}`}
+                  onClick={() => void run(`approve-${c.id}`, () => api.approveCandidate(c.id), `"${c.word}" 승인됨`)}
+                  className="table-action approve"
+                >
+                  {busy === `approve-${c.id}` ? "…" : "승인"}
+                </button>
+                <button
+                  disabled={busy === `reject-${c.id}`}
+                  onClick={() => void run(`reject-${c.id}`, () => api.rejectCandidate(c.id), `"${c.word}" 반려됨`)}
+                  className="table-action danger"
+                >
+                  {busy === `reject-${c.id}` ? "…" : "반려"}
+                </button>
+              </>
+            )}
+          </td>
+        </tr>
+      ))}
+      {!activeLoading && (candidates.data?.items?.length ?? 0) === 0 && (
+        <tr>
+          <td colSpan={12} className="empty">검색 결과가 없습니다</td>
+        </tr>
+      )}
+    </tbody>
+  </table>
             ) : tab === "history" ? (
               <table className="table" style={{ fontSize: 12 }}>
                 <thead>
