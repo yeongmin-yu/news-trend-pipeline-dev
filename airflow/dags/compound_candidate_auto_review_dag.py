@@ -25,7 +25,7 @@ def _ensure_src_on_syspath() -> None:
 def task_auto_review(**context):
     _ensure_src_on_syspath()
     from analytics.compound_auto_reviewer import run_auto_review
-    return run_auto_review()
+    return run_auto_review(limit=100)
 
 
 with DAG(

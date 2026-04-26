@@ -1382,7 +1382,7 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
                 cursor.execute(
                     """
                     INSERT INTO compound_noun_dict (word, domain, source)
-                    VALUES (%s, %s, 'candidate-approved')
+                    VALUES (%s, %s, 'auto-approved')
                     ON CONFLICT (word, domain) DO NOTHING
                     """,
                     (row["word"], row.get("domain", "all")),
