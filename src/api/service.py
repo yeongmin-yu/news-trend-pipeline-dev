@@ -406,7 +406,7 @@ def _derive_overview_from_cache(
             "spikeCount": len(spike_keywords),
             "growth": article_growth,
             "lastUpdateRelative": _format_relative(last_update),
-            "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "?곗씠???놁쓬",
+            "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "데이터 없음",
         },
         "keywords": keywords[:limit],
         "spikes": {
@@ -846,11 +846,11 @@ def get_dashboard_overview(
         **derived,
         "cache": {
             **overview_cache,
-            "fetchStartAt": resolved_fetch_start.isoformat(),
-            "fetchEndAt": resolved_fetch_end.isoformat(),
-            "requestedStartAt": resolved_start.isoformat(),
-            "requestedEndAt": resolved_end.isoformat(),
-            "candidateKeywords": [item["keyword"] for item in cache_keywords],
+            "fetch_start_at": resolved_fetch_start.isoformat(),
+            "fetch_end_at": resolved_fetch_end.isoformat(),
+            "requested_start_at": resolved_start.isoformat(),
+            "requested_end_at": resolved_end.isoformat(),
+            "candidate_keywords": [item["keyword"] for item in cache_keywords],
             "range": _window_range_payload(
                 range_spec=fetch_range_spec,
                 start_at=resolved_fetch_start,

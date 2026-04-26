@@ -1117,7 +1117,17 @@ export default function App() {
 
         <div className="side-section">
           <div className="side-heading">파이프라인 상태</div>
-          {(system.data?.services ?? []).map((svc) => (
+          {
+          (system.error
+            ? [
+                {
+                  key: "api",
+                  label: "API 서버",
+                  status: "down" as const,
+                  detail: system.error,
+                  status_code: null,
+                },
+              ] : system.data?.services ?? []).map((svc) => (
             <div className="side-item" key={svc.key}>
               <span className="label">
                 <span
@@ -1140,6 +1150,7 @@ export default function App() {
               </span>
             </div>
           ))}
+          
         </div>
       </div>
 
