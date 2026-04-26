@@ -1,18 +1,35 @@
-# STEP1: Airflow DAG 설계
+# Q3: Airflow DAG 설계 및 구현
 
-## 1. 개요
+## 1. 문서 목적
 
-Airflow의 역할:
+이 문서는 뉴스 트렌드 파이프라인에서 Airflow가 담당하는 DAG의 목적, 실행 단위, 입력/출력, 태스크 의존성, 스케줄, 실패 처리, 재실행 안전성을 설명한다.
 
-- 뉴스 수집 작업 스케줄링
-- 실패 메시지 재처리
-- 복합명사 후보 추출 배치 실행
-- 복합명사 후보 자동 평가 및 자동승인 배치 실행
-- 키워드 이벤트 탐지 배치 실행
+5회차 발표에서는 다음을 설명한다.
+
+- DAG가 무엇을 처리하는지
+- 각 DAG의 입력과 산출물
+- 태스크 구조와 의존성
+- 스케줄과 재시도 정책
+- 같은 실행일자 또는 같은 시간 구간을 다시 실행해도 안전한 이유
+- Airflow UI에서 DAG가 파싱되고 태스크 그래프가 보이는 상태
 
 ---
 
-## 2. Airflow DAG 전체 구성
+## 2. Airflow의 전체 역할
+
+Airflow는 배치성 작업과 운영 보조 작업을 스케줄링한다.
+
+- 뉴스 수집 작업 실행
+- dead letter 재처리
+- PostgreSQL 기반 복합명사 후보 추출
+- 복합명사 후보 자동 평가 및 보수적 자동승인
+- 키워드 급상승 이벤트 탐지
+
+Spark Streaming은 Kafka 메시지를 상시 consume하는 별도 장기 실행 프로세스이며, Airflow는 Spark Streaming 자체를 매번 시작/종료하지 않는다. Airflow DAG는 Spark가 적재한 PostgreSQL 분석 테이블을 읽어 후속 배치 작업을 수행한다.
+
+---
+
+## 3. DAG 전체 구성
 
 ```mermaid
 flowchart LR
@@ -33,7 +50,7 @@ flowchart LR
 
     CAND --> E
     E --> FETCH["평가 대상 조회<br/>needs_review<br/>auto_checked_at 7일 캐시<br/>limit 2000"]
-    FETCH --> EXT["외부 검색 근거 조회<br/>Naver Web Search API<br/>https://openapi.naver.com/v1/search/webkr.json"]
+    FETCH --> EXT["외부 검색 근거 조회<br/>Naver Web Search API<br/>/v1/search/webkr.json"]
     EXT --> SCORE["자동 평가<br/>auto_score 계산<br/>auto_evidence JSON 생성"]
     SCORE --> DECISION["auto_decision 분기"]
 
@@ -64,94 +81,604 @@ flowchart LR
     style REVIEW fill:#fff0f0,stroke:#333,stroke-width:1px,color:black
 ```
 
-### 구성 설명
+---
 
-- `news_ingest_dag`는 Naver 뉴스를 수집해 Kafka `news_topic`으로 발행한다.
-- `auto_replay_dag`는 dead letter 메시지를 재처리해 Kafka로 다시 발행한다.
-- Spark Streaming은 Kafka 메시지를 상시 consume하고 PostgreSQL 분석 테이블을 갱신한다.
-- `compound_dictionary_dag`는 `news_raw` 기반으로 복합명사 후보만 추출하고, `compound_noun_candidates`에 `needs_review` 상태로 누적한다.
-- `compound_candidate_auto_review_dag`는 `needs_review` 후보를 대상으로 외부 사전 근거를 조회하고 `auto_score`, `auto_evidence`, `auto_decision`을 저장한다.
-- 자동승인은 `auto_decision = high_confidence`인 후보에만 수행한다.
-- 자동승인된 후보는 `compound_noun_dict`에 `source=auto-approved`로 반영된다.
-- `compound_noun_dict`가 변경되면 `dictionary_versions`가 증가하고 Spark 전처리 캐시가 갱신 대상이 된다.
-- `keyword_event_detection`은 PostgreSQL 분석 테이블을 기반으로 급상승 이벤트를 계산해 `keyword_events`에 저장한다.
+## 4. DAG 목록 요약
 
-### DAG 목록
-
-| DAG | 역할 | 주기 |
-| --- | --- | --- |
-| news_ingest_dag | 뉴스 수집 | 15분 |
-| auto_replay_dag | dead letter 재처리 | 15분 |
-| compound_dictionary_dag | 복합명사 후보 추출 | 1시간 |
-| compound_candidate_auto_review_dag | 자동 평가 및 승인 | 2시간 |
-| keyword_event_detection | 이벤트 탐지 | 15분 |
+| DAG | 목적 | 실행 단위 | 입력 | 출력 | 스케줄 |
+| --- | --- | --- | --- | --- | --- |
+| `news_ingest_dag` | Naver 뉴스 수집 및 Kafka 발행 | query/domain 단위 수집 배치 | `query_keywords`, Naver News API | Kafka `news_topic`, 수집 metric | 15분 |
+| `auto_replay_dag` | dead letter 메시지 재처리 | 실패 메시지 batch replay | dead letter 저장소/토픽 | Kafka `news_topic` 재발행 | 15분 |
+| `compound_dictionary_dag` | 복합명사 후보 추출 | 최근 기사 window batch | PostgreSQL `news_raw` | `compound_noun_candidates` | 1시간 |
+| `compound_candidate_auto_review_dag` | 후보 자동 평가 및 high confidence 자동승인 | 후보 batch review | `compound_noun_candidates`, Naver Web Search API | `auto_score`, `auto_evidence`, `compound_noun_dict` | 2시간 |
+| `keyword_event_detection` | 급상승 키워드 이벤트 탐지 | 최근 window 집계 batch | `keyword_trends`, `keywords`, `news_raw` | `keyword_events` | 15분 |
 
 ---
 
-## 3. compound_dictionary_dag
+## 5. 공통 DAG 설계 원칙
 
-목적:
+### 5.1 실행 단위
 
-- news_raw 기반 복합명사 후보 추출
+- Airflow의 논리 실행일자는 `ds` 또는 `data_interval_start/end`로 해석한다.
+- 뉴스 수집은 현재 시점 기준 반복 수집이므로 15분 단위 실행이다.
+- 후보 추출과 이벤트 탐지는 PostgreSQL에 이미 적재된 최근 window를 대상으로 한다.
+- 자동리뷰는 특정 날짜 파티션보다는 `status = 'needs_review'` 후보 queue를 batch로 처리한다.
 
-구조:
+### 5.2 태스크 간 데이터 전달 방식
 
-```mermaid
-flowchart LR
-    A["extract_compound_candidates<br/>news_raw 조회<br/>domain별 후보 추출"] --> B["compound_noun_candidates<br/>frequency / doc_count 누적"]
-    B --> C["summarize_dictionary_results<br/>후보 추출 결과 요약"]
+이 프로젝트는 대량 데이터를 XCom으로 전달하지 않는다.
 
-    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
-    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style C fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+| 데이터 유형 | 전달 방식 |
+| --- | --- |
+| 기사 원문 | Kafka topic / PostgreSQL table |
+| 키워드 및 trend 결과 | PostgreSQL table |
+| 복합명사 후보 | PostgreSQL table |
+| 자동평가 근거 | PostgreSQL JSONB column |
+| 태스크 요약 count | Airflow log / 작은 dict return |
+
+XCom은 count, status 등 작은 메타데이터만 반환하는 용도로 제한한다.
+
+### 5.3 Idempotency 기본 원칙
+
+- insert는 가능한 `ON CONFLICT` 또는 동일 구간 삭제 후 재삽입 방식을 사용한다.
+- 후보 누적은 `status = 'needs_review'`인 row만 frequency/doc_count를 증가시킨다.
+- `approved` 또는 `rejected` 후보는 재실행으로 자동 변경하지 않는다.
+- 이벤트 탐지는 동일 window를 다시 실행해도 중복 이벤트가 쌓이지 않도록 replace/upsert 전략을 사용한다.
+- 자동승인된 후보 row는 삭제하지 않고 evidence를 보존한다.
+
+---
+
+## 6. `news_ingest_dag`
+
+### 6.1 목적 / 실행 단위
+
+`news_ingest_dag`는 활성 query keyword를 기준으로 Naver News API를 호출하고, 수집한 기사를 Kafka `news_topic`으로 발행한다.
+
+실행 단위:
+
+```text
+15분마다 provider/domain/query 조합 단위 수집
 ```
 
-특징:
+### 6.2 입력 / 출력
 
-- 자동승인 로직 없음
-- 후보 생성만 수행
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | PostgreSQL `query_keywords`, domain catalog, Naver News API |
+| 출력 | Kafka `news_topic`, collection metric row |
+| 주요 파라미터 | Airflow logical date, 현재 수집 window |
 
----
-
-## 4. compound_candidate_auto_review_dag
-
-목적:
-
-- needs_review 후보 자동 평가
-- evidence 저장
-- high_confidence 자동승인
-
-구조:
+### 6.3 태스크 구조
 
 ```mermaid
 flowchart LR
-    A["auto_review<br/>run_auto_review"] --> B["fetch candidates<br/>needs_review<br/>limit 2000"]
-    B --> C["Free Dictionary API<br/>entries 조회"]
-    C --> D["score_candidate<br/>auto_score 계산"]
-    D --> E["auto_evidence 저장<br/>stats / free_dictionary / score_breakdown"]
-    E --> F["decision"]
-    F -->|"high_confidence"| G["approve<br/>status=approved<br/>source=auto-approved"]
-    F -->|"needs_manual_review"| H["needs_review 유지"]
-    F -->|"low_confidence"| H
-    F -->|"api_error"| H
+    A["read_active_queries<br/>query_keywords 조회"] --> B["fetch_news<br/>Naver News API 호출"]
+    B --> C["publish_to_kafka<br/>news_topic 발행"]
+    C --> D["record_collection_metric<br/>수집 결과 저장"]
 
     style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
     style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
     style C fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style D fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style E fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style F fill:#fff4de,stroke:#333,stroke-width:1px,color:black
-    style G fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
-    style H fill:#fff0f0,stroke:#333,stroke-width:1px,color:black
+    style D fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
 ```
 
-처리 흐름:
+데이터 전달:
+
+- query 목록은 DB에서 읽는다.
+- 기사 payload는 Kafka 메시지로 전달한다.
+- 수집량과 실패량은 PostgreSQL metric 테이블에 저장한다.
+
+### 6.4 스케줄
+
+| 항목 | 값 |
+| --- | --- |
+| schedule interval | `*/15 * * * *` |
+| 근거 | 뉴스 트렌드 탐지를 위해 15분 단위 신선도 유지 |
+| timezone | `Asia/Seoul` 권장 |
+| start_date | 고정 과거일. 예: `2026-01-01` |
+| catchup | 운영에서는 `False` 권장 |
+
+### 6.5 Retry / Failure handling
+
+| 실패 유형 | 처리 |
+| --- | --- |
+| Naver API 일시 오류, network timeout | retry 의미 있음 |
+| Kafka broker 일시 장애 | retry 의미 있음 |
+| 인증키 누락, query 설정 오류 | retry 의미 낮음. 설정 수정 필요 |
+| 응답 schema 파싱 실패 | 해당 query 격리 후 metric 기록 |
+
+권장값:
 
 ```text
-needs_review 조회 (max 2000)
-→ Free Dictionary API entries 조회
-→ score 계산
-→ auto_evidence 저장
-→ decision 분기
-→ high_confidence만 승인
+retries = 2
+retry_delay = 5분
+retry_exponential_backoff = True
+```
+
+### 6.6 Idempotency
+
+- 같은 URL은 downstream `news_raw`에서 `(provider, domain, url)` 기준 중복 제거한다.
+- 수집 metric은 window/provider/domain/query 기준으로 집계 또는 upsert한다.
+- 같은 query를 재실행해도 동일 기사 URL은 중복 적재되지 않는다.
+
+---
+
+## 7. `auto_replay_dag`
+
+### 7.1 목적 / 실행 단위
+
+`auto_replay_dag`는 dead letter로 분리된 실패 메시지를 다시 Kafka로 발행한다.
+
+실행 단위:
+
+```text
+15분마다 dead letter batch 재처리
+```
+
+### 7.2 입력 / 출력
+
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | dead letter topic 또는 dead letter 저장 테이블 |
+| 출력 | Kafka `news_topic` 재발행 |
+| 보조 출력 | replay 성공/실패 metric |
+
+### 7.3 태스크 구조
+
+```mermaid
+flowchart LR
+    A["read_dead_letters<br/>실패 메시지 조회"] --> B["filter_replayable<br/>재처리 가능 여부 판단"]
+    B --> C["republish<br/>Kafka 재발행"]
+    C --> D["mark_replayed<br/>상태 갱신"]
+
+    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style B fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style C fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style D fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+```
+
+데이터 전달:
+
+- 실패 메시지 payload는 dead letter 저장소에서 읽고 Kafka로 재발행한다.
+- Airflow XCom에는 처리 count 정도만 남긴다.
+
+### 7.4 스케줄
+
+| 항목 | 값 |
+| --- | --- |
+| schedule interval | `*/15 * * * *` |
+| 근거 | 수집 지연을 오래 방치하지 않고 자동 복구 |
+| timezone | `Asia/Seoul` |
+| catchup | `False` |
+
+### 7.5 Retry / Failure handling
+
+| 실패 유형 | 처리 |
+| --- | --- |
+| Kafka 연결 실패 | retry |
+| dead letter 저장소 연결 실패 | retry |
+| payload 자체가 깨진 경우 | retry하지 않고 unreplayable로 격리 |
+
+### 7.6 Idempotency
+
+- 메시지 key 또는 원문 URL 기준으로 downstream에서 중복 제거한다.
+- replay 완료 상태를 기록해 같은 dead letter를 반복 발행하지 않는다.
+
+---
+
+## 8. `compound_dictionary_dag`
+
+### 8.1 목적 / 실행 단위
+
+`compound_dictionary_dag`는 `news_raw`에 적재된 기사 제목/요약에서 복합명사 후보를 추출한다.
+
+이 DAG는 자동승인을 수행하지 않는다. 후보 생성과 frequency/doc_count 누적까지만 담당한다.
+
+실행 단위:
+
+```text
+최근 기사 window 기준 hourly 후보 추출 batch
+```
+
+### 8.2 입력 / 출력
+
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | PostgreSQL `news_raw`, domain 정보, 기존 dictionary/stopword |
+| 출력 | PostgreSQL `compound_noun_candidates` |
+| 주요 출력 컬럼 | `word`, `domain`, `frequency`, `doc_count`, `first_seen_at`, `last_seen_at`, `status` |
+
+### 8.3 태스크 구조
+
+```mermaid
+flowchart LR
+    A["extract_compound_candidates<br/>news_raw 조회"] --> B["transform_candidates<br/>토큰화 / 복합명사 후보 생성"]
+    B --> C["load_candidates<br/>frequency / doc_count 누적"]
+    C --> D["validate_result<br/>처리 건수 확인"]
+
+    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style C fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style D fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+```
+
+데이터 전달:
+
+- 원문과 후보는 DB row를 통해 전달한다.
+- 태스크 간 대량 후보 리스트를 XCom으로 넘기지 않는다.
+- 최종 count만 로그 또는 작은 dict로 반환한다.
+
+### 8.4 스케줄
+
+| 항목 | 값 |
+| --- | --- |
+| schedule interval | `0 * * * *` |
+| 근거 | 후보 추출은 실시간성이 낮고, hourly 누적으로 충분함 |
+| timezone | `Asia/Seoul` |
+| start_date | 예: `2026-01-01` |
+| catchup | `False` 권장 |
+
+### 8.5 Retry / Failure handling
+
+| 실패 유형 | 처리 |
+| --- | --- |
+| DB 연결 실패 | retry |
+| 일시적 lock timeout | retry |
+| 토큰화 코드 오류 | retry 의미 낮음. 코드 수정 필요 |
+| 특정 기사 parsing 실패 | 해당 기사 skip 후 로그 기록 |
+
+권장값:
+
+```text
+retries = 1~2
+retry_delay = 5분
+```
+
+### 8.6 Idempotency
+
+- 신규 후보는 `(word, domain)` 충돌 시 중복 insert하지 않는다.
+- 기존 `needs_review` 후보만 frequency/doc_count를 증가시킨다.
+- `approved` 또는 `rejected` 후보는 후보 추출 재실행으로 상태를 바꾸지 않는다.
+
+---
+
+## 9. `compound_candidate_auto_review_dag`
+
+### 9.1 목적 / 실행 단위
+
+`compound_candidate_auto_review_dag`는 `needs_review` 상태의 복합명사 후보를 많이 평가하고, `high_confidence` 후보만 보수적으로 자동승인한다.
+
+실행 단위:
+
+```text
+needs_review 후보 queue batch review
+```
+
+핵심 정책:
+
+```text
+많이 평가하고, 적게 승인한다.
+```
+
+### 9.2 입력 / 출력
+
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | PostgreSQL `compound_noun_candidates` |
+| 외부 입력 | Naver Web Search API `/v1/search/webkr.json` |
+| 출력 1 | `compound_noun_candidates.auto_score` |
+| 출력 2 | `compound_noun_candidates.auto_evidence` JSONB |
+| 출력 3 | `compound_noun_candidates.auto_checked_at` |
+| 출력 4 | `compound_noun_candidates.auto_decision` |
+| 출력 5 | high confidence인 경우 `compound_noun_dict` insert |
+
+### 9.3 태스크 구조
+
+```mermaid
+flowchart LR
+    A["fetch_candidates<br/>needs_review<br/>limit 2000"] --> B["collect_external_evidence<br/>Naver Web Search API"]
+    B --> C["score_candidate<br/>auto_score 계산"]
+    C --> D["store_evidence<br/>auto_evidence 저장"]
+    D --> E["decide<br/>high_confidence 여부"]
+    E -->|"high_confidence"| F["approve_candidate<br/>status=approved<br/>dict insert"]
+    E -->|"else"| G["keep_needs_review<br/>수동검토 대기"]
+    F --> H["summarize<br/>처리 결과 로그"]
+    G --> H
+
+    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style C fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style D fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style E fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style F fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style G fill:#fff0f0,stroke:#333,stroke-width:1px,color:black
+    style H fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+```
+
+현재 구현은 Airflow task 하나에서 `run_auto_review()`를 호출하지만, 내부 처리 흐름은 위 단계로 분리되어 있다.
+
+데이터 전달:
+
+- 평가 대상은 DB query로 읽는다.
+- 외부 API 응답과 score breakdown은 `auto_evidence` JSONB에 저장한다.
+- 승인 결과는 `compound_noun_candidates`와 `compound_noun_dict`에 저장한다.
+- XCom에는 최종 count dict만 반환할 수 있다.
+
+### 9.4 자동평가 기준
+
+외부 근거 수집:
+
+```text
+Naver Web Search API
+https://openapi.naver.com/v1/search/webkr.json
+```
+
+매칭 기준:
+
+```text
+items.title 또는 items.description에서 HTML 제거
+→ 공백 제거
+→ 후보 단어도 공백 제거
+→ 후보 단어가 title/description에 포함되면 has_exact_compact_match = true
+```
+
+`high_confidence` 조건:
+
+```text
+auto_score >= 85
+AND doc_count >= 3
+AND frequency >= 5
+AND has_exact_compact_match = true
+AND frequency_per_doc <= 8
+```
+
+### 9.5 스케줄
+
+| 항목 | 값 |
+| --- | --- |
+| schedule interval | `0 */2 * * *` |
+| 근거 | 외부 API rate limit을 고려하면서 후보 queue를 주기적으로 소화 |
+| timezone | `Asia/Seoul` |
+| start_date | 예: `2026-01-01` |
+| catchup | `False` |
+
+### 9.6 Retry / Failure handling
+
+| 실패 유형 | 처리 |
+| --- | --- |
+| Naver API timeout, 5xx | 후보별 `api_error` 기록 또는 task retry |
+| DB 연결 실패 | task retry |
+| API credential 누락 | retry 의미 낮음. 설정 수정 필요 |
+| 특정 후보에서 파싱 오류 | 해당 후보 `api_error` 처리 후 다음 후보 계속 진행 |
+| score 로직 버그 | retry 의미 낮음. 코드 수정 필요 |
+
+권장값:
+
+```text
+retries = 1
+retry_delay = 10분
+retry_exponential_backoff = True
+```
+
+API rate limit 보호:
+
+- `auto_checked_at` 기준 7일 캐시를 사용한다.
+- `last_seen_at > auto_checked_at`인 후보는 새로 등장한 근거가 있으므로 재평가할 수 있다.
+- 평가 대상은 최대 2000개로 제한한다.
+
+### 9.7 Idempotency
+
+- `approved` 또는 `rejected` 후보는 자동리뷰 대상에서 제외한다.
+- 이미 approved 된 복합명사는 자동으로 다시 내리지 않는다.
+- `compound_noun_dict` insert는 `(word, domain)` 충돌 시 중복 insert하지 않는다.
+- 자동승인된 candidate row는 삭제하지 않아 승인 근거를 추적할 수 있다.
+- 같은 후보를 다시 평가해도 `auto_score`, `auto_evidence`, `auto_checked_at`, `auto_decision`이 갱신될 뿐 중복 사전 row가 생기지 않는다.
+
+---
+
+## 10. `keyword_event_detection`
+
+### 10.1 목적 / 실행 단위
+
+`keyword_event_detection`은 최근 window의 키워드 언급량과 이전 window를 비교해 급상승 이벤트를 감지한다.
+
+실행 단위:
+
+```text
+15분 단위 최근 window event detection batch
+```
+
+### 10.2 입력 / 출력
+
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | PostgreSQL `keyword_trends`, `keywords`, `news_raw` |
+| 출력 | PostgreSQL `keyword_events` |
+| 산출물 | keyword별 current_mentions, prev_mentions, growth, event_score, is_spike |
+
+### 10.3 태스크 구조
+
+```mermaid
+flowchart LR
+    A["read_keyword_trends<br/>최근 window 조회"] --> B["calculate_growth<br/>이전 window 대비 증가율"]
+    B --> C["detect_spikes<br/>event_score 계산"]
+    C --> D["load_keyword_events<br/>replace/upsert"]
+    D --> E["validate_events<br/>count 확인"]
+
+    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style C fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style D fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style E fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+```
+
+데이터 전달:
+
+- input/output 모두 PostgreSQL table을 사용한다.
+- event 결과는 `keyword_events`에 저장한다.
+- count/summary만 task return 또는 log로 남긴다.
+
+### 10.4 스케줄
+
+| 항목 | 값 |
+| --- | --- |
+| schedule interval | `*/15 * * * *` |
+| 근거 | 대시보드 급상승 이벤트를 15분 단위로 갱신 |
+| timezone | `Asia/Seoul` |
+| catchup | `False` |
+
+### 10.5 Retry / Failure handling
+
+| 실패 유형 | 처리 |
+| --- | --- |
+| DB 연결 실패 | retry |
+| 일시적 lock timeout | retry |
+| 데이터 품질 문제 | 해당 window 결과 격리 또는 알림 |
+| 계산 로직 오류 | retry 의미 낮음. 코드 수정 필요 |
+
+### 10.6 Idempotency
+
+- 동일 window를 다시 계산할 때 기존 `keyword_events`를 삭제 후 재삽입하거나 unique key 기반 upsert를 사용한다.
+- 같은 window를 여러 번 돌려도 이벤트 row가 중복되지 않는다.
+
+---
+
+## 11. 실행 가능한 코드 구성
+
+아래 파일/폴더가 repo에 포함되어 있어야 한다.
+
+| 경로 | 역할 |
+| --- | --- |
+| `airflow/dags/news_ingest_dag.py` | 뉴스 수집 DAG 정의 |
+| `airflow/dags/auto_replay_dag.py` | dead letter replay DAG 정의 |
+| `airflow/dags/compound_dictionary_dag.py` | 복합명사 후보 추출 DAG 정의 |
+| `airflow/dags/compound_candidate_auto_review_dag.py` | 복합명사 후보 자동평가 DAG 정의 |
+| `airflow/dags/keyword_event_detection_dag.py` 또는 유사 파일 | 급상승 이벤트 탐지 DAG 정의 |
+| `docker-compose.yml` | Airflow scheduler/webserver/worker 및 의존 서비스 구성 |
+| `requirements.txt` | Airflow task에서 사용하는 Python 의존성 |
+| `src/analytics/compound_auto_reviewer.py` | 자동평가 실행 로직 |
+| `src/analytics/compound_dictionary_builder.py` 또는 유사 모듈 | 후보 추출 실행 로직 |
+| `scripts/` 선택 | Spark job 실행, validate query, 샘플 데이터 생성 스크립트 |
+
+최소 구현 기준:
+
+```text
+Airflow UI에서 DAG가 import error 없이 파싱된다.
+DAG graph에 태스크 구조가 보인다.
+수동 실행 시 각 task 로그가 출력된다.
+```
+
+---
+
+## 12. DAG 코드 예시
+
+```python
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import pendulum
+from airflow.decorators import dag, task
+
+KST = pendulum.timezone("Asia/Seoul")
+
+DEFAULT_ARGS = {
+    "owner": "news-trend-pipeline",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=10),
+    "retry_exponential_backoff": True,
+}
+
+@dag(
+    dag_id="compound_candidate_auto_review_dag",
+    start_date=datetime(2026, 1, 1, tzinfo=KST),
+    schedule="0 */2 * * *",
+    catchup=False,
+    default_args=DEFAULT_ARGS,
+    tags=["dictionary", "compound-noun", "auto-review"],
+)
+def compound_candidate_auto_review_dag():
+    @task
+    def auto_review() -> dict[str, int]:
+        from analytics.compound_auto_reviewer import run_auto_review
+
+        return run_auto_review(limit=2000, threshold=85)
+
+    auto_review()
+
+compound_candidate_auto_review_dag()
+```
+
+실제 repo의 DAG 파일은 환경에 맞게 `src` path를 추가하거나 Docker image의 PYTHONPATH 설정을 사용한다.
+
+---
+
+## 13. 운영 검증 방법
+
+### 13.1 DAG import 확인
+
+```bash
+docker compose exec airflow-scheduler airflow dags list-import-errors
+```
+
+기대 결과:
+
+```text
+No data found
+```
+
+### 13.2 DAG 목록 확인
+
+```bash
+docker compose exec airflow-scheduler airflow dags list | grep compound
+```
+
+### 13.3 Task 단독 테스트
+
+```bash
+docker compose exec airflow-scheduler airflow tasks test compound_candidate_auto_review_dag auto_review 2026-04-27
+```
+
+### 13.4 API 결과 확인
+
+자동평가 실행 후 후보 API에서 근거 필드를 확인한다.
+
+```bash
+curl "http://localhost:<API_PORT>/api/v1/dictionary/candidates?page=1&limit=1" | jq '.items[0]'
+```
+
+확인 필드:
+
+```text
+auto_score
+auto_decision
+auto_checked_at
+auto_evidence
+auto_evidence_summary
+```
+
+---
+
+## 14. 발표용 설명 포인트
+
+5회차 발표에서는 다음 순서로 설명한다.
+
+1. Airflow가 실시간 처리 엔진이 아니라 batch orchestration 역할을 담당한다.
+2. Spark Streaming은 Kafka를 상시 consume하고, Airflow는 그 결과 테이블을 읽어 후속 batch를 수행한다.
+3. `compound_dictionary_dag`와 `compound_candidate_auto_review_dag`를 분리했다.
+   - 후보 추출 DAG: 많이 찾는다.
+   - 자동리뷰 DAG: 많이 평가하고 확실한 것만 승인한다.
+4. 자동승인은 Naver Web Search API 근거와 내부 통계를 같이 사용한다.
+5. `approved` row는 재검증으로 내리지 않고 유지한다.
+6. 동일 DAG를 재실행해도 `ON CONFLICT`, status 조건, replace/upsert 전략으로 중복과 상태 오염을 막는다.
+7. Airflow UI에서 DAG graph, task log, schedule, retry 설정을 보여준다.
+
+---
+
+## 15. 한 줄 요약
+
+```text
+Airflow는 뉴스 수집, 재처리, 후보 추출, 자동리뷰, 이벤트 탐지를 스케줄링하고,
+대량 데이터 전달은 Kafka/PostgreSQL이 담당하며,
+각 DAG는 재실행해도 결과가 깨지지 않도록 설계한다.
 ```
