@@ -58,6 +58,7 @@ x-airflow-common:
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -68,6 +69,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    restart: unless-stopped
     depends_on:
       - zookeeper
     ports:
@@ -187,6 +189,7 @@ services:
       context: .
       dockerfile: infra/spark/Dockerfile.spark
     image: news-trend-spark-runtime:latest
+    restart: unless-stopped
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
       --host spark-master --port 7077 --webui-port 8080"
@@ -201,6 +204,7 @@ services:
 
   spark-worker-1:
     image: news-trend-spark-runtime:latest
+    restart: unless-stopped
     depends_on:
       - spark-master
     command: >
@@ -216,6 +220,7 @@ services:
 
   spark-worker-2:
     image: news-trend-spark-runtime:latest
+    restart: unless-stopped
     depends_on:
       - spark-master
     command: >
@@ -231,6 +236,7 @@ services:
 
   spark-history:
     image: news-trend-spark-runtime:latest
+    restart: unless-stopped
     command: >
       bash -lc "/opt/spark/sbin/start-history-server.sh;
       sleep infinity"
@@ -279,6 +285,10 @@ services:
       app-postgres:
         condition: service_healthy
       spark-master:
+        condition: service_started
+      spark-worker-1:
+        condition: service_started
+      spark-worker-2:
         condition: service_started
     volumes:
       - ./src:/opt/news-trend-pipeline/src
