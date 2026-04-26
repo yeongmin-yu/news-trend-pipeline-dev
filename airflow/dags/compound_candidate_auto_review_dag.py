@@ -25,7 +25,7 @@ def _ensure_src_on_syspath() -> None:
 def task_auto_review(**context):
     _ensure_src_on_syspath()
     from analytics.compound_auto_reviewer import run_auto_review
-    return run_auto_review(limit=100)
+    return run_auto_review(limit=2000)
 
 
 with DAG(
@@ -33,7 +33,7 @@ with DAG(
     default_args=default_args,
     description="compound candidate auto review",
     start_date=datetime(2026, 1, 1),
-    schedule="0 */6 * * *",
+    schedule="0 */2 * * *",
     catchup=False,
     max_active_runs=1,
 ) as dag:

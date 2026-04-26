@@ -33,7 +33,7 @@ flowchart LR
 
     CAND --> E
     E --> FETCH["평가 대상 조회<br/>needs_review<br/>auto_checked_at 7일 캐시<br/>limit 2000"]
-    FETCH --> EXT["외부 사전 근거 조회<br/>Free Dictionary API<br/>/api/v1/entries/ko/{word}"]
+    FETCH --> EXT["외부 검색 근거 조회<br/>Naver Web Search API<br/>https://openapi.naver.com/v1/search/webkr.json"]
     EXT --> SCORE["자동 평가<br/>auto_score 계산<br/>auto_evidence JSON 생성"]
     SCORE --> DECISION["auto_decision 분기"]
 
@@ -83,7 +83,7 @@ flowchart LR
 | news_ingest_dag | 뉴스 수집 | 15분 |
 | auto_replay_dag | dead letter 재처리 | 15분 |
 | compound_dictionary_dag | 복합명사 후보 추출 | 1시간 |
-| compound_candidate_auto_review_dag | 자동 평가 및 승인 | 6시간 |
+| compound_candidate_auto_review_dag | 자동 평가 및 승인 | 2시간 |
 | keyword_event_detection | 이벤트 탐지 | 15분 |
 
 ---
@@ -155,21 +155,3 @@ needs_review 조회 (max 2000)
 → decision 분기
 → high_confidence만 승인
 ```
-
----
-
-## 5. 스케줄
-
-| DAG | schedule |
-| --- | --- |
-| compound_dictionary_dag | 1시간 |
-| compound_candidate_auto_review_dag | 6시간 |
-
----
-
-## 6. 핵심 정책
-
-- extract와 approve 분리
-- 많이 평가하고 적게 승인
-- approved 재검증 없음
-- evidence 항상 저장
