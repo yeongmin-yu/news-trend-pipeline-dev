@@ -2,25 +2,69 @@
 
 ## 1. 개요
 
-본 문서는 뉴스 수집(Ingestion) 단계에서 Airflow DAG의 설계와 실행 구조를 정의한다.
+본 문서는 프로젝트에서 사용하는 Airflow DAG 전체와, 그중 수집(Ingestion) DAG의 상세 실행 구조를 정의한다.
 
 Airflow의 역할:
 
 - 뉴스 수집 작업 스케줄링
+- 실패 메시지 재처리
+- 사전 후보 추출/추천 배치 실행
+- 키워드 이벤트 탐지 배치 실행
 - Kafka 발행 전 사전 상태 확인
-- 수집 producer 실행 제어
 - 실패 시 재시도 및 dead letter 확인
 - 수집 결과 요약 로그 기록
 
 ---
 
-## 2. 파이프라인 구성도
+## 2. Airflow DAG 전체 구성
+
+현재 Airflow는 단일 DAG가 아니라 여러 운영 DAG를 통해 파이프라인을 보조한다.
+
+```mermaid
+flowchart LR
+    A["Airflow Scheduler"] --> B["news_ingest_dag<br/>뉴스 수집 / Kafka 발행"]
+    A --> C["auto_replay_dag<br/>dead letter 재처리"]
+    A --> D["compound_noun_extraction<br/>복합명사 후보 추출"]
+    A --> E["keyword_event_detection<br/>급상승 이벤트 탐지"]
+
+    B --> K["Kafka<br/>news_topic"]
+    C --> K
+
+    K --> S["Spark Streaming<br/>상시 실행"]
+    S --> DB["PostgreSQL<br/>analysis tables"]
+
+    D --> DICT["Dictionary Tables<br/>compound_noun_candidates<br/>stopword_candidates"]
+    DICT -. reload .-> S
+
+    DB --> E
+    E --> EV["keyword_events"]
+```
+
+### DAG 목록
+
+| DAG | 역할 | 실행 주기/조건 | 주요 출력 |
+| --- | --- | --- | --- |
+| `news_ingest_dag` | Naver 뉴스 수집 후 Kafka 발행 | 15분 주기 | `news_topic`, `collection_metrics` |
+| `auto_replay_dag` | `dead_letter.jsonl` 재처리 | 15분 주기 | 재발행 메시지, replay 결과 로그 |
+| `compound_noun_extraction` | 기사 데이터 기반 복합명사/불용어 후보 생성 | 주기 배치 | `compound_noun_candidates`, `stopword_candidates` |
+| `keyword_event_detection` | `keyword_trends` 기반 급상승 이벤트 계산 | 15분 주기 | `keyword_events` |
+
+정리:
+
+- `news_ingest_dag`와 `auto_replay_dag`는 Kafka 입력 품질과 수집 안정성을 담당한다.
+- Spark Structured Streaming은 Airflow task가 아니라 상시 실행되는 처리 계층이다.
+- 사전 관련 DAG는 Spark 전처리 품질에 영향을 준다.
+- 이벤트 탐지 DAG는 Spark/Storage 결과인 `keyword_trends`를 기반으로 분석 결과를 만든다.
+
+---
+
+## 3. 수집 DAG 중심 파이프라인 구성도
 
 ```mermaid
 flowchart LR
     S["Airflow Scheduler<br/>*/15 * * * *<br/>catchup=false<br/>max_active_runs=1"] --> D["DAG<br/>news_ingest_dag"]
 
-    subgraph AIRFLOW["Airflow DAG 상세"]
+    subgraph AIRFLOW["news_ingest_dag 상세"]
         D --> H["check_kafka_health<br/>Kafka 연결 확인"]
         H -->|"정상"| P["produce_naver<br/>Naver 수집 + Kafka 발행"]
         H -.->|"실패"| R["Airflow retry<br/>3회 / exponential backoff"]
@@ -51,16 +95,16 @@ flowchart LR
 
 ---
 
-## 3. DAG 설계
+## 4. news_ingest_dag 설계
 
-### 3.1 목적
+### 4.1 목적
 
 - Naver 뉴스 수집 producer 실행
 - Kafka `news_topic`에 뉴스 메시지 발행
 - 수집 결과를 `collection_metrics`에 기록
 - Kafka 또는 발행 실패 상황을 조기에 감지
 
-### 3.2 실행 단위
+### 4.2 실행 단위
 
 - DAG 실행 단위: 15분 주기 수집 cycle
 - Producer 내부 처리 단위: provider + domain + query
@@ -70,7 +114,7 @@ Airflow의 `ds`는 실행 context로 제공되지만, 현재 producer는 `ds`별
 
 ---
 
-## 3.3 입력 / 출력
+## 4.3 입력 / 출력
 
 ### 입력
 
@@ -89,7 +133,7 @@ Airflow의 `ds`는 실행 context로 제공되지만, 현재 producer는 `ds`별
 
 ---
 
-## 3.4 실제 DAG 구조
+## 4.4 실제 DAG 구조
 
 현재 구현 파일:
 
@@ -119,9 +163,9 @@ flowchart LR
 
 ---
 
-## 3.5 `validate`의 의미
+## 4.5 `validate`의 의미
 
-현재 DAG에는 `validate`라는 별도 Airflow task가 없다.
+현재 `news_ingest_dag`에는 `validate`라는 별도 Airflow task가 없다.
 
 문서상 `validate`는 다음 검증 행위들을 포괄하는 개념으로 해석한다.
 
@@ -202,7 +246,7 @@ summarize_results
 
 ---
 
-## 3.6 데이터 전달 방식
+## 4.6 데이터 전달 방식
 
 - XCom: `produce_naver` → `summarize_results` 발행 건수 전달
 - Kafka: producer → Spark 처리 계층 메시지 전달
@@ -211,9 +255,82 @@ summarize_results
 
 ---
 
-## 4. 스케줄
+## 5. 기타 DAG 요약
 
-실제 구현 기준:
+### 5.1 auto_replay_dag
+
+구현 파일:
+
+```text
+airflow/dags/auto_replay_dag.py
+```
+
+목적:
+
+- `dead_letter.jsonl`에 쌓인 실패 메시지를 재처리한다.
+- Kafka가 정상일 때만 replay를 수행한다.
+
+태스크 구조:
+
+```mermaid
+flowchart LR
+    A[check_kafka_health] --> B[replay_dead_letters]
+    B --> C[summarize_replay_results]
+    B --> D[check_permanent_failures]
+```
+
+주요 특징:
+
+- 15분 주기 실행
+- `max_active_runs=1`
+- replay 결과를 XCom과 로그로 요약
+- 영구 실패 메시지는 별도 파일과 로그로 관리
+
+### 5.2 compound_noun_extraction
+
+목적:
+
+- 최근 기사 데이터를 기반으로 복합명사 후보와 불용어 후보를 추천한다.
+- 생성된 후보는 사전 관리 화면/API를 통해 승인 또는 반려된다.
+- 승인된 사전은 Spark 전처리 단계의 토큰 품질에 영향을 준다.
+
+주요 출력:
+
+- `compound_noun_candidates`
+- `stopword_candidates`
+- `dictionary_versions`
+
+### 5.3 keyword_event_detection
+
+구현 파일:
+
+```text
+airflow/dags/keyword_event_detection_dag.py
+```
+
+목적:
+
+- `keyword_trends`를 기반으로 급상승 이벤트를 계산한다.
+- 결과를 `keyword_events`에 저장한다.
+
+태스크 구조:
+
+```mermaid
+flowchart LR
+    A[detect_keyword_events] --> B[keyword_events]
+```
+
+주요 특징:
+
+- 15분 주기 실행
+- 최근 24시간 lookback
+- `provider + domain + keyword` 기준 growth와 event score 계산
+
+---
+
+## 6. 스케줄
+
+`news_ingest_dag` 실제 구현 기준:
 
 - schedule: `*/15 * * * *`
 - start_date: `2026-01-01`
@@ -228,11 +345,11 @@ summarize_results
 
 ---
 
-## 5. Retry / Failure Handling
+## 7. Retry / Failure Handling
 
 ### 재시도 정책
 
-실제 구현 기준:
+`news_ingest_dag` 실제 구현 기준:
 
 - retries: 3
 - retry_delay: 5 minutes
@@ -260,7 +377,7 @@ summarize_results
 
 ---
 
-## 6. Idempotency
+## 8. Idempotency
 
 전략:
 
@@ -277,26 +394,29 @@ summarize_results
 
 ---
 
-## 7. 코드 구조
+## 9. 코드 구조
 
 DAG 파일:
 
 ```text
 airflow/dags/news_ingest_dag.py
+airflow/dags/auto_replay_dag.py
+airflow/dags/keyword_event_detection_dag.py
 ```
 
 관련 구현:
 
 ```text
 src/ingestion/producer.py
+src/ingestion/replay.py
 src/ingestion/api_client.py
-src/core/config.py
+src/analytics/event_detector.py
 src/storage/db.py
 ```
 
 ---
 
-## 8. 실행 환경
+## 10. 실행 환경
 
 필수 구성:
 
@@ -321,9 +441,9 @@ STATE_DIR
 
 ---
 
-## 9. 실행 시나리오
+## 11. 실행 시나리오
 
-### 정상 실행
+### 정상 수집 실행
 
 ```text
 check_kafka_health
@@ -353,8 +473,15 @@ check_kafka_health 실패
 ```text
 produce_naver 내부에서 validation/publish 실패
 → dead_letter.jsonl 기록
-→ 나머지 메시지 처리 계속
-→ check_dead_letter에서 누적 건수 확인
+→ auto_replay_dag가 이후 재처리 시도
+```
+
+### 이벤트 탐지 실행
+
+```text
+keyword_trends
+→ keyword_event_detection
+→ keyword_events
 ```
 
 ### 재실행
@@ -368,10 +495,12 @@ produce_naver 내부에서 validation/publish 실패
 
 ---
 
-## 10. 요약
+## 12. 요약
 
-현재 Airflow DAG의 핵심 구조는 `check_kafka_health → produce_naver → summarize_results / check_dead_letter`이다.
+Airflow는 단일 수집 DAG만 관리하지 않는다.
 
-`news_ingest_dag`는 Kafka로 메시지를 발행하는 수집 entry point이며, 이후 단계는 Kafka topic을 기준으로 Spark 처리와 PostgreSQL 저장 계층으로 이어진다.
+현재 Airflow는 수집, dead letter 재처리, 사전 후보 추출, 이벤트 탐지 배치를 담당한다.
+
+이 중 `news_ingest_dag`는 Kafka로 메시지를 발행하는 수집 entry point이며, 이후 단계는 Kafka topic을 기준으로 Spark 처리와 PostgreSQL 저장 계층으로 이어진다.
 
 `validate`는 별도 task가 아니라 Kafka 사전 검증, 메시지 schema 검증, 중복 검증, dead letter 사후 확인으로 나뉘어 구현되어 있다.
