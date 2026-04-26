@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -60,34 +60,41 @@ def _clean_for_extraction(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _normalize_domain(value: Any) -> str:
+    """기사 domain 값을 후보 저장용 domain 문자열로 정규화한다."""
+    domain = str(value or "").strip()
+    return domain or "all"
+
+
 def _extract_candidates(
     articles: list[dict[str, Any]],
     min_frequency: int,
     min_char_length: int,
     max_morpheme_count: int,
     excluded_words: set[str],
-) -> dict[str, tuple[int, int]]:
+) -> dict[str, dict[str, tuple[int, int]]]:
     """기사 목록에서 복합명사 후보를 추출한다.
 
     Args:
-        articles: title/summary 딕셔너리 목록.
+        articles: title/summary/domain 딕셔너리 목록.
         min_frequency: 후보로 올리기 위한 최소 총 출현 횟수.
         min_char_length: 후보 단어의 최소 글자 수 (형태소 합산).
         max_morpheme_count: 합칠 형태소 최대 개수 (2 ≤ n ≤ max).
         excluded_words: 이미 승인된 단어 집합 (결과에서 제외).
 
     Returns:
-        {word: (total_count, doc_count)} — 빈도 조건을 통과한 후보 맵.
+        {domain: {word: (total_count, doc_count)}} — 빈도 조건을 통과한 후보 맵.
     """
     kiwi = _build_raw_kiwi()
     if kiwi is None:
         logger.warning("Kiwi를 사용할 수 없어 복합명사 추출을 건너뜁니다")
         return {}
 
-    total_counts: Counter[str] = Counter()
-    doc_counts: Counter[str] = Counter()
+    total_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    doc_counts: dict[str, Counter[str]] = defaultdict(Counter)
 
     for article in articles:
+        domain = _normalize_domain(article.get("domain"))
         text = " ".join(
             part
             for part in (
@@ -124,16 +131,19 @@ def _extract_candidates(
                     break
                 compound = "".join(t[0] for t in noun_tokens[i : i + count])
                 if len(compound) >= min_char_length and compound not in excluded_words:
-                    total_counts[compound] += 1
+                    total_counts[domain][compound] += 1
                     article_words.add(compound)
 
         for word in article_words:
-            doc_counts[word] += 1
+            doc_counts[domain][word] += 1
 
     return {
-        word: (total_counts[word], doc_counts[word])
-        for word in total_counts
-        if total_counts[word] >= min_frequency
+        domain: {
+            word: (counts[word], doc_counts[domain][word])
+            for word in counts
+            if counts[word] >= min_frequency
+        }
+        for domain, counts in total_counts.items()
     }
 
 
@@ -184,7 +194,7 @@ def run_extraction_job(
     # 이미 승인된 단어는 후보에서 제외
     excluded: set[str] = set(fetch_compound_nouns())
 
-    candidates = _extract_candidates(
+    candidates_by_domain = _extract_candidates(
         articles,
         min_frequency=_min_freq,
         min_char_length=_min_len,
@@ -192,13 +202,31 @@ def run_extraction_job(
         excluded_words=excluded,
     )
 
-    logger.info("추출된 후보 %d건 (빈도 기준 통과)", len(candidates))
+    candidate_count = sum(len(candidates) for candidates in candidates_by_domain.values())
+    logger.info("추출된 후보 %d건 (빈도 기준 통과)", candidate_count)
 
-    new_count, updated_count = upsert_compound_candidates(candidates)
+    new_count = 0
+    updated_count = 0
+    for domain, candidates in candidates_by_domain.items():
+        if not candidates:
+            continue
+        domain_new_count, domain_updated_count = upsert_compound_candidates(
+            candidates,
+            domain=domain,
+        )
+        new_count += domain_new_count
+        updated_count += domain_updated_count
+        logger.info(
+            "domain=%s 후보 반영 완료 | 신규=%d | 빈도누적=%d | 후보=%d",
+            domain,
+            domain_new_count,
+            domain_updated_count,
+            len(candidates),
+        )
 
     result = {
         "article_count": len(articles),
-        "candidate_count": len(candidates),
+        "candidate_count": candidate_count,
         "new_count": new_count,
         "updated_count": updated_count,
     }
@@ -206,7 +234,7 @@ def run_extraction_job(
         "추출 완료 | 신규=%d | 빈도누적=%d | 총후보=%d",
         new_count,
         updated_count,
-        len(candidates),
+        candidate_count,
     )
     return result
 
