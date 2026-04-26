@@ -459,7 +459,7 @@ def fetch_articles_for_extraction(since: datetime, until: datetime) -> list[dict
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT title, summary
+                SELECT title, summary, domain
                 FROM news_raw
                 WHERE ingested_at >= %s AND ingested_at < %s
                 ORDER BY ingested_at ASC
@@ -996,311 +996,125 @@ def replace_keyword_events(
                     """,
                     [
                         (
-                            row["provider"],
-                            row["domain"],
+                            row.get("provider", "naver"),
+                            row.get("domain", "ai_tech"),
                             row["keyword"],
                             row["event_time"],
                             row["window_start"],
                             row["window_end"],
                             row["current_mentions"],
-                            row["prev_mentions"],
+                            row.get("prev_mentions", 0),
                             row["growth"],
                             row["event_score"],
-                            row["is_spike"],
-                            row["detected_at"],
+                            row.get("is_spike", False),
+                            row.get("detected_at", datetime.now(timezone.utc)),
                         )
                         for row in rows
                     ],
                 )
 
 
-def fetch_keyword_event_rows(
+def fetch_keyword_events(
     *,
-    start_at: datetime,
-    end_at: datetime,
+    since: datetime | None = None,
+    until: datetime | None = None,
     provider: str | None = None,
     domain: str | None = None,
+    limit: int = 200,
 ) -> list[dict[str, Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if since:
+        conditions.append("event_time >= %s")
+        params.append(since)
+    if until:
+        conditions.append("event_time < %s")
+        params.append(until)
+    if provider:
+        conditions.append("provider = %s")
+        params.append(provider)
+    if domain:
+        conditions.append("domain = %s")
+        params.append(domain)
+    where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+    query = f"""
+        SELECT provider, domain, keyword, event_time, window_start, window_end,
+               current_mentions, prev_mentions, growth, event_score, is_spike, detected_at
+        FROM keyword_events
+        {where_clause}
+        ORDER BY event_time DESC, event_score DESC, keyword ASC
+        LIMIT %s
+    """
+    params.append(limit)
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(query, params)
+            return list(cursor.fetchall())
+
+
+def aggregate_keyword_trends() -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
             cursor.execute(
                 """
+                INSERT INTO keyword_trends (provider, domain, window_start, window_end, keyword, keyword_count, processed_at)
                 SELECT
-                    provider,
-                    domain,
+                    article_provider AS provider,
+                    article_domain AS domain,
+                    date_trunc('hour', processed_at) AS window_start,
+                    date_trunc('hour', processed_at) + interval '1 hour' AS window_end,
                     keyword,
-                    event_time,
-                    window_start,
-                    window_end,
-                    current_mentions,
-                    prev_mentions,
-                    growth,
-                    event_score,
-                    is_spike,
-                    detected_at
-                FROM keyword_events
-                WHERE event_time >= %s
-                  AND event_time < %s
-                  AND (%s IS NULL OR provider = %s)
-                  AND (%s IS NULL OR domain = %s)
-                ORDER BY event_time ASC, event_score DESC, keyword ASC
-                """,
-                (start_at, end_at, provider, provider, domain, domain),
-            )
-            return list(cursor.fetchall())
-
-
-def fetch_news_raw_between(
-    start_at: datetime,
-    end_at: datetime,
-    provider: str | None = None,
-    domain: str | None = None,
-) -> list[dict[str, Any]]:
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
+                    SUM(keyword_count) AS keyword_count,
+                    MAX(processed_at) AS processed_at
+                FROM keywords
+                GROUP BY article_provider, article_domain, date_trunc('hour', processed_at), keyword
+                ON CONFLICT (provider, domain, window_start, window_end, keyword)
+                DO UPDATE SET
+                    keyword_count = EXCLUDED.keyword_count,
+                    processed_at = EXCLUDED.processed_at;
                 """
-                SELECT provider, domain, query, source, title, summary, url, published_at, ingested_at
-                FROM news_raw
-                WHERE published_at >= %s
-                  AND published_at < %s
-                  AND (%s IS NULL OR provider = %s)
-                  AND (%s IS NULL OR domain = %s)
-                ORDER BY published_at ASC
-                """,
-                (start_at, end_at, provider, provider, domain, domain),
             )
-            return list(cursor.fetchall())
 
 
-def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
-    start_at = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
-    return start_at, start_at + timedelta(days=1)
-
-
-def rebuild_keywords_for_date(
-    target_date: date,
-    provider: str | None = None,
-    domain: str | None = None,
-) -> dict[str, int]:
-    start_at, end_at = _day_bounds(target_date)
-    articles = fetch_news_raw_between(start_at, end_at, provider=provider, domain=domain)
-    processed_at = datetime.now(timezone.utc)
-    rows: list[tuple[str, str, str, str, int, datetime]] = []
-    article_keys = [
-        (article.get("provider"), article.get("domain"), article["url"])
-        for article in articles
-        if article.get("url")
-    ]
-
-    for article in articles:
-        article_url = article.get("url")
-        if not article_url:
-            continue
-        article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        counts = Counter(tokenize(article_text, article.get("domain", "all")))
-        rows.extend(
-            (
-                article.get("provider"),
-                article.get("domain", "ai_tech"),
-                article_url,
-                keyword,
-                count,
-                processed_at,
-            )
-            for keyword, count in counts.items()
-        )
-
+def aggregate_keyword_relations() -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            if article_keys:
-                cursor.executemany(
+            cursor.execute("SELECT provider, domain, url FROM news_raw")
+            articles = cursor.fetchall()
+            for provider, domain, url in articles:
+                cursor.execute(
                     """
-                    DELETE FROM keywords
-                    WHERE article_provider = %s
-                      AND article_domain = %s
-                      AND article_url = %s
+                    SELECT keyword, keyword_count
+                    FROM keywords
+                    WHERE article_provider = %s AND article_domain = %s AND article_url = %s
                     """,
-                    article_keys,
+                    (provider, domain, url),
                 )
-            if rows:
-                cursor.executemany(
-                    """
-                    INSERT INTO keywords (article_provider, article_domain, article_url, keyword, keyword_count, processed_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
-                    rows,
-                )
-
-    return {"article_count": len(articles), "keyword_row_count": len(rows)}
-
-
-def replace_keyword_trends(
-    rows: list[dict[str, Any]],
-    *,
-    window_start: datetime,
-    window_end: datetime,
-    provider: str | None = None,
-    domain: str | None = None,
-) -> None:
-    values = [
-        (
-            row.get("provider", provider),
-            row.get("domain", domain or "ai_tech"),
-            row["window_start"],
-            row["window_end"],
-            row["keyword"],
-            row["keyword_count"],
-            row["processed_at"],
-        )
-        for row in rows
-    ]
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM keyword_trends
-                WHERE window_start >= %s
-                  AND window_start < %s
-                  AND (%s IS NULL OR provider = %s)
-                  AND (%s IS NULL OR domain = %s)
-                """,
-                (window_start, window_end, provider, provider, domain, domain),
-            )
-            if values:
-                cursor.executemany(
-                    """
-                    INSERT INTO keyword_trends (provider, domain, window_start, window_end, keyword, keyword_count, processed_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    values,
-                )
-
-
-def rebuild_keyword_trends_for_date(
-    target_date: date,
-    provider: str | None = None,
-    domain: str | None = None,
-) -> dict[str, int]:
-    start_at, end_at = _day_bounds(target_date)
-    articles = fetch_news_raw_between(start_at, end_at, provider=provider, domain=domain)
-    window_counts: defaultdict[tuple[str, str, datetime, datetime, str], int] = defaultdict(int)
-    processed_at = datetime.now(timezone.utc)
-
-    for article in articles:
-        published_at = article.get("published_at")
-        if not published_at:
-            continue
-        if published_at.tzinfo is None:
-            published_at = published_at.replace(tzinfo=timezone.utc)
-        normalized = published_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-        minute_bucket = normalized.minute - (normalized.minute % 10)
-        bucket_start = normalized.replace(minute=minute_bucket)
-        bucket_end = bucket_start + timedelta(minutes=10)
-        article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        for keyword, count in Counter(tokenize(article_text, article.get("domain", "all"))).items():
-            window_counts[(article.get("provider"), article.get("domain", "ai_tech"), bucket_start, bucket_end, keyword)] += count
-
-    rows = [
-        {
-            "provider": provider_name,
-            "domain": domain_name,
-            "window_start": item_window_start,
-            "window_end": item_window_end,
-            "keyword": keyword,
-            "keyword_count": keyword_count,
-            "processed_at": processed_at,
-        }
-        for (provider_name, domain_name, item_window_start, item_window_end, keyword), keyword_count in sorted(window_counts.items())
-    ]
-    replace_keyword_trends(rows, window_start=start_at, window_end=end_at, provider=provider, domain=domain)
-    return {"article_count": len(articles), "trend_row_count": len(rows)}
-
-
-def rebuild_keyword_relations_for_date(
-    target_date: date,
-    provider: str | None = None,
-    domain: str | None = None,
-) -> dict[str, int]:
-    start_at, end_at = _day_bounds(target_date)
-    articles = fetch_news_raw_between(start_at, end_at, provider=provider, domain=domain)
-    relation_counts: defaultdict[tuple[str, str, datetime, datetime, str, str], int] = defaultdict(int)
-    processed_at = datetime.now(timezone.utc)
-
-    for article in articles:
-        published_at = article.get("published_at")
-        if not published_at:
-            continue
-        if published_at.tzinfo is None:
-            published_at = published_at.replace(tzinfo=timezone.utc)
-        normalized = published_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-        minute_bucket = normalized.minute - (normalized.minute % 10)
-        bucket_start = normalized.replace(minute=minute_bucket)
-        bucket_end = bucket_start + timedelta(minutes=10)
-        article_text = " ".join(part for part in [article.get("title"), article.get("summary")] if part)
-        keyword_counts = Counter(tokenize(article_text, article.get("domain", "all")))
-        representative_keywords = [
-            keyword
-            for keyword, _ in sorted(keyword_counts.items(), key=lambda item: (-item[1], item[0]))[: settings.relation_keyword_limit]
-        ]
-        for index, keyword_a in enumerate(representative_keywords):
-            for keyword_b in representative_keywords[index + 1 :]:
-                relation_counts[(article.get("provider"), article.get("domain", "ai_tech"), bucket_start, bucket_end, keyword_a, keyword_b)] += 1
-
-    rows = [
-        {
-            "provider": provider_name,
-            "domain": domain_name,
-            "window_start": item_window_start,
-            "window_end": item_window_end,
-            "keyword_a": keyword_a,
-            "keyword_b": keyword_b,
-            "count": relation_count,
-            "processed_at": processed_at,
-        }
-        for (provider_name, domain_name, item_window_start, item_window_end, keyword_a, keyword_b), relation_count in sorted(relation_counts.items())
-    ]
-
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                DELETE FROM keyword_relations
-                WHERE window_start >= %s
-                  AND window_start < %s
-                  AND (%s IS NULL OR provider = %s)
-                  AND (%s IS NULL OR domain = %s)
-                """,
-                (start_at, end_at, provider, provider, domain, domain),
-            )
-            if rows:
-                cursor.executemany(
-                    """
-                    INSERT INTO keyword_relations (
-                        provider,
-                        domain,
-                        window_start,
-                        window_end,
-                        keyword_a,
-                        keyword_b,
-                        cooccurrence_count,
-                        processed_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    [
-                        (
-                            row["provider"],
-                            row["domain"],
-                            row["window_start"],
-                            row["window_end"],
-                            row["keyword_a"],
-                            row["keyword_b"],
-                            row["count"],
-                            row["processed_at"],
+                keywords = cursor.fetchall()
+                if len(keywords) < 2:
+                    continue
+                for i in range(len(keywords)):
+                    for j in range(i + 1, len(keywords)):
+                        a, count_a = keywords[i]
+                        b, count_b = keywords[j]
+                        if a == b:
+                            continue
+                        keyword_a, keyword_b = sorted([a, b])
+                        cursor.execute(
+                            """
+                            INSERT INTO keyword_relations (provider, domain, window_start, window_end, keyword_a, keyword_b, cooccurrence_count, processed_at)
+                            VALUES (%s, %s, date_trunc('hour', NOW()), date_trunc('hour', NOW()) + interval '1 hour', %s, %s, %s, NOW())
+                            ON CONFLICT (provider, domain, window_start, window_end, keyword_a, keyword_b)
+                            DO UPDATE SET cooccurrence_count = keyword_relations.cooccurrence_count + EXCLUDED.cooccurrence_count,
+                                          processed_at = NOW()
+                            """,
+                            (provider, domain, keyword_a, keyword_b, min(count_a, count_b)),
                         )
-                        for row in rows
-                    ],
-                )
 
-    return {"article_count": len(articles), "relation_row_count": len(rows)}
+
+def cleanup_old_trends(days_to_keep: int = 30) -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("DELETE FROM keyword_trends WHERE window_end < %s", (cutoff,))
+            cursor.execute("DELETE FROM keyword_relations WHERE window_end < %s", (cutoff,))
