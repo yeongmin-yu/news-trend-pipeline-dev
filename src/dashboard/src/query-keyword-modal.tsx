@@ -61,7 +61,7 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
 
   const domains: DomainOption[] = useMemo(() => data?.domains ?? [], [data]);
   const filteredKeywords = useMemo(() => {
-    return (data?.queryKeywords ?? []).filter((item) => {
+    return (data?.query_keywords ?? []).filter((item) => {
       const domainMatched = domainFilter === "all" || item.domain_id === domainFilter;
       const searchMatched = !search || item.query.toLowerCase().includes(search.toLowerCase());
       return domainMatched && searchMatched;
@@ -69,11 +69,11 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
   }, [data, domainFilter, search]);
 
   const filteredMetrics = useMemo(() => {
-    return (data?.collectionMetrics ?? []).filter((item) => domainFilter === "all" || item.domain === domainFilter);
+    return (data?.collection_metrics ?? []).filter((item) => domainFilter === "all" || item.domain === domainFilter);
   }, [data, domainFilter]);
 
   const filteredLogs = useMemo(() => {
-    return (data?.auditLogs ?? []).filter((item) => {
+    return (data?.audit_logs ?? []).filter((item) => {
       if (domainFilter === "all") return true;
       const afterDomain = item.after_json && typeof item.after_json["domain_id"] === "string" ? String(item.after_json["domain_id"]) : null;
       const beforeDomain = item.before_json && typeof item.before_json["domain_id"] === "string" ? String(item.before_json["domain_id"]) : null;
@@ -124,7 +124,7 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 16, background: "var(--bg-2)", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>도메인 키워드 관리</div>
           <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
-            naver queries {data?.queryKeywords.length ?? 0}
+            naver queries {data?.query_keywords.length ?? 0}
           </div>
           <div style={{ flex: 1 }} />
           <button
@@ -245,16 +245,16 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
                   () =>
                     form.id == null
                       ? api.createQueryKeyword({
-                          domainId: form.domainId,
+                          domain_id: form.domainId,
                           query: form.query.trim(),
-                          sortOrder: form.sortOrder,
-                          isActive: form.isActive,
+                          sort_order: form.sortOrder,
+                          is_active: form.isActive,
                         })
                       : api.updateQueryKeyword(form.id, {
-                          domainId: form.domainId,
+                          domain_id: form.domainId,
                           query: form.query.trim(),
-                          sortOrder: form.sortOrder,
-                          isActive: form.isActive,
+                          sort_order: form.sortOrder,
+                          is_active: form.isActive,
                         }),
                   form.id == null ? "키워드를 추가했습니다." : "키워드를 수정했습니다.",
                 )
@@ -306,10 +306,10 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
                       <button
                         onClick={() =>
                           void run(`toggle-${item.id}`, () => api.updateQueryKeyword(item.id, {
-                            domainId: item.domain_id,
+                            domain_id: item.domain_id,
                             query: item.query,
-                            sortOrder: item.sort_order,
-                            isActive: !item.is_active,
+                            sort_order: item.sort_order,
+                            is_active: !item.is_active,
                           }), item.is_active ? "키워드를 비활성화했습니다." : "키워드를 활성화했습니다.")
                         }
                         className="table-action"

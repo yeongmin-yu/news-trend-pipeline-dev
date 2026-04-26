@@ -49,18 +49,18 @@ const DEFAULT_FILTERS: FiltersResponse = {
     { id: "global", label: "글로벌 뉴스", color: "#f59e0b" },
   ],
   ranges: [
-    { id: "10m", label: "10분", bucketMin: 1, buckets: 10 },
-    { id: "30m", label: "30분", bucketMin: 3, buckets: 10 },
-    { id: "1h", label: "1시간", bucketMin: 5, buckets: 12 },
-    { id: "6h", label: "6시간", bucketMin: 30, buckets: 12 },
-    { id: "12h", label: "12시간", bucketMin: 60, buckets: 12 },
-    { id: "1d", label: "1일", bucketMin: 120, buckets: 12 },
+    { id: "10m", label: "10분", bucket_min: 1, buckets: 10 },
+    { id: "30m", label: "30분", bucket_min: 3, buckets: 10 },
+    { id: "1h", label: "1시간", bucket_min: 5, buckets: 12 },
+    { id: "6h", label: "6시간", bucket_min: 30, buckets: 12 },
+    { id: "12h", label: "12시간", bucket_min: 60, buckets: 12 },
+    { id: "1d", label: "1일", bucket_min: 120, buckets: 12 },
   ],
 };
 
 const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
   keyword: "",
-  totalMentions: 0,
+  total_mentions: 0,
   items: [],
 };
 
@@ -186,7 +186,7 @@ function pickAutoTrendBucket(durationMs: number): TrendBucketId {
   return "4h";
 }
 
-function getTrendBucketMinutes(bucketId: TrendBucketId): number {
+function getTrendbucket_minutes(bucketId: TrendBucketId): number {
   return TREND_BUCKET_OPTIONS.find((item) => item.id === bucketId)?.minutes ?? 15;
 }
 
@@ -205,7 +205,7 @@ function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [numbe
 }
 
 function expandTrendFetchWindow(startMs: number, endMs: number, bucketId: TrendBucketId, nowMs: number) {
-  const bucketMs = getTrendBucketMinutes(bucketId) * 60_000;
+  const bucketMs = getTrendbucket_minutes(bucketId) * 60_000;
   const visibleBuckets = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
   const overscanBuckets = Math.max(
     TREND_FETCH_OVERSCAN_BUCKETS,
@@ -244,8 +244,8 @@ function deriveOverviewFromCache(
   nowMs: number,
 ): DashboardOverviewResponse | null {
   if (!cache) return null;
-  const articleBuckets = cache.articleBuckets ?? [];
-  const keywordBuckets = cache.keywordBuckets ?? [];
+  const articleBuckets = cache.article_buckets ?? [];
+  const keywordBuckets = cache.keyword_buckets ?? [];
   const durationMs = endMs - startMs;
   const prevStartMs = startMs - durationMs;
   const currentRows = articleBuckets.filter((row) => {
@@ -257,10 +257,10 @@ function deriveOverviewFromCache(
     return ts >= prevStartMs && ts < startMs;
   });
   const currentBucketSet = new Set(currentRows.map((row) => row.bucket));
-  const currentArticles = currentRows.reduce((sum, row) => sum + row.articleCount, 0);
-  const prevArticles = prevRows.reduce((sum, row) => sum + row.articleCount, 0);
+  const currentArticles = currentRows.reduce((sum, row) => sum + row.article_count, 0);
+  const prevArticles = prevRows.reduce((sum, row) => sum + row.article_count, 0);
   const lastUpdateCandidates = currentRows
-    .map((row) => row.lastUpdateAt)
+    .map((row) => row.last_update_at)
     .filter((value): value is string => Boolean(value))
     .sort();
   const lastUpdateAt = lastUpdateCandidates.length ? lastUpdateCandidates[lastUpdateCandidates.length - 1] : null;
@@ -269,7 +269,7 @@ function deriveOverviewFromCache(
   for (const row of keywordBuckets) {
     const current = keywordMap.get(row.keyword) ?? { mentions: new Map<number, number>(), articles: new Map<number, number>() };
     current.mentions.set(row.bucket, row.mentions);
-    current.articles.set(row.bucket, row.articleCount);
+    current.articles.set(row.bucket, row.article_count);
     keywordMap.set(row.keyword, current);
   }
 
@@ -277,34 +277,34 @@ function deriveOverviewFromCache(
   const spikeEvents: DashboardOverviewResponse["spikes"]["events"] = [];
   const spikeKeywordSet = new Set<string>();
   const defaultEventSource = source === "global" ? "global" : "naver";
-  const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucketMin * 60_000)));
+  const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucket_min * 60_000)));
 
-  for (const keyword of cache.candidateKeywords) {
+  for (const keyword of cache.candidate_keywords) {
     const series = keywordMap.get(keyword);
     if (!series) continue;
-    let currentMentions = 0;
-    let prevMentions = 0;
-    let articleCount = 0;
+    let current_mentions = 0;
+    let prev_mentions = 0;
+    let article_count = 0;
     for (const row of currentRows) {
-      currentMentions += series.mentions.get(row.bucket) ?? 0;
-      articleCount += series.articles.get(row.bucket) ?? 0;
+      current_mentions += series.mentions.get(row.bucket) ?? 0;
+      article_count += series.articles.get(row.bucket) ?? 0;
     }
     for (const row of prevRows) {
-      prevMentions += series.mentions.get(row.bucket) ?? 0;
+      prev_mentions += series.mentions.get(row.bucket) ?? 0;
     }
-    if (currentMentions <= 0 && prevMentions <= 0) continue;
-    const growth = prevMentions <= 0 ? (currentMentions > 0 ? 1 : 0) : (currentMentions - prevMentions) / prevMentions;
-    const spike = currentMentions >= 5 && growth >= 0.4;
-    const eventScore = Math.max(0, Math.min(100, Math.round(growth * 45 + Math.sqrt(currentMentions) * 6 + (spike ? 20 : 0))));
+    if (current_mentions <= 0 && prev_mentions <= 0) continue;
+    const growth = prev_mentions <= 0 ? (current_mentions > 0 ? 1 : 0) : (current_mentions - prev_mentions) / prev_mentions;
+    const spike = current_mentions >= 5 && growth >= 0.4;
+    const event_score = Math.max(0, Math.min(100, Math.round(growth * 45 + Math.sqrt(current_mentions) * 6 + (spike ? 20 : 0))));
     derivedKeywords.push({
       keyword,
-      mentions: currentMentions,
-      prevMentions,
+      mentions: current_mentions,
+      prev_mentions,
       growth,
-      delta: currentMentions - prevMentions,
+      delta: current_mentions - prev_mentions,
       spike,
-      eventScore,
-      articleCount,
+      event_score,
+      article_count,
     });
 
     const orderedBuckets = Array.from(series.mentions.entries()).sort((a, b) => a[0] - b[0]);
@@ -315,14 +315,14 @@ function deriveOverviewFromCache(
       if (currentBucketSet.has(bucket) && bucketGrowth >= 0.35 && mentions >= 3) {
         spikeKeywordSet.add(keyword);
         spikeEvents.push({
-          bucket: Math.floor((new Date(articleBuckets[bucket]?.timestamp ?? 0).getTime() - startMs) / (cache.bucketMin * 60_000)),
+          bucket: Math.floor((new Date(articleBuckets[bucket]?.timestamp ?? 0).getTime() - startMs) / (cache.bucket_min * 60_000)),
           keyword,
           intensity: Math.min(1, Math.max(0.12, bucketGrowth)),
           source: defaultEventSource,
-          currentMentions: mentions,
-          prevMentions: previousBucketMentions,
+          current_mentions: mentions,
+          prev_mentions: previousBucketMentions,
           growth: bucketGrowth,
-          score: eventScore,
+          score: event_score,
         });
       }
       previousBucketMentions = mentions;
@@ -339,21 +339,21 @@ function deriveOverviewFromCache(
 
   return {
     kpis: {
-      totalArticles: currentArticles,
-      uniqueKeywords: derivedKeywords.filter((item) => item.mentions > 0).length,
-      spikeCount: spikeKeywordSet.size,
+      total_articles: currentArticles,
+      unique_keywords: derivedKeywords.filter((item) => item.mentions > 0).length,
+      spike_count: spikeKeywordSet.size,
       growth,
-      lastUpdateRelative: fmtAgo(lastUpdateMinutesAgo),
-      lastUpdateAbsolute: fmtAbsoluteKst(lastUpdateAt),
+      last_update_relative: fmtAgo(lastUpdateMinutesAgo),
+      last_update_absolute: fmtAbsoluteKst(lastUpdateAt),
     },
     keywords: derivedKeywords.slice(0, limit),
     spikes: {
-      topKeywords: spikeTopKeywords.length ? spikeTopKeywords : derivedKeywords.slice(0, 8).map((item) => item.keyword),
+      top_keywords: spikeTopKeywords.length ? spikeTopKeywords : derivedKeywords.slice(0, 8).map((item) => item.keyword),
       events: visibleEvents.slice(0, Math.max(limit, 32)),
       range: {
         id: "custom",
         label: `${cache.bucket} custom`,
-        bucketMin: cache.bucketMin,
+        bucket_min: cache.bucket_min,
         buckets: bucketCount,
       },
     },
@@ -451,7 +451,7 @@ export default function App() {
   const autoRefreshTick = Math.floor(now / AUTO_REFRESH_INTERVAL_MS);
   const trendFetchClockMs = useMemo(() => {
     if (!autoRefresh) return trendWindow.endMs;
-    const bucketMs = getTrendBucketMinutes(effectiveTrendBucket) * 60_000;
+    const bucketMs = getTrendbucket_minutes(effectiveTrendBucket) * 60_000;
     return Math.min(now, Math.floor(now / bucketMs) * bucketMs);
   }, [autoRefresh, trendWindow.endMs, effectiveTrendBucket, now]);
   const overviewFetchClockMs = useMemo(
@@ -600,7 +600,7 @@ export default function App() {
     if (!autoRefresh || rangePreset == null) return;
     const selected = activeFilters.ranges.find((item) => item.id === rangePreset) ?? DEFAULT_FILTERS.ranges[2];
     const endMs = Math.min(now, autoRefreshTick * AUTO_REFRESH_INTERVAL_MS);
-    const startMs = endMs - selected.bucketMin * selected.buckets * 60_000;
+    const startMs = endMs - selected.bucket_min * selected.buckets * 60_000;
     setTrendWindow((prev) => (prev.startMs === startMs && prev.endMs === endMs ? prev : { startMs, endMs }));
   }, [autoRefresh, autoRefreshTick, activeFilters.ranges, now, rangePreset]);
 
@@ -616,7 +616,7 @@ export default function App() {
 
   useEffect(() => {
     const desired = expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs);
-    const bucketMs = getTrendBucketMinutes(effectiveTrendBucket) * 60_000;
+    const bucketMs = getTrendbucket_minutes(effectiveTrendBucket) * 60_000;
     const visibleBuckets = Math.max(1, Math.ceil((trendWindow.endMs - trendWindow.startMs) / bucketMs));
     const edgeSlackMs = bucketMs * Math.max(3, Math.min(10, Math.ceil(visibleBuckets * 0.2)));
     setTrendFetchWindow((prev) => {
@@ -726,7 +726,7 @@ export default function App() {
   const filteredSpikeEvents = useMemo(
     () =>
       (spikes.data?.events ?? []).filter(
-        (event) => event.currentMentions >= spikeMinMentions && event.growth >= spikeMinGrowth,
+        (event) => event.current_mentions >= spikeMinMentions && event.growth >= spikeMinGrowth,
       ),
     [spikes.data, spikeMinMentions, spikeMinGrowth],
   );
@@ -751,7 +751,7 @@ export default function App() {
       .sort((a, b) =>
         spikeSort === "growth"
           ? b.growth - a.growth
-          : (b.eventScore ?? 0) - (a.eventScore ?? 0),
+          : (b.event_score ?? 0) - (a.event_score ?? 0),
       )
       .slice(0, 12);
   }, [displayKeywords, filteredSpikeEvents, selectedBucket, spikeSort]);
@@ -812,7 +812,7 @@ export default function App() {
     setRangePreset(nextRange);
     const selected = activeFilters.ranges.find((item) => item.id === nextRange) ?? DEFAULT_FILTERS.ranges[2];
     const endMs = now;
-    const startMs = endMs - selected.bucketMin * selected.buckets * 60_000;
+    const startMs = endMs - selected.bucket_min * selected.buckets * 60_000;
     setTrendWindow({ startMs, endMs });
     setCommittedWindow({ startMs, endMs });
     setTrendBucketMode("auto");
@@ -1136,7 +1136,7 @@ export default function App() {
                 {svc.label}
               </span>
               <span className="n">
-                {svc.statusCode != null ? `HTTP ${svc.statusCode}` : "HTTP -"}
+                {svc.status_code != null ? `HTTP ${svc.status_code}` : "HTTP -"}
               </span>
             </div>
           ))}
@@ -1149,14 +1149,14 @@ export default function App() {
         <div className="grid row-kpi">
           <KpiCard
             label="총 기사 수"
-            value={fmtNum(kpis.data?.totalArticles ?? 0)}
+            value={fmtNum(kpis.data?.total_articles ?? 0)}
             delta={fmtPct(kpis.data?.growth ?? 0)}
             tone={(kpis.data?.growth ?? 0) >= 0 ? "up" : "down"}
             sub="현재 선택 구간 기준"
           />
-          <KpiCard label="고유 키워드" value={fmtNum(kpis.data?.uniqueKeywords ?? 0)} delta="중복 제거" tone="info" sub="keyword_trends 기준" />
+          <KpiCard label="고유 키워드" value={fmtNum(kpis.data?.unique_keywords ?? 0)} delta="중복 제거" tone="info" sub="keyword_trends 기준" />
           <KpiCard label="급상승 키워드" value={String(displayKeywords.filter((item) => item.spike).length)} delta="증가율 기반" tone="spike" sub="트렌드 델타 기반" />
-          <KpiCard label="마지막 업데이트" value={kpis.data?.lastUpdateRelative ?? "-"} delta={autoRefresh ? "Auto 5m" : "Manual"} tone={autoRefresh ? "info" : "muted"} sub={kpis.data?.lastUpdateAbsolute ?? "로딩 중"} />
+          <KpiCard label="마지막 업데이트" value={kpis.data?.last_update_relative ?? "-"} delta={autoRefresh ? "Auto 5m" : "Manual"} tone={autoRefresh ? "info" : "muted"} sub={kpis.data?.last_update_absolute ?? "로딩 중"} />
           <KpiCard label="데이터 지원" value={String(activeFilters.domains.filter((d) => d.available).length)} delta="스키마" tone="warn" sub="추가 도메인은 추후 지원" />
         </div>
 
@@ -1234,7 +1234,7 @@ export default function App() {
               ) : (
                 <TrendLine
                   series={visibleTrendSeries}
-                  bucketMin={trend.data?.range.bucketMin ?? activeRange.bucketMin}
+                  bucketMin={trend.data?.range.bucket_min ?? activeRange.bucket_min}
                   viewStartMs={trendWindow.startMs}
                   viewEndMs={trendWindow.endMs}
                   hidden={hiddenSeries}
@@ -1274,7 +1274,7 @@ export default function App() {
                   keywords={spikeHeatmapKeywords}
                   events={filteredSpikeEvents}
                   buckets={spikes.data?.range.buckets ?? activeRange.buckets}
-                  bucketMin={spikes.data?.range.bucketMin ?? activeRange.bucketMin}
+                  bucketMin={spikes.data?.range.bucket_min ?? activeRange.bucket_min}
                   selectedBucket={selectedBucket}
                   onSelectBucket={setSelectedBucket}
                   selectedKeyword={selectedKeyword}
@@ -1328,9 +1328,9 @@ export default function App() {
                       <td className="num" style={{ color: "var(--up)" }}>{fmtPct(k.growth)}</td>
                       <td className="num">
                         <span className="score-bar">
-                          <span style={{ width: `${Math.min(100, (k.eventScore ?? 0))}%` }} />
+                          <span style={{ width: `${Math.min(100, (k.event_score ?? 0))}%` }} />
                         </span>
-                        {k.eventScore}
+                        {k.event_score}
                       </td>
                     </tr>
                   ))}
@@ -1416,7 +1416,7 @@ export default function App() {
                 className="val"
                 style={{ color: activeKeywordSummary?.spike ? "var(--spike)" : "var(--text-3)" }}
               >
-                {fmtNum(activeKeywordSummary?.eventScore ?? 0)}
+                {fmtNum(activeKeywordSummary?.event_score ?? 0)}
               </div>
             </div>
           </div>
@@ -1431,7 +1431,7 @@ export default function App() {
               ) : detailTrendSeries?.points?.length ? (
                 <TrendLine
                   series={[detailTrendSeries]}
-                  bucketMin={detailTrend.data?.range.bucketMin ?? activeRange.bucketMin}
+                  bucketMin={detailTrend.data?.range.bucket_min ?? activeRange.bucket_min}
                   mini={true}
                   hidden={[]}
                 />
@@ -1569,7 +1569,7 @@ export default function App() {
                       />
                       <span>{item.publisher}</span>
                       <span>·</span>
-                      <span>{fmtAgo(item.minutesAgo)}</span>
+                      <span>{fmtAgo(item.minutes_ago)}</span>
                     </div>
                     <div className="title">{item.title}</div>
                     <div className="ext-icon">

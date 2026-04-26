@@ -368,9 +368,9 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
     : swCandidates.loading;
 
   // badge counts
-  const compoundTotal = debouncedQ ? (compound.data?.total ?? meta?.compoundNounCount ?? 0) : (meta?.compoundNounCount ?? compound.data?.total ?? 0);
-  const stopwordTotal = debouncedQ ? (stopword.data?.total ?? meta?.stopwordCount ?? 0) : (meta?.stopwordCount ?? stopword.data?.total ?? 0);
-  const candidateTotal = (debouncedQ || statusFilter) ? (candidates.data?.total ?? meta?.candidateCount ?? 0) : (meta?.candidateCount ?? candidates.data?.total ?? 0);
+  const compoundTotal = debouncedQ ? (compound.data?.total ?? meta?.compound_noun_count ?? 0) : (meta?.compound_noun_count ?? compound.data?.total ?? 0);
+  const stopwordTotal = debouncedQ ? (stopword.data?.total ?? meta?.stopword_count ?? 0) : (meta?.stopword_count ?? stopword.data?.total ?? 0);
+  const candidateTotal = (debouncedQ || statusFilter) ? (candidates.data?.total ?? meta?.candidate_count ?? 0) : (meta?.candidate_count ?? candidates.data?.total ?? 0);
   const swCandidateTotal = swCandidates.data?.total ?? 0;
 
   const domainOptions = domains.some((d) => d.id === "all")
@@ -390,7 +390,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>용어 사전 관리</div>
           {meta && (
             <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
-              compound v{meta.versions.compoundNounDict} · stopword v{meta.versions.stopwordDict}
+              compound v{meta.versions.compound_noun_dict} · stopword v{meta.versions.stopword_dict}
             </div>
           )}
           <div style={{ flex: 1 }} />
@@ -610,7 +610,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                       />
                     </td>
                     <td><span className="chip muted" style={{ fontSize: 11 }}>{c.source}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.createdAt?.slice(0, 16).replace("T", " ") ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.created_at?.slice(0, 16).replace("T", " ") ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-c-${c.id}`}
@@ -651,7 +651,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                       />
                     </td>
                     <td><span className="chip info" style={{ fontSize: 11 }}>{s.language}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{s.createdAt?.slice(0, 10) ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{s.created_at?.slice(0, 10) ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-s-${s.id}`}
@@ -702,14 +702,14 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                       </span>
                     </td>
                     <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.frequency?.toLocaleString() ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.docCount?.toLocaleString() ?? "—"}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.lastSeenAt?.slice(0, 10) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.doc_count?.toLocaleString() ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.last_seen_at?.slice(0, 10) ?? "—"}</td>
                     <td>
                       <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
                         {CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
                       </span>
                     </td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.reviewedBy ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.reviewed_by ?? "—"}</td>
                     <td style={{ display: "flex", gap: 4 }}>
                       {c.status === "needs_review" && (
                         <>

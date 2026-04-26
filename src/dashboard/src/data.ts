@@ -72,8 +72,8 @@ export interface SpikeEvent {
   keyword: string;
   intensity: number;
   source: "naver" | "global";
-  current_mentions?: number;
-  prev_mentions?: number;
+  current_mentions: number;
+  prev_mentions: number;
   growth: number;
   score: number;
 }
