@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -69,6 +70,7 @@ def _normalize_word(value: str) -> str:
 
 
 def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
+    logger.info("auto_review fetch candidates start | limit=%d", limit)
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -86,6 +88,8 @@ def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
                 """,
                 (limit,),
             )
+            rows = cursor.fetchall()
+            logger.info("auto_review fetch candidates done | count=%d", len(rows))
             return [
                 Candidate(
                     id=int(row["id"]),
@@ -95,15 +99,23 @@ def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
                     doc_count=int(row["doc_count"] or 0),
                     last_seen_at=row.get("last_seen_at"),
                 )
-                for row in cursor.fetchall()
+                for row in rows
             ]
 
 
 def _call_free_dictionary(word: str) -> dict[str, Any]:
     url = f"{FREE_DICTIONARY_BASE_URL}/{quote(word)}"
+    started_at = time.monotonic()
+    logger.info("free_dictionary request start | word=%r | url=%s", word, url)
     try:
         response = requests.get(url, timeout=DICTIONARY_TIMEOUT_SECONDS)
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
         if response.status_code == 404:
+            logger.info(
+                "free_dictionary request done | word=%r | status=404 | entries=0 | elapsed_ms=%d",
+                word,
+                elapsed_ms,
+            )
             return {
                 "ok": True,
                 "error": None,
@@ -117,6 +129,12 @@ def _call_free_dictionary(word: str) -> dict[str, Any]:
                 "license": None,
             }
         if response.status_code != 200:
+            logger.warning(
+                "free_dictionary request failed | word=%r | status=%d | elapsed_ms=%d",
+                word,
+                response.status_code,
+                elapsed_ms,
+            )
             return {
                 "ok": False,
                 "error": f"http_{response.status_code}",
@@ -150,6 +168,14 @@ def _call_free_dictionary(word: str) -> dict[str, Any]:
                 break
 
         source = data.get("source") or {}
+        logger.info(
+            "free_dictionary request done | word=%r | status=200 | entries=%d | has_entries=%s | parts_of_speech=%s | elapsed_ms=%d",
+            word,
+            len(entries),
+            len(entries) > 0,
+            parts_of_speech,
+            elapsed_ms,
+        )
         return {
             "ok": True,
             "error": None,
@@ -163,7 +189,8 @@ def _call_free_dictionary(word: str) -> dict[str, Any]:
             "license": source.get("license"),
         }
     except Exception as exc:  # noqa: BLE001 - batch job should keep processing remaining candidates
-        logger.warning("Free Dictionary API error for %r: %s", word, exc)
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.warning("free_dictionary request error | word=%r | error=%s | elapsed_ms=%d", word, exc, elapsed_ms)
         return {
             "ok": False,
             "error": exc.__class__.__name__,
@@ -267,6 +294,12 @@ def _update_compound_candidate_auto_review(
                 """,
                 (score, Json(evidence), decision, candidate_id),
             )
+    logger.info(
+        "auto_review saved | candidate_id=%d | score=%d | decision=%s",
+        candidate_id,
+        score,
+        decision,
+    )
 
 
 def _approve_compound_candidate_from_auto_review(
@@ -293,6 +326,11 @@ def _approve_compound_candidate_from_auto_review(
                 (REVIEWER, score, Json(evidence), DECISION_HIGH_CONFIDENCE, candidate.id),
             )
             if cursor.rowcount == 0:
+                logger.info(
+                    "auto_review approve skipped | candidate_id=%d | word=%r | reason=status_changed",
+                    candidate.id,
+                    candidate.word,
+                )
                 return False
 
             cursor.execute(
@@ -303,10 +341,19 @@ def _approve_compound_candidate_from_auto_review(
                 """,
                 (candidate.word, candidate.domain),
             )
+            logger.info(
+                "auto_review approved and inserted dict | candidate_id=%d | word=%r | domain=%s | score=%d",
+                candidate.id,
+                candidate.word,
+                candidate.domain,
+                score,
+            )
             return True
 
 
 def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHOLD) -> dict[str, int]:
+    logger.info("auto_review start | limit=%d | threshold=%d", limit, threshold)
+    started_at = time.monotonic()
     candidates = _fetch_compound_candidates_for_auto_review(limit)
     if not candidates:
         logger.info("자동 평가 대상 복합명사 후보 없음")
@@ -326,7 +373,18 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
         "api_error": 0,
     }
 
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates, start=1):
+        logger.info(
+            "auto_review candidate start | index=%d/%d | candidate_id=%d | word=%r | domain=%s | frequency=%d | doc_count=%d",
+            index,
+            len(candidates),
+            candidate.id,
+            candidate.word,
+            candidate.domain,
+            candidate.frequency,
+            candidate.doc_count,
+        )
+        candidate_started_at = time.monotonic()
         evidence = build_candidate_evidence(candidate)
         score, breakdown = score_candidate(candidate, evidence)
         evidence["score_breakdown"] = breakdown
@@ -339,6 +397,20 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
             "external_evidence": "free_dictionary_entries",
         }
         decision = decide_candidate(candidate, evidence, score, threshold)
+        dictionary = evidence["free_dictionary"]
+
+        logger.info(
+            "auto_review candidate decision | index=%d/%d | candidate_id=%d | word=%r | score=%d | decision=%s | entries=%d | has_entries=%s | elapsed_ms=%d",
+            index,
+            len(candidates),
+            candidate.id,
+            candidate.word,
+            score,
+            decision,
+            dictionary["entries_count"],
+            dictionary["has_entries"],
+            int((time.monotonic() - candidate_started_at) * 1000),
+        )
 
         if decision == DECISION_HIGH_CONFIDENCE:
             if _approve_compound_candidate_from_auto_review(
@@ -347,7 +419,6 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
                 evidence=evidence,
             ):
                 counts["auto_approved"] += 1
-                logger.info("auto_review approved: %s score=%d", candidate.word, score)
             continue
 
         _update_compound_candidate_auto_review(
@@ -363,7 +434,14 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
         else:
             counts["needs_manual_review"] += 1
 
-    logger.info("복합명사 자동 평가 완료: %s", counts)
+        if index % 50 == 0 or index == len(candidates):
+            logger.info("auto_review progress | processed=%d/%d | counts=%s", index, len(candidates), counts)
+
+    logger.info(
+        "복합명사 자동 평가 완료 | counts=%s | elapsed_sec=%.2f",
+        counts,
+        time.monotonic() - started_at,
+    )
     return counts
 
 
