@@ -176,6 +176,15 @@ export interface CompoundNounItem {
   created_at: string;
 }
 
+export interface CompoundCandidateAutoEvidenceSummary {
+  frequency_per_doc?: number | null;
+  naver_total?: number | null;
+  has_exact_compact_match?: boolean | null;
+  matched_field?: string | null;
+  matched_title?: string | null;
+  matched_link?: string | null;
+}
+
 export interface CompoundCandidateItem {
   id: number;
   word: string;
@@ -187,6 +196,11 @@ export interface CompoundCandidateItem {
   status: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
+  auto_score?: number | null;
+  auto_decision?: string | null;
+  auto_checked_at?: string | null;
+  auto_evidence?: Record<string, unknown> | null;
+  auto_evidence_summary?: CompoundCandidateAutoEvidenceSummary | null;
 }
 
 export interface StopwordItem {
