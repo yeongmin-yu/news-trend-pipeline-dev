@@ -80,7 +80,47 @@ flowchart LR
 
 후보 추출은 사용자 사전을 주입하지 않은 Kiwi 분석 결과를 기반으로 한다. 이미 `compound_noun_dict`에 승인되어 있는 단어는 후보에서 제외한다.
 
-### 4-3. 자동승인 보조
+### 4-3. Domain-aware 후보 관리
+
+복합명사 후보 추출은 `news_raw.domain`을 기준으로 domain별로 분리해 수행한다.
+
+#### 핵심 원칙
+
+- `(word, domain)`은 독립적인 후보 엔티티로 취급한다.
+- 동일한 `word`라도 여러 domain에서 등장하면 domain별 row를 각각 유지한다.
+- 자동 추출 후보는 기사 domain을 그대로 사용한다.
+- `domain = 'all'`은 자동 추출 결과에 사용하지 않고, 수동 등록된 공통 사전 또는 fallback 용도로만 사용한다.
+
+예시는 다음과 같다.
+
+| word | domain | 의미 |
+| --- | --- | --- |
+| 생성형AI | ai_tech | AI/기술 도메인 후보 |
+| 생성형AI | business | 비즈니스 도메인 후보 |
+
+#### 처리 흐름
+
+```text
+news_raw(title, summary, domain)
+    ↓
+domain별 복합명사 후보 추출
+    ↓
+compound_noun_candidates(word, domain, frequency, doc_count)
+```
+
+#### `all` domain의 역할
+
+`all`은 자동 추출의 기본 저장 domain이 아니다.
+
+- 수동 등록된 공통 복합명사
+- 모든 domain에 적용할 fallback 사전
+- domain이 명시되지 않은 조회 시 기본 사전
+
+위 용도로만 사용한다.
+
+이 원칙을 지키면 domain별 keyword/event detection에서 특정 도메인의 전문어가 다른 도메인 후보와 섞이는 문제를 줄일 수 있다.
+
+### 4-4. 자동승인 보조
 
 `compound_auto_approver.py`는 복합명사 후보를 무조건 승인하지 않는다. 검토 대기 상태의 후보 중 외부 지식 기반으로 확인 가능한 일부 후보만 사전에 반영하는 보조 로직이다.
 
@@ -180,6 +220,8 @@ compound_noun_dict.source = 'auto-approved'
 
 - 사전 조회는 DB 우선, 실패 시 파일 또는 기본값 fallback이 있다.
 - 복합명사 후보 추출과 자동승인 보조는 Airflow DAG로 실행된다.
+- 복합명사 후보 추출은 기사 domain 기준으로 후보를 분리해 `(word, domain)` 단위로 누적한다.
+- 자동 추출 후보는 `all` domain으로 저장하지 않는다. `all`은 수동 공통 사전 또는 fallback 용도로만 사용한다.
 - 자동승인 보조는 `needs_review` 후보를 대상으로 하며, legacy `pending` 후보는 `needs_review`로 정리한다.
 - 자동승인 보조는 Naver 백과 검색 결과가 있는 후보만 `approved`로 전환한다.
 - 검색 결과가 없거나 API 호출에 실패한 후보는 관리자가 검토한다.
