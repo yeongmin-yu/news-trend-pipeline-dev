@@ -93,11 +93,16 @@ flowchart LR
 
 추천 점수 구성 요소는 다음과 같다.
 
-- `domain_breadth`
-- `repetition_rate`
-- `trend_stability`
-- `cooccurrence_breadth`
-- `short_word`
+- domain_breadth (도메인 범용성)
+    - 여러 도메인에서 공통적으로 등장할수록 일반적인 단어일 가능성이 높다.
+- repetition_rate (반복률)
+    - 동일 문서 내에서 반복적으로 등장할수록 정보성이 낮을 가능성이 높다.
+- trend_stability (트렌드 안정성)
+    - 시간에 따라 변화 없이 일정하게 등장하면 핵심 키워드가 아닐 가능성이 높다.
+- cooccurrence_breadth (동시 등장 다양성)
+    - 다양한 단어와 함께 등장할수록 문장 연결용 일반 표현일 가능성이 높다.
+- short_word (단어 길이)
+    - 단어가 짧을수록 의미 밀도가 낮은 일반 표현일 가능성이 높다.
 
 ## 6. 사전 버전 관리
 
