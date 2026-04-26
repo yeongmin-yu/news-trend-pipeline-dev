@@ -387,18 +387,113 @@ FastAPI overview-window
 → 현재 표시 window 기준 frontend 재집계
 ```
 
-### 7.3 핵심 함수
+### 7.3 핵심 함수: deriveOverviewFromCache()
+
+`deriveOverviewFromCache()`는 `overview-window` API가 내려준 확장 범위 cache를 이용해 현재 화면에 보이는 기간의 요약 데이터를 프론트에서 다시 계산하는 함수다.
+
+한 줄로 정리하면 다음과 같다.
 
 ```text
-deriveOverviewFromCache()
+서버가 내려준 넓은 범위의 bucket 데이터
+→ 현재 표시 window만 잘라 사용
+→ KPI / top keywords / spikes 재계산
 ```
 
-역할:
+이 함수는 서버 응답을 단순 표시하는 함수가 아니라, Dashboard 내부의 **window 단위 재집계 엔진**이다.
 
-- KPI 재계산
-- top keywords 재계산
-- spike events 재계산
-- 현재 window 기준 growth / eventScore 재계산
+#### 입력
+
+| 입력 | 설명 |
+| --- | --- |
+| `source` | 현재 선택된 뉴스 source |
+| `cache` | `overview-window` 응답의 cache payload |
+| `startMs` / `endMs` | 현재 화면에 표시되는 window |
+| `limit` | 노출할 keyword/spike 수 |
+| `nowMs` | 상대 시간 계산 기준 |
+
+`cache` 내부에서 주로 사용하는 데이터는 다음과 같다.
+
+| cache 필드 | 설명 |
+| --- | --- |
+| `articleBuckets` | bucket별 기사 수와 마지막 업데이트 시각 |
+| `keywordBuckets` | bucket별 keyword mention 수와 article count |
+| `candidateKeywords` | 재집계 대상 keyword 목록 |
+| `bucketMin` | bucket 크기(분) |
+| `fetchStartAt` / `fetchEndAt` | 서버가 조회한 확장 범위 |
+| `dataStartAt` / `dataEndAt` | cache 데이터 기준 범위 |
+
+#### 처리 흐름
+
+```mermaid
+flowchart LR
+    A[overview cache] --> B[current window 필터링]
+    A --> C[previous window 필터링]
+    B --> D[KPI 재계산]
+    B --> E[keyword mentions 집계]
+    C --> E
+    E --> F[growth / delta 계산]
+    F --> G[spike / eventScore 계산]
+    G --> H[DashboardOverviewResponse 생성]
+```
+
+세부 동작:
+
+1. `articleBuckets`에서 현재 표시 기간(`startMs ~ endMs`)에 해당하는 bucket을 고른다.
+2. 동일 길이의 직전 기간을 `previous window`로 잡는다.
+3. 현재/직전 기사 수를 비교해 KPI의 growth를 계산한다.
+4. `candidateKeywords`별로 `keywordBuckets`를 합산해 현재 mentions와 이전 mentions를 만든다.
+5. keyword별 `growth`, `delta`, `articleCount`, `eventScore`, `spike`를 계산한다.
+6. bucket 단위 mention 변화를 다시 훑어 heatmap용 spike event를 만든다.
+7. 최종적으로 `kpis`, `keywords`, `spikes`, `cache`를 포함한 overview 응답 형태로 반환한다.
+
+#### 계산 항목
+
+| 영역 | 계산 내용 |
+| --- | --- |
+| KPI | 총 기사 수, unique keyword 수, spike keyword 수, growth, 마지막 업데이트 |
+| Keywords | mentions, prevMentions, growth, delta, articleCount, eventScore, spike |
+| Spikes | heatmap event, intensity, currentMentions, prevMentions, growth, score |
+
+#### Spike 계산 기준
+
+`deriveOverviewFromCache()` 내부의 기본 spike 판정은 다음 기준을 사용한다.
+
+```text
+mentions >= 5
+and growth >= 0.4
+```
+
+또한 bucket 단위 heatmap event는 다음 기준으로 생성된다.
+
+```text
+bucket mentions >= 3
+and bucket growth >= 0.35
+```
+
+화면의 `spikeMinMentions`, `spikeMinGrowth` 상태는 이후 표시용 keyword 강조에 추가로 적용된다. 따라서 DB의 `is_spike` 값이 아니라 **현재 화면 window와 UI threshold 기준의 spike 표시**가 최종 UI에 반영된다.
+
+#### 재호출 조건과의 관계
+
+`deriveOverviewFromCache()`는 현재 표시 window가 `overviewFetchWindow` 안에 있을 때만 의미가 있다.
+
+```text
+현재 window가 cache 범위 안
+→ deriveOverviewFromCache() 실행
+→ API 호출 없이 화면 갱신
+
+현재 window가 cache 범위 밖이거나 가장자리에 접근
+→ overview-window API 재호출
+→ cache 갱신 후 재집계
+```
+
+이 구조 때문에 기간을 조금 이동하거나 확대/축소할 때 화면이 즉시 갱신된다.
+
+#### 주의사항
+
+- `deriveOverviewFromCache()` 결과는 **현재 화면 window 기준 계산값**이다.
+- 서버가 저장한 `keyword_events.is_spike` 또는 backend 기본 집계값과 다를 수 있다.
+- 이는 오류가 아니라, Dashboard가 사용자 interaction에 맞춰 표시 기준을 다시 계산하기 때문이다.
+- cache payload가 없거나 cache 범위를 벗어나면 서버 응답 또는 신규 API 호출이 필요하다.
 
 ### 7.4 backend / frontend 역할 분리
 
