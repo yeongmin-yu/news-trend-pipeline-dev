@@ -1280,6 +1280,22 @@ def list_stopwords_paged(*, page: int = 1, limit: int = 50, q: str = "", domain:
     return {"items": items, "total": total, "page": page, "limit": limit}
 
 
+def _build_auto_evidence_summary(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not evidence:
+        return None
+
+    stats = evidence.get("stats") or {}
+    webkr = evidence.get("naver_webkr") or {}
+
+    return {
+        "frequency_per_doc": stats.get("frequency_per_doc"),
+        "naver_total": webkr.get("total"),
+        "has_exact_compact_match": webkr.get("has_exact_compact_match"),
+        "matched_field": webkr.get("matched_field"),
+        "matched_title": webkr.get("matched_title"),
+        "matched_link": webkr.get("matched_link"),
+    }
+
 def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status: str = "", domain: str = "") -> dict[str, Any]:
     offset = (page - 1) * limit
     like = f"%{q}%" if q else "%"
@@ -1291,6 +1307,7 @@ def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status
     if domain and domain != "all":
         extra_clauses += " AND domain = %s"
         params.append(domain)
+
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -1300,7 +1317,21 @@ def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status
             total = int(cursor.fetchone()["cnt"])
             cursor.execute(
                 f"""
-                SELECT id, word, domain, frequency, doc_count, first_seen_at, last_seen_at, status, reviewed_at, reviewed_by
+                SELECT
+                    id,
+                    word,
+                    domain,
+                    frequency,
+                    doc_count,
+                    first_seen_at,
+                    last_seen_at,
+                    status,
+                    reviewed_at,
+                    reviewed_by,
+                    auto_score,
+                    auto_decision,
+                    auto_checked_at,
+                    auto_evidence
                 FROM compound_noun_candidates
                 WHERE word ILIKE %s{extra_clauses}
                 ORDER BY status ASC, frequency DESC, word ASC
@@ -1309,8 +1340,11 @@ def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status
                 params + [limit, offset],
             )
             items = list(cursor.fetchall())
-    return {"items": items, "total": total, "page": page, "limit": limit}
 
+    for item in items:
+        item["auto_evidence_summary"] = _build_auto_evidence_summary(item.get("auto_evidence"))
+
+    return {"items": items, "total": total, "page": page, "limit": limit}
 
 def get_query_keyword_admin_overview() -> dict[str, Any]:
     return {
