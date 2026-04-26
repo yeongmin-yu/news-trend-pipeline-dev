@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-"""compound_dictionary_dag — 복합명사 후보 추출 및 자동 승인 DAG.
+"""compound_dictionary_dag — 복합명사 후보 추출 DAG.
 
 Task 흐름:
     extract_compound_candidates
-        └── auto_approve_compound_candidates
-            └── summarize_dictionary_results
+        └── summarize_dictionary_results
 
 설계 원칙:
-  - 후보 생성과 외부 API 기반 자동 승인을 Spark streaming 경로에서 분리한다.
-  - extraction은 news_raw를 읽어 compound_noun_candidates에 후보를 누적한다.
-  - auto approve는 검토 대기 후보에 대해 Naver 백과사전 API를 호출한다.
-  - 검색 결과가 확인된 후보는 approved 처리 후 compound_noun_dict에 source='auto-approved'로 반영한다.
-  - max_active_runs=1로 같은 후보 집합에 대한 중복 승인 실행을 방지한다.
+  - 이 DAG는 news_raw 기반 복합명사 후보 추출과 candidate 누적만 담당한다.
+  - 외부 API 기반 자동 평가/자동 승인은 compound_candidate_auto_review_dag에서 별도로 처리한다.
+  - 후보 생성과 자동 리뷰를 분리해 처리량, API rate limit, 승인 정책을 독립적으로 운영한다.
 """
 
 from datetime import datetime, timedelta
@@ -57,24 +54,8 @@ def task_extract_compound_candidates(**context: object) -> dict[str, int]:
     return result
 
 
-def task_auto_approve_compound_candidates(**context: object) -> dict[str, int]:
-    """검토 대기 복합명사 후보를 Naver 백과사전 기반으로 자동 승인한다."""
-    _ensure_src_on_syspath()
-
-    from analytics.compound_auto_approver import run_compound_auto_approve
-    from core.logger import get_logger
-
-    logger = get_logger(__name__)
-    result = run_compound_auto_approve()
-    logger.info("복합명사 자동 승인 결과: %s", result)
-
-    ti = context["ti"]
-    ti.xcom_push(key="auto_approve_result", value=result)
-    return result
-
-
 def task_summarize_dictionary_results(**context: object) -> None:
-    """후보 추출/자동 승인 결과를 XCom에서 읽어 요약 로그를 남긴다."""
+    """후보 추출 결과를 XCom에서 읽어 요약 로그를 남긴다."""
     _ensure_src_on_syspath()
 
     from core.logger import get_logger
@@ -83,25 +64,17 @@ def task_summarize_dictionary_results(**context: object) -> None:
     ti = context["ti"]
 
     extraction = ti.xcom_pull(task_ids="extract_compound_candidates", key="extraction_result") or {}
-    auto_approve = ti.xcom_pull(task_ids="auto_approve_compound_candidates", key="auto_approve_result") or {}
 
-    logger.info(
-        "=== 복합명사 사전 처리 요약 === extraction=%s auto_approve=%s",
-        extraction,
-        auto_approve,
-    )
+    logger.info("=== 복합명사 후보 추출 요약 === extraction=%s", extraction)
 
     if int(extraction.get("candidate_count", 0) or 0) == 0:
         logger.info("이번 실행에서 새로 추출된 복합명사 후보가 없습니다.")
-
-    if int(auto_approve.get("total", 0) or 0) == 0:
-        logger.info("이번 실행에서 자동 승인 검토 대상 후보가 없습니다.")
 
 
 with DAG(
     dag_id="compound_dictionary_dag",
     default_args=default_args,
-    description="news_raw 기반 복합명사 후보 추출 후 Naver 백과사전으로 자동 승인하는 DAG",
+    description="news_raw 기반 복합명사 후보 추출 DAG",
     start_date=datetime(2026, 1, 1),
     schedule="0 * * * *",
     catchup=False,
@@ -114,14 +87,9 @@ with DAG(
         python_callable=task_extract_compound_candidates,
     )
 
-    auto_approve_compound_candidates = PythonOperator(
-        task_id="auto_approve_compound_candidates",
-        python_callable=task_auto_approve_compound_candidates,
-    )
-
     summarize_dictionary_results = PythonOperator(
         task_id="summarize_dictionary_results",
         python_callable=task_summarize_dictionary_results,
     )
 
-    extract_compound_candidates >> auto_approve_compound_candidates >> summarize_dictionary_results
+    extract_compound_candidates >> summarize_dictionary_results
