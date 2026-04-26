@@ -172,6 +172,20 @@ CREATE TABLE IF NOT EXISTS compound_noun_candidates (
     CONSTRAINT uq_compound_noun_candidates_word_domain UNIQUE (word, domain),
     CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('needs_review', 'approved', 'rejected'))
 );
+ALTER TABLE compound_noun_candidates
+ADD COLUMN IF NOT EXISTS auto_score NUMERIC,
+ADD COLUMN IF NOT EXISTS auto_evidence JSONB,
+ADD COLUMN IF NOT EXISTS auto_checked_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS auto_decision TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_compound_candidates_auto_review
+ON compound_noun_candidates (
+    status,
+    auto_checked_at,
+    frequency DESC,
+    doc_count DESC,
+    last_seen_at DESC
+);
 
 CREATE TABLE IF NOT EXISTS stopword_dict (
     id         SERIAL PRIMARY KEY,
@@ -399,3 +413,4 @@ CREATE TABLE IF NOT EXISTS stg_keyword_relations (
     processed_at        TIMESTAMPTZ
 );
 ALTER TABLE stg_keyword_relations ADD COLUMN IF NOT EXISTS domain VARCHAR(50);
+
