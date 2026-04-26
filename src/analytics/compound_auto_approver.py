@@ -1,9 +1,13 @@
 """복합명사 후보 자동 승인 배치 잡.
 
-compound_noun_candidates 중 status='needs_review' 항목에 대해
+compound_noun_candidates 중 검토 대기 항목을 대상으로
 네이버 백과사전 API를 호출한다.
- - 검색 결과가 있으면 → auto_approved + compound_noun_dict 에 삽입
+ - 검색 결과가 있으면 → approved + compound_noun_dict 에 삽입
  - 검색 결과가 없거나 API 오류이면 → needs_review 유지
+
+참고:
+    현재 표준 검토 대기 상태는 ``needs_review``이다.
+    과거 DB에 남아 있을 수 있는 legacy ``pending`` 상태도 함께 조회한다.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ logger = get_logger(__name__)
 
 NAVER_ENCYC_URL = "https://openapi.naver.com/v1/search/encyc.json"
 BATCH_LIMIT = 200
+REVIEW_PENDING_STATUSES = ("needs_review", "pending")
 
 
 def _call_naver_encyc(word: str) -> bool:
@@ -49,22 +54,31 @@ def _fetch_pending_candidates() -> list[dict[str, Any]]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, word, domain
+                SELECT id, word, domain, status
                 FROM compound_noun_candidates
-                WHERE status = 'needs_review'
+                WHERE status = ANY(%s)
                 ORDER BY frequency DESC
                 LIMIT %s
                 """,
-                (BATCH_LIMIT,),
+                (list(REVIEW_PENDING_STATUSES), BATCH_LIMIT),
             )
-            return [{"id": row[0], "word": row[1], "domain": row[2]} for row in cursor.fetchall()]
+            return [
+                {"id": row[0], "word": row[1], "domain": row[2], "status": row[3]}
+                for row in cursor.fetchall()
+            ]
 
 
 def _set_auto_approved(candidate_id: int, word: str, domain: str) -> None:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "UPDATE compound_noun_candidates SET status = 'auto_approved' WHERE id = %s",
+                """
+                UPDATE compound_noun_candidates
+                SET status = 'approved',
+                    reviewed_at = NOW(),
+                    reviewed_by = 'auto-approver'
+                WHERE id = %s
+                """,
                 (candidate_id,),
             )
             cursor.execute(
@@ -78,7 +92,16 @@ def _set_auto_approved(candidate_id: int, word: str, domain: str) -> None:
 
 
 def _set_needs_review(candidate_id: int) -> None:
-    pass  # already needs_review; no status change needed
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE compound_noun_candidates
+                SET status = 'needs_review'
+                WHERE id = %s AND status = 'pending'
+                """,
+                (candidate_id,),
+            )
 
 
 def run_compound_auto_approve() -> dict[str, int]:
