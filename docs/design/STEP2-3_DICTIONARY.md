@@ -5,7 +5,7 @@
 > [`src/analytics/compound_extractor.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/compound_extractor.py),
 > [`src/analytics/compound_auto_approver.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/compound_auto_approver.py),
 > [`src/analytics/stopword_recommender.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/stopword_recommender.py),
-> [`airflow/dags/compound_dictionary_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_dictionary_dag.py)
+> [`airflow/dags/compound_noun_extraction_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_noun_extraction_dag.py)
 
 ## 1. 역할
 
@@ -24,29 +24,24 @@
 
 ```mermaid
 flowchart LR
-    %% 기존 사전 → 전처리
     A["복합명사 사전<br/>compound_noun_dict"] --> B["텍스트 토큰화<br/>tokenize()<br/>형태소 분석 + 복합명사 적용"]
     C["불용어 사전<br/>stopword_dict"] --> B
 
-    %% 기사 기반 후보 생성
-    D["원본 기사 데이터<br/>news_raw"] --> E["복합명사 후보 추출 DAG<br/>compound_dictionary_dag"]
-    E --> F["복합명사 후보<br/>compound_noun_candidates"]
+    D["원본 기사 데이터<br/>news_raw"] --> E["복합명사 후보 추출 DAG<br/>compound_noun_extraction"]
+    E --> F["후보 추출<br/>extract_candidates"]
+    F --> G["복합명사 후보<br/>compound_noun_candidates"]
+    G --> H["자동승인 보조<br/>auto_approve"]
+    H -->|"Naver 백과 검색 결과 있음"| A
+    H -->|"검색 결과 없음 / API 오류"| I["관리자 검토 대기<br/>needs_review"]
+    I --> A
 
-    %% 후보 검토 → 사전 반영
-    F --> G["자동승인 보조<br/>Naver 백과 검색 결과 확인"]
-    G -->|"검색 결과 있음"| A
-    G -->|"검색 결과 없음 / API 오류"| H["관리자 검토 대기<br/>needs_review"]
-    H --> A
+    J["분석 데이터<br/>keyword_trends / keywords / relations"] --> K["불용어 추천 로직<br/>stopword_recommender"]
+    K --> L["불용어 후보<br/>stopword_candidates"]
+    L --> M["관리자 검토"]
+    M --> C
 
-    %% 불용어 추천 흐름
-    I["분석 데이터<br/>keyword_trends / keywords / relations"] --> J["불용어 추천 로직<br/>stopword_recommender"]
-    J --> K["불용어 후보<br/>stopword_candidates"]
-    K --> L["관리자 검토"]
-    L --> C
-
-    %% 사전 버전 관리
-    A --> M["사전 버전 관리<br/>dictionary_versions"]
-    C --> M
+    A --> N["사전 버전 관리<br/>dictionary_versions"]
+    C --> N
 ```
 
 ## 3. 현재 사전 테이블
@@ -69,7 +64,7 @@ flowchart LR
 
 ### 4-2. 후보 추출
 
-`compound_dictionary_dag`는 `news_raw` 기사에서 복합명사 후보를 뽑아 `compound_noun_candidates`에 누적한다.
+`compound_noun_extraction` DAG는 `news_raw` 기사에서 복합명사 후보를 뽑아 `compound_noun_candidates`에 누적한다.
 
 추출 기준은 다음 설정을 사용한다.
 
@@ -81,6 +76,8 @@ flowchart LR
 후보 추출은 사용자 사전을 주입하지 않은 Kiwi 분석 결과를 기반으로 한다. 이미 `compound_noun_dict`에 승인되어 있는 단어는 후보에서 제외한다.
 
 ### 4-3. 자동승인 보조
+
+`compound_noun_extraction` DAG는 후보 추출 이후 `auto_approve` task를 이어서 실행한다.
 
 `compound_auto_approver.py`는 복합명사 후보를 무조건 승인하지 않는다. 검토 대기 상태의 후보 중 외부 지식 기반으로 확인 가능한 일부 후보만 사전에 반영하는 보조 로직이다.
 
@@ -144,7 +141,7 @@ compound_noun_dict.source = 'auto-approved'
 
 외부 백과사전에 검색 결과가 존재하는 후보는 사전에 먼저 반영해 운영 부담을 줄이고, 판단 근거가 부족한 후보는 관리자가 검토하도록 남겨둔다.
 
-또한 외부 API 호출은 느리고 실패 가능성이 있으므로 Spark streaming 처리 경로에 포함하지 않고 Airflow DAG의 비동기 batch 단계로 분리한다.
+또한 외부 API 호출은 느리고 실패 가능성이 있으므로 Spark streaming 처리 경로에 포함하지 않고 Airflow DAG의 비동기 batch task로 분리한다.
 
 ## 5. 불용어 사전
 
@@ -157,13 +154,15 @@ compound_noun_dict.source = 'auto-approved'
 
 `stopword_recommender.py`는 최근 7일간의 `keyword_trends`, `keywords`, `keyword_relations`를 바탕으로 `stopword_candidates`를 계산한다.
 
-추천 점수 구성 요소는 다음과 같다.
+불용어 후보는 “의미 없이 자주 등장하는 단어”를 찾기 위해 아래 기준을 조합하여 판단한다.
 
-- `domain_breadth`
-- `repetition_rate`
-- `trend_stability`
-- `cooccurrence_breadth`
-- `short_word`
+- `domain_breadth`: 여러 도메인에서 공통적으로 등장할수록 일반적인 단어일 가능성이 높다.
+- `repetition_rate`: 동일 문서 안에서 반복적으로 등장할수록 정보성이 낮을 가능성이 높다.
+- `trend_stability`: 시간에 따라 변화 없이 일정하게 등장하면 핵심 키워드가 아닐 가능성이 높다.
+- `cooccurrence_breadth`: 다양한 단어와 함께 등장할수록 문장 연결용 일반 표현일 가능성이 높다.
+- `short_word`: 단어가 짧을수록 의미 밀도가 낮은 일반 표현일 가능성이 높다.
+
+정리하면 여러 도메인에서, 항상 비슷한 빈도로, 다양한 단어와 함께 반복적으로 등장하는 짧은 단어일수록 불용어일 가능성이 높다.
 
 ## 6. 사전 버전 관리
 
@@ -174,7 +173,7 @@ compound_noun_dict.source = 'auto-approved'
 ## 7. 운영 특성
 
 - 사전 조회는 DB 우선, 실패 시 파일 또는 기본값 fallback이 있다.
-- 복합명사 후보 추출과 자동승인 보조는 Airflow DAG로 실행된다.
+- 복합명사 후보 추출과 자동승인 보조는 `compound_noun_extraction` Airflow DAG에서 순차 실행된다.
 - 자동승인 보조는 `needs_review` 후보를 대상으로 하며, legacy `pending` 후보는 `needs_review`로 정리한다.
 - 자동승인 보조는 Naver 백과 검색 결과가 있는 후보만 `approved`로 전환한다.
 - 검색 결과가 없거나 API 호출에 실패한 후보는 관리자가 검토한다.
