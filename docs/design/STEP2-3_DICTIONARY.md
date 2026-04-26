@@ -3,9 +3,10 @@
 > 기준 구현:
 > [`src/processing/preprocessing.py`](/C:/Project/news-trend-pipeline-v2/src/processing/preprocessing.py),
 > [`src/analytics/compound_extractor.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/compound_extractor.py),
-> [`src/analytics/compound_auto_approver.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/compound_auto_approver.py),
+> [`src/analytics/compound_auto_reviewer.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/compound_auto_reviewer.py),
 > [`src/analytics/stopword_recommender.py`](/C:/Project/news-trend-pipeline-v2/src/analytics/stopword_recommender.py),
-> [`airflow/dags/compound_dictionary_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_dictionary_dag.py)
+> [`airflow/dags/compound_dictionary_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_dictionary_dag.py),
+> [`airflow/dags/compound_candidate_auto_review_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_candidate_auto_review_dag.py)
 
 ## 1. 역할
 
@@ -16,7 +17,7 @@
 - 복합명사 사전 적용
 - 불용어 사전 적용
 - 복합명사 후보 자동 추출
-- 복합명사 후보 자동승인 보조
+- 복합명사 후보 자동 평가 및 보수적 자동승인
 - 불용어 후보 추천
 - 사전 버전 증가와 캐시 갱신
 
@@ -24,29 +25,25 @@
 
 ```mermaid
 flowchart LR
-    %% 기존 사전 → 전처리
     A["복합명사 사전<br/>compound_noun_dict"] --> B["텍스트 토큰화<br/>tokenize()<br/>형태소 분석 + 복합명사 적용"]
     C["불용어 사전<br/>stopword_dict"] --> B
 
-    %% 기사 기반 후보 생성
     D["원본 기사 데이터<br/>news_raw"] --> E["복합명사 후보 추출 DAG<br/>compound_dictionary_dag"]
     E --> F["복합명사 후보<br/>compound_noun_candidates"]
 
-    %% 후보 검토 → 사전 반영
-    F --> G["자동승인 보조<br/>Naver 백과 검색 결과 확인"]
-    G -->|"검색 결과 있음"| A
-    G -->|"검색 결과 없음 / API 오류"| H["관리자 검토 대기<br/>needs_review"]
-    H --> A
+    F --> G["자동 평가 DAG<br/>compound_candidate_auto_review_dag"]
+    G --> H["auto_score / auto_evidence 저장"]
+    H -->|"high_confidence"| A
+    H -->|"needs_manual_review / low_confidence / api_error"| I["관리자 검토 대기<br/>needs_review"]
+    I --> A
 
-    %% 불용어 추천 흐름
-    I["분석 데이터<br/>keyword_trends / keywords / relations"] --> J["불용어 추천 로직<br/>stopword_recommender"]
-    J --> K["불용어 후보<br/>stopword_candidates"]
-    K --> L["관리자 검토"]
-    L --> C
+    J["분석 데이터<br/>keyword_trends / keywords / relations"] --> K["불용어 추천 로직<br/>stopword_recommender"]
+    K --> L["불용어 후보<br/>stopword_candidates"]
+    L --> M["관리자 검토"]
+    M --> C
 
-    %% 사전 버전 관리
-    A --> M["사전 버전 관리<br/>dictionary_versions"]
-    C --> M
+    A --> N["사전 버전 관리<br/>dictionary_versions"]
+    C --> N
 ```
 
 ## 3. 현재 사전 테이블
@@ -58,6 +55,15 @@ flowchart LR
 - `stopword_dict`
 - `stopword_candidates`
 - `dictionary_versions`
+
+`compound_noun_candidates`는 자동 평가 결과를 함께 보존한다.
+
+| 컬럼 | 역할 |
+| --- | --- |
+| `auto_score` | 자동승인 가능성 점수 |
+| `auto_evidence` | 판단 근거 JSON |
+| `auto_checked_at` | 자동 평가 시각 |
+| `auto_decision` | `high_confidence`, `needs_manual_review`, `low_confidence`, `api_error` |
 
 ## 4. 복합명사 사전
 
@@ -91,13 +97,6 @@ flowchart LR
 - 자동 추출 후보는 기사 domain을 그대로 사용한다.
 - `domain = 'all'`은 자동 추출 결과에 사용하지 않고, 수동 등록된 공통 사전 또는 fallback 용도로만 사용한다.
 
-예시는 다음과 같다.
-
-| word | domain | 의미 |
-| --- | --- | --- |
-| 생성형AI | ai_tech | AI/기술 도메인 후보 |
-| 생성형AI | business | 비즈니스 도메인 후보 |
-
 #### 처리 흐름
 
 ```text
@@ -108,83 +107,109 @@ domain별 복합명사 후보 추출
 compound_noun_candidates(word, domain, frequency, doc_count)
 ```
 
-#### `all` domain의 역할
+### 4-4. 자동 평가 및 보수적 자동승인
 
-`all`은 자동 추출의 기본 저장 domain이 아니다.
-
-- 수동 등록된 공통 복합명사
-- 모든 domain에 적용할 fallback 사전
-- domain이 명시되지 않은 조회 시 기본 사전
-
-위 용도로만 사용한다.
-
-이 원칙을 지키면 domain별 keyword/event detection에서 특정 도메인의 전문어가 다른 도메인 후보와 섞이는 문제를 줄일 수 있다.
-
-### 4-4. 자동승인 보조
-
-`compound_auto_approver.py`는 복합명사 후보를 무조건 승인하지 않는다. 검토 대기 상태의 후보 중 외부 지식 기반으로 확인 가능한 일부 후보만 사전에 반영하는 보조 로직이다.
+`compound_auto_reviewer.py`는 `needs_review` 상태의 복합명사 후보를 평가하고, 판단 근거와 점수를 `compound_noun_candidates`에 저장한다.
 
 #### 처리 대상
 
-현재 코드 기준 자동승인 보조 대상은 다음 조건을 만족하는 후보이다.
-
-```text
-compound_noun_candidates.status IN ('needs_review', 'pending')
-ORDER BY frequency DESC
-LIMIT 200
+```sql
+WHERE status = 'needs_review'
+  AND (
+    auto_checked_at IS NULL
+    OR auto_checked_at < NOW() - INTERVAL '7 days'
+    OR last_seen_at > auto_checked_at
+  )
+ORDER BY frequency DESC, doc_count DESC, last_seen_at DESC
+LIMIT 2000
 ```
 
-- 표준 검토 대기 상태는 `needs_review`이다.
-- `pending`은 과거 DB에 남아 있을 수 있는 legacy 상태를 처리하기 위해 함께 조회한다.
-- 후보는 빈도(`frequency`)가 높은 순서로 최대 200개만 처리한다.
-- `approved` 또는 `rejected` 상태의 후보는 자동승인 보조 대상이 아니다.
+- `approved` 후보는 재검증하지 않는다.
+- `rejected` 후보는 재검증하지 않는다.
+- `needs_review` 후보만 자동 평가 대상이다.
+- Naver API 호출 결과는 `auto_checked_at` 기준으로 7일 캐시한다.
+- 후보가 마지막 평가 이후 다시 등장하면 재평가한다.
 
-#### 승인 판단 기준
+#### Evidence 저장
 
-각 후보 단어에 대해 Naver 백과사전 API를 호출한다.
+자동 평가 결과는 후보 row에 저장한다.
 
-```text
-GET https://openapi.naver.com/v1/search/encyc.json
-query = 후보 단어
-display = 1
+```json
+{
+  "stats": {
+    "frequency": 42,
+    "doc_count": 11,
+    "frequency_per_doc": 3.8,
+    "last_seen_at": "2026-04-26T09:00:00Z"
+  },
+  "naver_encyc": {
+    "ok": true,
+    "error": null,
+    "total": 8,
+    "title_match": true,
+    "description_match": true,
+    "matched_title": "생성형 AI"
+  },
+  "score_breakdown": {
+    "frequency": 20,
+    "doc_count": 20,
+    "recent_activity": 5,
+    "external_evidence": 35,
+    "penalty": -3
+  },
+  "review_policy": {
+    "threshold": 85,
+    "frequency_min": 5,
+    "doc_count_min": 3,
+    "frequency_per_doc_max": 8
+  }
+}
 ```
 
-판단 기준은 다음과 같다.
+#### Decision 값
 
-| 조건 | 처리 |
+| auto_decision | 처리 |
 | --- | --- |
-| API 응답이 200이고 `total > 0` | 후보를 `approved`로 변경하고 `compound_noun_dict`에 반영 |
-| 검색 결과 없음 | 후보를 `needs_review`로 유지 |
-| API credential 없음 | 자동승인 불가, 후보는 검토 대기 유지 |
-| API 오류 또는 timeout | 자동승인하지 않고 검토 대기 유지 |
+| `high_confidence` | 자동승인 |
+| `needs_manual_review` | `needs_review` 유지 |
+| `low_confidence` | `needs_review` 유지 |
+| `api_error` | `needs_review` 유지 |
+
+#### 자동승인 조건
+
+`high_confidence`는 다음 조건을 모두 만족할 때만 부여한다.
+
+```text
+auto_score >= 85
+AND doc_count >= 3
+AND frequency >= 5
+AND Naver title 또는 description match 있음
+AND frequency_per_doc <= 8
+```
 
 #### 승인 시 반영 내용
 
-검색 결과가 확인된 후보는 다음과 같이 반영한다.
+자동승인 후보는 다음과 같이 반영한다.
 
 ```text
 compound_noun_candidates.status = 'approved'
-compound_noun_candidates.reviewed_by = 'auto-approver'
-compound_noun_dict.source = 'auto-approved'
+compound_noun_candidates.reviewed_by = 'auto-reviewer'
+compound_noun_candidates.reviewed_at = NOW()
+compound_noun_candidates.auto_score = 계산 점수
+compound_noun_candidates.auto_evidence = 판단 근거 JSON
+compound_noun_candidates.auto_checked_at = NOW()
+compound_noun_candidates.auto_decision = 'high_confidence'
 ```
 
-`compound_noun_dict`에는 `(word, domain)` unique 기준으로 삽입되며, 이미 같은 단어가 등록되어 있으면 중복 삽입하지 않는다.
+`compound_noun_dict`에는 다음 값으로 삽입한다.
 
-#### 미승인 후보 처리
+```text
+word = candidate.word
+domain = candidate.domain
+source = 'auto-approved'
+```
 
-검색 결과가 없거나 API 오류가 발생한 후보는 자동으로 반려하지 않는다.
-
-- `needs_review` 후보는 그대로 유지한다.
-- legacy `pending` 후보는 `needs_review`로 정리한다.
-- 이후 관리자가 후보 목록에서 직접 승인 또는 반려한다.
-
-#### 설계 의도
-
-자동승인 보조는 최종 판단을 완전히 대체하는 기능이 아니다.
-
-외부 백과사전에 검색 결과가 존재하는 후보는 사전에 먼저 반영해 운영 부담을 줄이고, 판단 근거가 부족한 후보는 관리자가 검토하도록 남겨둔다.
-
-또한 외부 API 호출은 느리고 실패 가능성이 있으므로 Spark streaming 처리 경로에 포함하지 않고 Airflow DAG의 비동기 batch 단계로 분리한다.
+`compound_noun_candidates`의 approved row는 삭제하지 않는다.
 
 ## 5. 불용어 사전
 
@@ -199,16 +224,11 @@ compound_noun_dict.source = 'auto-approved'
 
 추천 점수 구성 요소는 다음과 같다.
 
-- domain_breadth (도메인 범용성)
-    - 여러 도메인에서 공통적으로 등장할수록 일반적인 단어일 가능성이 높다.
-- repetition_rate (반복률)
-    - 동일 문서 내에서 반복적으로 등장할수록 정보성이 낮을 가능성이 높다.
-- trend_stability (트렌드 안정성)
-    - 시간에 따라 변화 없이 일정하게 등장하면 핵심 키워드가 아닐 가능성이 높다.
-- cooccurrence_breadth (동시 등장 다양성)
-    - 다양한 단어와 함께 등장할수록 문장 연결용 일반 표현일 가능성이 높다.
-- short_word (단어 길이)
-    - 단어가 짧을수록 의미 밀도가 낮은 일반 표현일 가능성이 높다.
+- domain_breadth
+- repetition_rate
+- trend_stability
+- cooccurrence_breadth
+- short_word
 
 ## 6. 사전 버전 관리
 
@@ -219,10 +239,12 @@ compound_noun_dict.source = 'auto-approved'
 ## 7. 운영 특성
 
 - 사전 조회는 DB 우선, 실패 시 파일 또는 기본값 fallback이 있다.
-- 복합명사 후보 추출과 자동승인 보조는 Airflow DAG로 실행된다.
+- `compound_dictionary_dag`는 복합명사 후보 추출만 담당한다.
+- `compound_candidate_auto_review_dag`는 후보 자동 평가, evidence 저장, high confidence 자동승인을 담당한다.
 - 복합명사 후보 추출은 기사 domain 기준으로 후보를 분리해 `(word, domain)` 단위로 누적한다.
-- 자동 추출 후보는 `all` domain으로 저장하지 않는다. `all`은 수동 공통 사전 또는 fallback 용도로만 사용한다.
-- 자동승인 보조는 `needs_review` 후보를 대상으로 하며, legacy `pending` 후보는 `needs_review`로 정리한다.
-- 자동승인 보조는 Naver 백과 검색 결과가 있는 후보만 `approved`로 전환한다.
+- 자동 추출 후보는 `all` domain으로 저장하지 않는다.
+- 자동 평가 대상은 `needs_review` 후보뿐이다.
+- `approved`와 `rejected` 후보는 자동으로 다시 내리지 않는다.
+- 자동승인은 `high_confidence` 후보에만 수행한다.
 - 검색 결과가 없거나 API 호출에 실패한 후보는 관리자가 검토한다.
 - 불용어 후보 추천은 코드로 구현되어 있으며 관리자 기능과 연결된다.
