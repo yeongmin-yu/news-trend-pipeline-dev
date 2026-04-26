@@ -657,25 +657,9 @@ auto_evidence
 auto_evidence_summary
 ```
 
----
 
-## 14. 발표용 설명 포인트
 
-5회차 발표에서는 다음 순서로 설명한다.
-
-1. Airflow가 실시간 처리 엔진이 아니라 batch orchestration 역할을 담당한다.
-2. Spark Streaming은 Kafka를 상시 consume하고, Airflow는 그 결과 테이블을 읽어 후속 batch를 수행한다.
-3. `compound_dictionary_dag`와 `compound_candidate_auto_review_dag`를 분리했다.
-   - 후보 추출 DAG: 많이 찾는다.
-   - 자동리뷰 DAG: 많이 평가하고 확실한 것만 승인한다.
-4. 자동승인은 Naver Web Search API 근거와 내부 통계를 같이 사용한다.
-5. `approved` row는 재검증으로 내리지 않고 유지한다.
-6. 동일 DAG를 재실행해도 `ON CONFLICT`, status 조건, replace/upsert 전략으로 중복과 상태 오염을 막는다.
-7. Airflow UI에서 DAG graph, task log, schedule, retry 설정을 보여준다.
-
----
-
-## 15. 한 줄 요약
+## 한 줄 요약
 
 ```text
 Airflow는 뉴스 수집, 재처리, 후보 추출, 자동리뷰, 이벤트 탐지를 스케줄링하고,
