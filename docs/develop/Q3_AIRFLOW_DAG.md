@@ -8,7 +8,7 @@ Airflow의 역할:
 
 - 뉴스 수집 작업 스케줄링
 - 실패 메시지 재처리
-- 사전 후보 추출/추천 배치 실행
+- 복합명사 후보 추출 및 자동승인 보조 배치 실행
 - 키워드 이벤트 탐지 배치 실행
 - Kafka 발행 전 사전 상태 확인
 - 실패 시 재시도 및 dead letter 확인
@@ -24,7 +24,7 @@ Airflow의 역할:
 flowchart LR
     A["Airflow Scheduler"] --> B["news_ingest_dag<br/>뉴스 수집 / Kafka 발행"]
     A --> C["auto_replay_dag<br/>dead letter 재처리"]
-    A --> D["compound_noun_extraction<br/>복합명사 후보 추출"]
+    A --> D["compound_dictionary_dag<br/>복합명사 후보 추출<br/>+ 자동승인 보조"]
     A --> E["keyword_event_detection<br/>급상승 이벤트 탐지"]
 
     B --> K["Kafka<br/>news_topic"]
@@ -33,7 +33,10 @@ flowchart LR
     K --> S["Spark Streaming<br/>상시 실행"]
     S --> DB["PostgreSQL<br/>analysis tables"]
 
-    D --> DICT["Dictionary Tables<br/>compound_noun_candidates<br/>stopword_candidates"]
+    DB --> D
+    D --> CAND["compound_noun_candidates"]
+    CAND -->|"Naver 백과 검색 결과 있음"| DICT["compound_noun_dict<br/>source=auto-approved"]
+    CAND -->|"검색 결과 없음 / API 오류"| REVIEW["관리자 검토 대기<br/>needs_review"]
     DICT -. reload .-> S
 
     DB --> E
@@ -50,14 +53,15 @@ flowchart LR
 | --- | --- | --- | --- |
 | `news_ingest_dag` | Naver 뉴스 수집 후 Kafka 발행 | 15분 주기 | `news_topic`, `collection_metrics` |
 | `auto_replay_dag` | `dead_letter.jsonl` 재처리 | 15분 주기 | 재발행 메시지, replay 결과 로그 |
-| `compound_noun_extraction` | 기사 데이터 기반 복합명사/불용어 후보 생성 | 일 1회 | `compound_noun_candidates(복합명사추천테이블)`, `stopword_candidates(불용어추천테이블)` |
+| `compound_dictionary_dag` | 기사 데이터 기반 복합명사 후보 추출 및 Naver 백과 기반 자동승인 보조 | 1시간 주기 | `compound_noun_candidates`, `compound_noun_dict` |
 | `keyword_event_detection` | `keyword_trends` 기반 급상승 이벤트 계산 | 15분 주기 | `keyword_events` |
 
 정리:
 
 - `news_ingest_dag`와 `auto_replay_dag`는 Kafka 입력 품질과 수집 안정성을 담당한다.
 - Spark Structured Streaming은 Airflow task가 아니라 상시 실행되는 처리 계층이다.
-- 사전 관련 DAG는 Spark 전처리 품질에 영향을 준다.
+- `compound_dictionary_dag`는 Spark 처리 경로 밖에서 복합명사 후보를 만들고, 외부 API 기반 자동승인 보조를 수행한다.
+- 자동승인 보조는 최종 판단을 완전히 대체하지 않으며, Naver 백과 검색 결과가 있는 후보만 사전에 반영한다.
 - 이벤트 탐지 DAG는 Spark/Storage 결과인 `keyword_trends`를 기반으로 분석 결과를 만든다.
 
 ---
@@ -290,19 +294,44 @@ flowchart LR
 - replay 결과를 XCom과 로그로 요약
 - 영구 실패 메시지는 별도 파일과 로그로 관리
 
-### 5.2 compound_noun_extraction
+### 5.2 compound_dictionary_dag
+
+구현 파일:
+
+```text
+airflow/dags/compound_dictionary_dag.py
+```
 
 목적:
 
-- 최근 기사 데이터를 기반으로 복합명사 후보와 불용어 후보를 추천한다.
-- 생성된 후보는 사전 관리 화면/API를 통해 승인 또는 반려된다.
-- 승인된 사전은 Spark 전처리 단계의 토큰 품질에 영향을 준다.
+- `news_raw` 기사에서 복합명사 후보를 추출한다.
+- 추출된 후보 중 검토 대기 후보에 대해 Naver 백과 검색 결과를 확인한다.
+- 검색 결과가 있는 후보만 `approved`로 전환하고 `compound_noun_dict`에 `source='auto-approved'`로 반영한다.
+- 검색 결과가 없거나 API 오류가 발생한 후보는 `needs_review` 상태로 남겨 관리자 검토를 받는다.
 
-주요 출력:
+태스크 구조:
 
-- `compound_noun_candidates`
-- `stopword_candidates`
-- `dictionary_versions`
+```mermaid
+flowchart LR
+    A[extract_compound_candidates] --> B[auto_approve_compound_candidates]
+    B --> C[summarize_dictionary_results]
+```
+
+주요 특징:
+
+- 1시간 주기 실행
+- `max_active_runs=1`
+- 후보 추출과 외부 API 기반 자동승인 보조를 Spark streaming 경로에서 분리
+- 자동승인 보조 대상은 `status IN ('needs_review', 'pending')` 후보 중 빈도순 상위 200개
+- `pending`은 legacy 상태이며, 미승인 시 `needs_review`로 정리
+- 자동승인 보조는 최종 판단을 대체하지 않으며, 외부 검색 결과가 있는 후보만 선반영
+
+입력/출력:
+
+| 구분 | 내용 |
+| --- | --- |
+| 입력 | `news_raw`, `compound_noun_candidates`, Naver API credential |
+| 출력 | `compound_noun_candidates.status`, `compound_noun_dict`, `dictionary_versions` |
 
 ### 5.3 keyword_event_detection
 
@@ -334,29 +363,37 @@ flowchart LR
 
 ## 6. 스케줄
 
-`news_ingest_dag` 실제 구현 기준:
+주요 DAG 스케줄:
 
-- schedule: `*/15 * * * *`
-- start_date: `2026-01-01`
-- catchup: `false`
-- max_active_runs: `1`
+| DAG | schedule | start_date | catchup | max_active_runs |
+| --- | --- | --- | --- | --- |
+| `news_ingest_dag` | `*/15 * * * *` | `2026-01-01` | `false` | `1` |
+| `auto_replay_dag` | `*/15 * * * *` | `2026-01-01` | `false` | `1` |
+| `compound_dictionary_dag` | `0 * * * *` | `2026-01-01` | `false` | `1` |
+| `keyword_event_detection` | `*/15 * * * *` | `2026-01-01` | `false` | `1` |
 
 설계 근거:
 
-- 15분 단위 near real-time 수집
-- API 호출량과 처리 안정성 균형
-- 동시 실행을 막아 중복 수집 위험 감소
+- 수집과 replay는 15분 단위로 실행해 near real-time 수집 안정성을 유지한다.
+- 복합명사 후보 추출/자동승인 보조는 외부 API 호출과 후보 누적을 고려해 1시간 단위 batch로 실행한다.
+- 이벤트 탐지는 `keyword_trends` 갱신 주기에 맞춰 15분 단위로 실행한다.
+- 모든 주요 DAG는 `max_active_runs=1`로 동시 실행에 따른 중복 처리 위험을 줄인다.
 
 ---
 
 ## 7. Retry / Failure Handling
 
-### 재시도 정책
-
-`news_ingest_dag` 실제 구현 기준:
+### news_ingest_dag 재시도 정책
 
 - retries: 3
 - retry_delay: 5 minutes
+- retry_exponential_backoff: true
+- max_retry_delay: 30 minutes
+
+### compound_dictionary_dag 재시도 정책
+
+- retries: 2
+- retry_delay: 10 minutes
 - retry_exponential_backoff: true
 - max_retry_delay: 30 minutes
 
@@ -366,18 +403,21 @@ flowchart LR
 - Naver API 일시 오류
 - Kafka 발행 오류
 - DB 연결 오류
+- Naver 백과 API 일시 오류
 
 ### 재시도 제외 또는 격리 대상
 
 - 개별 기사 schema validation 실패
 - 개별 메시지 발행 실패
 - 중복 기사
+- Naver 백과 검색 결과가 없는 복합명사 후보
 
 처리 방식:
 
 - validation 실패 또는 발행 실패는 dead letter 기록
 - 중복 기사는 skip
 - producer cycle 전체 실패는 Airflow retry
+- 자동승인 보조에서 검색 결과가 없는 후보는 반려하지 않고 `needs_review`로 유지
 
 ---
 
@@ -390,11 +430,14 @@ flowchart LR
 - `provider + domain + url` 기준 중복 제거
 - Kafka producer idempotence 활성화
 - storage 단계에서 unique/upsert로 중복 방지
+- 복합명사 사전은 `(word, domain)` unique 기준으로 중복 삽입 방지
+- 자동승인 보조는 `needs_review` 또는 legacy `pending` 후보만 대상으로 하며 `approved/rejected` 후보는 재처리하지 않음
 
 보장:
 
 - 동일 기사가 재수집되어도 Kafka 발행과 DB 저장에서 중복 가능성을 줄인다.
 - DAG 재시도 시 이미 발행된 URL은 producer state 기준으로 skip된다.
+- 동일 복합명사 후보가 반복 처리되어도 사전에는 중복 등록되지 않는다.
 
 ---
 
@@ -405,6 +448,7 @@ DAG 파일:
 ```text
 airflow/dags/news_ingest_dag.py
 airflow/dags/auto_replay_dag.py
+airflow/dags/compound_dictionary_dag.py
 airflow/dags/keyword_event_detection_dag.py
 ```
 
@@ -414,6 +458,8 @@ airflow/dags/keyword_event_detection_dag.py
 src/ingestion/producer.py
 src/ingestion/replay.py
 src/ingestion/api_client.py
+src/analytics/compound_extractor.py
+src/analytics/compound_auto_approver.py
 src/analytics/event_detector.py
 src/storage/db.py
 ```
@@ -480,6 +526,18 @@ produce_naver 내부에서 validation/publish 실패
 → auto_replay_dag가 이후 재처리 시도
 ```
 
+### 복합명사 후보 추출 및 자동승인 보조 실행
+
+```text
+news_raw
+→ extract_compound_candidates
+→ compound_noun_candidates
+→ auto_approve_compound_candidates
+→ 검색 결과 있음: approved + compound_noun_dict 반영
+→ 검색 결과 없음/API 오류: needs_review 유지
+→ summarize_dictionary_results
+```
+
 ### 이벤트 탐지 실행
 
 ```text
@@ -495,6 +553,7 @@ keyword_trends
 → producer state와 URL 중복 기준 적용
 → 이미 발행한 기사는 skip
 → storage upsert로 최종 테이블 중복 방지
+→ 이미 approved/rejected 된 복합명사 후보는 자동승인 보조 대상에서 제외
 ```
 
 ---
@@ -503,8 +562,10 @@ keyword_trends
 
 Airflow는 단일 수집 DAG만 관리하지 않는다.
 
-현재 Airflow는 수집, dead letter 재처리, 사전 후보 추출, 이벤트 탐지 배치를 담당한다.
+현재 Airflow는 수집, dead letter 재처리, 복합명사 후보 추출/자동승인 보조, 이벤트 탐지 배치를 담당한다.
 
 이 중 `news_ingest_dag`는 Kafka로 메시지를 발행하는 수집 entry point이며, 이후 단계는 Kafka topic을 기준으로 Spark 처리와 PostgreSQL 저장 계층으로 이어진다.
+
+`compound_dictionary_dag`는 사전 품질 개선을 위한 비동기 batch DAG이며, Spark streaming 처리 경로에서 외부 API 호출을 분리한다.
 
 `validate`는 별도 task가 아니라 Kafka 사전 검증, 메시지 schema 검증, 중복 검증, dead letter 사후 확인으로 나뉘어 구현되어 있다.
