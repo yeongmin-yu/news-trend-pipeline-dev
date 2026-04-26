@@ -157,9 +157,9 @@ flowchart LR
     B --> D["check_dead_letter<br/>Dead Letter 누적 확인"]
 
     style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
-    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style C fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
-    style D fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style B fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style C fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style D fill:#ffffde,stroke:#333,stroke-width:2px,color:black
 ```
 
 | task_id              | Operator         | 역할                                                                                                                |
@@ -247,9 +247,9 @@ flowchart LR
     B --> D["check_permanent_failures<br/>영구 실패 메시지 확인"]
 
     style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
-    style B fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
-    style C fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
-    style D fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style B fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style C fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style D fill:#ffffde,stroke:#333,stroke-width:2px,color:black
 ```
 | task_id                    | Operator         | 역할                                                                                                             |
 | -------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------- |
