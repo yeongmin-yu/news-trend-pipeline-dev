@@ -4,7 +4,7 @@
 > [`src/processing/spark_job.py`](/C:/Project/news-trend-pipeline-v2/src/processing/spark_job.py),
 > [`src/processing/preprocessing.py`](/C:/Project/news-trend-pipeline-v2/src/processing/preprocessing.py),
 > [`scripts/run_processing.py`](/C:/Project/news-trend-pipeline-v2/scripts/run_processing.py),
-> [`airflow/dags/compound_extraction_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_extraction_dag.py)
+> [`airflow/dags/compound_dictionary_dag.py`](/C:/Project/news-trend-pipeline-v2/airflow/dags/compound_dictionary_dag.py)
 
 ## 1. 목적
 

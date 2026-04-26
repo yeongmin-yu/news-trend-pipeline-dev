@@ -96,4 +96,4 @@ flowchart LR
 
 - STEP 1의 Airflow 범위는 수집 orchestration과 replay orchestration이다.
 - Spark job submit은 Airflow가 직접 수행하지 않는다.
-- `keyword_event_detection_dag`, `compound_extraction_dag`는 별도 단계 문서에서 다룬다.
+- `keyword_event_detection_dag`, `compound_dictionary_dag`는 별도 단계 문서에서 다룬다.

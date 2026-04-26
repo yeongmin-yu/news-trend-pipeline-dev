@@ -324,7 +324,7 @@ CREATE TABLE IF NOT EXISTS stopword_dict (
 ## 9. 복합명사 후보 자동 추출
 
 **파일**: [`analytics/compound_extractor.py`](../src/analytics/compound_extractor.py)  
-**DAG**: [`airflow/dags/compound_extraction_dag.py`](../airflow/dags/compound_extraction_dag.py)
+**DAG**: [`airflow/dags/compound_dictionary_dag.py`](../airflow/dags/compound_dictionary_dag.py)
 
 ### 목적
 
