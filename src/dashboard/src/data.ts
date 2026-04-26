@@ -17,7 +17,7 @@ export interface SourceOption {
 export interface RangeOption {
   id: RangeId;
   label: string;
-  bucketMin: number;
+  bucket_min: number;
   buckets: number;
 }
 
@@ -30,21 +30,23 @@ export interface FiltersResponse {
 export interface KeywordSummary {
   keyword: string;
   mentions: number;
-  prevMentions: number;
+  prev_mentions: number;
   growth: number;
   delta: number;
   spike: boolean;
-  eventScore: number;
-  articleCount: number;
+  event_score: number;
+  article_count: number;
+  source_share_naver?: number;
+  source_share_global?: number;
 }
 
 export interface KpiSummary {
-  totalArticles: number;
-  uniqueKeywords: number;
-  spikeCount: number;
+  total_articles: number;
+  unique_keywords: number;
+  spike_count: number;
   growth: number;
-  lastUpdateRelative: string;
-  lastUpdateAbsolute: string;
+  last_update_relative: string;
+  last_update_absolute: string;
 }
 
 export interface SeriesPoint {
@@ -62,7 +64,7 @@ export interface TrendSeries {
 
 export interface TrendResponse {
   series: TrendSeries[];
-  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
+  range: RangeOption | { id: string; label: string; bucket_min: number; buckets: number };
 }
 
 export interface SpikeEvent {
@@ -70,23 +72,23 @@ export interface SpikeEvent {
   keyword: string;
   intensity: number;
   source: "naver" | "global";
-  currentMentions: number;
-  prevMentions: number;
+  current_mentions?: number;
+  prev_mentions?: number;
   growth: number;
   score: number;
 }
 
 export interface SpikeResponse {
-  topKeywords: string[];
+  top_keywords?: string[];
   events: SpikeEvent[];
-  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
+  range: RangeOption | { id: string; label: string; bucket_min: number; buckets: number };
 }
 
 export interface OverviewArticleBucket {
   bucket: number;
   timestamp: string;
-  articleCount: number;
-  lastUpdateAt: string | null;
+  article_count: number;
+  last_update_at: string | null;
 }
 
 export interface OverviewKeywordBucket {
@@ -94,23 +96,23 @@ export interface OverviewKeywordBucket {
   bucket: number;
   timestamp: string;
   mentions: number;
-  articleCount: number;
+  article_count: number;
 }
 
 export interface OverviewCachePayload {
-  requestedStartAt: string;
-  requestedEndAt: string;
-  fetchStartAt: string;
-  fetchEndAt: string;
-  dataStartAt: string;
-  dataEndAt: string;
+  requested_start_at: string;
+  requested_end_at: string;
+  fetch_start_at: string;
+  fetch_end_at: string;
+  data_start_at: string;
+  data_end_at: string;
   bucket: TrendBucketId;
-  bucketMin: number;
+  bucket_min: number;
   buckets: number;
-  candidateKeywords: string[];
-  articleBuckets: OverviewArticleBucket[];
-  keywordBuckets: OverviewKeywordBucket[];
-  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
+  candidate_keywords: string[];
+  article_buckets: OverviewArticleBucket[];
+  keyword_buckets: OverviewKeywordBucket[];
+  range: RangeOption | { id: string; label: string; bucket_min: number; buckets: number };
 }
 
 export interface DashboardOverviewResponse {
@@ -135,7 +137,7 @@ export interface ThemeDistributionItem {
 
 export interface ThemeDistributionResponse {
   keyword: string;
-  totalMentions: number;
+  total_mentions: number;
   items: ThemeDistributionItem[];
 }
 
@@ -146,10 +148,10 @@ export interface ArticleItem {
   publisher: string;
   source: string;
   domain?: string;
-  publishedAt: string | null;
-  minutesAgo: number | null;
+  published_at: string | null;
+  minutes_ago: number | null;
   keywords: string[];
-  primaryKeyword: string | null;
+  primary_keyword: string | null;
   duplicates: number;
   url: string;
 }
@@ -159,7 +161,7 @@ export interface ServiceStatus {
   label: string;
   status: "ok" | "warn" | "down" | "unknown";
   detail: string;
-  statusCode?: number | null;
+  status_code?: number | null;
 }
 
 export interface SystemStatusResponse {
@@ -171,7 +173,7 @@ export interface CompoundNounItem {
   word: string;
   domain: string;
   source: string;
-  createdAt: string;
+  created_at: string;
 }
 
 export interface CompoundCandidateItem {
@@ -179,12 +181,12 @@ export interface CompoundCandidateItem {
   word: string;
   domain: string;
   frequency: number;
-  docCount: number;
-  firstSeenAt: string;
-  lastSeenAt: string;
+  doc_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
   status: string;
-  reviewedAt: string | null;
-  reviewedBy: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
 }
 
 export interface StopwordItem {
@@ -192,7 +194,7 @@ export interface StopwordItem {
   word: string;
   domain: string;
   language: string;
-  createdAt: string;
+  created_at: string;
 }
 
 export interface StopwordCandidateItem {
@@ -215,12 +217,12 @@ export interface StopwordCandidateItem {
 }
 
 export interface DictionaryMeta {
-  compoundNounCount: number;
-  candidateCount: number;
-  stopwordCount: number;
+  compound_noun_count: number;
+  candidate_count: number;
+  stopword_count: number;
   versions: {
-    compoundNounDict: number;
-    stopwordDict: number;
+    compound_noun_dict: number;
+    stopword_dict: number;
   };
 }
 
@@ -233,8 +235,8 @@ export interface DictionaryPage<T> {
 
 /** @deprecated 페이징 전환 전 호환용 — 신규 코드에서는 DictionaryMeta 사용 */
 export interface DictionaryOverview extends DictionaryMeta {
-  compoundNouns: CompoundNounItem[];
-  compoundCandidates: CompoundCandidateItem[];
+  compound_nouns: CompoundNounItem[];
+  compound_candidates: CompoundCandidateItem[];
   stopwords: StopwordItem[];
 }
 
@@ -275,9 +277,9 @@ export interface CollectionMetricItem {
 
 export interface QueryKeywordAdminOverview {
   domains: DomainOption[];
-  queryKeywords: QueryKeywordItem[];
-  auditLogs: QueryKeywordAuditLog[];
-  collectionMetrics: CollectionMetricItem[];
+  query_keywords: QueryKeywordItem[];
+  audit_logs: QueryKeywordAuditLog[];
+  collection_metrics: CollectionMetricItem[];
 }
 
 const API_BASE = "/api/v1";
@@ -408,12 +410,12 @@ export const api = {
   approveCandidate: (id: number) =>
     request(`/dictionary/compound-candidates/${id}/approve`, {
       method: "POST",
-      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+      body: JSON.stringify({ reviewed_by: "dashboard-admin" }),
     }),
   rejectCandidate: (id: number) =>
     request(`/dictionary/compound-candidates/${id}/reject`, {
       method: "POST",
-      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+      body: JSON.stringify({ reviewed_by: "dashboard-admin" }),
     }),
   createStopword: (word: string, domain = "all") =>
     request("/dictionary/stopwords", {
@@ -434,36 +436,36 @@ export const api = {
   approveStopwordCandidate: (id: number) =>
     request(`/dictionary/stopword-candidates/${id}/approve`, {
       method: "POST",
-      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+      body: JSON.stringify({ reviewed_by: "dashboard-admin" }),
     }),
   rejectStopwordCandidate: (id: number) =>
     request(`/dictionary/stopword-candidates/${id}/reject`, {
       method: "POST",
-      body: JSON.stringify({ reviewedBy: "dashboard-admin" }),
+      body: JSON.stringify({ reviewed_by: "dashboard-admin" }),
     }),
   runCompoundAutoApprove: () =>
     request<Record<string, number>>("/admin/run-compound-auto-approve", { method: "POST" }),
   runStopwordRecommender: () =>
     request<Record<string, number>>("/admin/run-stopword-recommender", { method: "POST" }),
-  createQueryKeyword: (payload: { domainId: string; query: string; sortOrder: number; isActive?: boolean }) =>
+  createQueryKeyword: (payload: { domain_id: string; query: string; sort_order: number; is_active?: boolean }) =>
     request<QueryKeywordItem>("/admin/query-keywords", {
       method: "POST",
       body: JSON.stringify({
-        domainId: payload.domainId,
+        domain_id: payload.domain_id,
         query: payload.query,
-        sortOrder: payload.sortOrder,
-        isActive: payload.isActive ?? true,
+        sort_order: payload.sort_order,
+        is_active: payload.is_active ?? true,
         actor: "dashboard-admin",
       }),
     }),
-  updateQueryKeyword: (id: number, payload: { domainId: string; query: string; sortOrder: number; isActive: boolean }) =>
+  updateQueryKeyword: (id: number, payload: { domain_id: string; query: string; sort_order: number; is_active: boolean }) =>
     request<QueryKeywordItem>(`/admin/query-keywords/${id}`, {
       method: "PATCH",
       body: JSON.stringify({
-        domainId: payload.domainId,
+        domain_id: payload.domain_id,
         query: payload.query,
-        sortOrder: payload.sortOrder,
-        isActive: payload.isActive,
+        sort_order: payload.sort_order,
+        is_active: payload.is_active,
         actor: "dashboard-admin",
       }),
     }),
