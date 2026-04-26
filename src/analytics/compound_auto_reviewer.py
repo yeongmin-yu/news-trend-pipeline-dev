@@ -3,32 +3,34 @@
 정책:
     - approved/rejected 후보는 재검증하지 않는다.
     - needs_review 후보만 평가한다.
-    - Free Dictionary API entries 존재 여부를 외부 근거로 사용한다.
+    - Naver Web Search API 결과에서 공백 제거 후 후보 단어와 완전 일치하는 항목을 외부 근거로 사용한다.
     - high_confidence 후보만 approved 처리하고 compound_noun_dict에 반영한다.
     - 승인 여부와 관계없이 auto_score/auto_evidence/auto_checked_at/auto_decision을 저장한다.
 """
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
 
 import requests
 from psycopg2.extras import Json, RealDictCursor
 
+from core.config import settings
 from core.logger import get_logger
 from storage.db import get_connection
 
 logger = get_logger(__name__)
 
-FREE_DICTIONARY_BASE_URL = "https://freedictionaryapi.com/api/v1/entries/ko"
+NAVER_WEBKR_URL = "https://openapi.naver.com/v1/search/webkr.json"
 DEFAULT_LIMIT = 2000
 DEFAULT_THRESHOLD = 85
-DICTIONARY_TIMEOUT_SECONDS = 3.0
+NAVER_DISPLAY = 10
+NAVER_TIMEOUT_SECONDS = 3.0
 
 REVIEWER = "auto-reviewer"
 DECISION_HIGH_CONFIDENCE = "high_confidence"
@@ -37,6 +39,7 @@ DECISION_LOW_CONFIDENCE = "low_confidence"
 DECISION_API_ERROR = "api_error"
 
 _KOREAN_RE = re.compile(r"[가-힣]")
+_TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 
 GENERIC_STOPWORDS = {
@@ -65,8 +68,14 @@ class Candidate:
     last_seen_at: datetime | None
 
 
-def _normalize_word(value: str) -> str:
-    return _SPACE_RE.sub("", value or "").strip().lower()
+def _clean_html(value: str | None) -> str:
+    if not value:
+        return ""
+    return html.unescape(_TAG_RE.sub("", value)).strip()
+
+
+def _compact(value: str | None) -> str:
+    return _SPACE_RE.sub("", _clean_html(value)).lower()
 
 
 def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
@@ -103,34 +112,40 @@ def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
             ]
 
 
-def _call_free_dictionary(word: str) -> dict[str, Any]:
-    url = f"{FREE_DICTIONARY_BASE_URL}/{quote(word)}"
+def _call_naver_webkr(word: str) -> dict[str, Any]:
     started_at = time.monotonic()
-    logger.info("free_dictionary request start | word=%r | url=%s", word, url)
+    compact_word = _compact(word)
+    logger.info("naver_webkr request start | word=%r | compact_word=%r", word, compact_word)
+
+    if not settings.naver_client_id or not settings.naver_client_secret:
+        logger.warning("naver_webkr request skipped | word=%r | reason=missing_credentials", word)
+        return {
+            "ok": False,
+            "error": "missing_credentials",
+            "total": 0,
+            "display": 0,
+            "has_exact_compact_match": False,
+            "matched_title": None,
+            "matched_description": None,
+            "matched_link": None,
+            "matched_field": None,
+            "items": [],
+        }
+
     try:
-        response = requests.get(url, timeout=DICTIONARY_TIMEOUT_SECONDS)
+        response = requests.get(
+            NAVER_WEBKR_URL,
+            params={"query": word, "display": NAVER_DISPLAY},
+            headers={
+                "X-Naver-Client-Id": settings.naver_client_id,
+                "X-Naver-Client-Secret": settings.naver_client_secret,
+            },
+            timeout=NAVER_TIMEOUT_SECONDS,
+        )
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        if response.status_code == 404:
-            logger.info(
-                "free_dictionary request done | word=%r | status=404 | entries=0 | elapsed_ms=%d",
-                word,
-                elapsed_ms,
-            )
-            return {
-                "ok": True,
-                "error": None,
-                "url": url,
-                "word": word,
-                "entries_count": 0,
-                "has_entries": False,
-                "parts_of_speech": [],
-                "definitions": [],
-                "source_url": None,
-                "license": None,
-            }
         if response.status_code != 200:
             logger.warning(
-                "free_dictionary request failed | word=%r | status=%d | elapsed_ms=%d",
+                "naver_webkr request failed | word=%r | status=%d | elapsed_ms=%d",
                 word,
                 response.status_code,
                 elapsed_ms,
@@ -138,76 +153,94 @@ def _call_free_dictionary(word: str) -> dict[str, Any]:
             return {
                 "ok": False,
                 "error": f"http_{response.status_code}",
-                "url": url,
-                "word": word,
-                "entries_count": 0,
-                "has_entries": False,
-                "parts_of_speech": [],
-                "definitions": [],
-                "source_url": None,
-                "license": None,
+                "total": 0,
+                "display": 0,
+                "has_exact_compact_match": False,
+                "matched_title": None,
+                "matched_description": None,
+                "matched_link": None,
+                "matched_field": None,
+                "items": [],
             }
 
         data = response.json()
-        entries = data.get("entries") or []
-        parts_of_speech = sorted(
-            {
-                str(entry.get("partOfSpeech"))
-                for entry in entries
-                if entry.get("partOfSpeech")
-            }
-        )
-        definitions: list[str] = []
-        for entry in entries[:3]:
-            for sense in entry.get("senses") or []:
-                definition = sense.get("definition")
-                if definition:
-                    definitions.append(str(definition))
-                    break
-            if len(definitions) >= 3:
+        items = data.get("items") or []
+        normalized_items: list[dict[str, str]] = []
+        matched_title: str | None = None
+        matched_description: str | None = None
+        matched_link: str | None = None
+        matched_field: str | None = None
+
+        for item in items:
+            title = _clean_html(item.get("title"))
+            description = _clean_html(item.get("description"))
+            link = str(item.get("link") or "")
+            compact_title = _compact(title)
+            compact_description = _compact(description)
+            normalized_items.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "link": link,
+                    "title_compact": compact_title,
+                    "description_compact": compact_description,
+                }
+            )
+            if compact_word and compact_word in compact_title:
+                matched_title = title
+                matched_description = description
+                matched_link = link
+                matched_field = "title"
+                break
+            if compact_word and compact_word in compact_description:
+                matched_title = title
+                matched_description = description
+                matched_link = link
+                matched_field = "description"
                 break
 
-        source = data.get("source") or {}
+        has_match = matched_field is not None
         logger.info(
-            "free_dictionary request done | word=%r | status=200 | entries=%d | has_entries=%s | parts_of_speech=%s | elapsed_ms=%d",
+            "naver_webkr request done | word=%r | status=200 | total=%d | items=%d | exact_compact_match=%s | matched_field=%s | elapsed_ms=%d",
             word,
-            len(entries),
-            len(entries) > 0,
-            parts_of_speech,
+            int(data.get("total") or 0),
+            len(items),
+            has_match,
+            matched_field,
             elapsed_ms,
         )
         return {
             "ok": True,
             "error": None,
-            "url": url,
-            "word": data.get("word") or word,
-            "entries_count": len(entries),
-            "has_entries": len(entries) > 0,
-            "parts_of_speech": parts_of_speech,
-            "definitions": definitions,
-            "source_url": source.get("url"),
-            "license": source.get("license"),
+            "total": int(data.get("total") or 0),
+            "display": int(data.get("display") or len(items)),
+            "has_exact_compact_match": has_match,
+            "matched_title": matched_title,
+            "matched_description": matched_description,
+            "matched_link": matched_link,
+            "matched_field": matched_field,
+            "items": normalized_items[:3],
         }
     except Exception as exc:  # noqa: BLE001 - batch job should keep processing remaining candidates
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
-        logger.warning("free_dictionary request error | word=%r | error=%s | elapsed_ms=%d", word, exc, elapsed_ms)
+        logger.warning("naver_webkr request error | word=%r | error=%s | elapsed_ms=%d", word, exc, elapsed_ms)
         return {
             "ok": False,
             "error": exc.__class__.__name__,
-            "url": url,
-            "word": word,
-            "entries_count": 0,
-            "has_entries": False,
-            "parts_of_speech": [],
-            "definitions": [],
-            "source_url": None,
-            "license": None,
+            "total": 0,
+            "display": 0,
+            "has_exact_compact_match": False,
+            "matched_title": None,
+            "matched_description": None,
+            "matched_link": None,
+            "matched_field": None,
+            "items": [],
         }
 
 
 def build_candidate_evidence(candidate: Candidate) -> dict[str, Any]:
     frequency_per_doc = round(candidate.frequency / max(candidate.doc_count, 1), 2)
-    dictionary = _call_free_dictionary(candidate.word)
+    naver_webkr = _call_naver_webkr(candidate.word)
     return {
         "stats": {
             "frequency": candidate.frequency,
@@ -215,23 +248,23 @@ def build_candidate_evidence(candidate: Candidate) -> dict[str, Any]:
             "frequency_per_doc": frequency_per_doc,
             "last_seen_at": candidate.last_seen_at.isoformat() if candidate.last_seen_at else None,
         },
-        "free_dictionary": dictionary,
+        "naver_webkr": naver_webkr,
     }
 
 
 def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int, dict[str, int]]:
     stats = evidence["stats"]
-    dictionary = evidence["free_dictionary"]
+    webkr = evidence["naver_webkr"]
 
     frequency_score = min(int(stats["frequency"]), 20)
     doc_count_score = min(int(stats["doc_count"]) * 4, 20)
     recent_score = 5 if candidate.last_seen_at else 0
 
     external_score = 0
-    if dictionary["has_entries"]:
-        external_score += 35
-    if dictionary["entries_count"] > 1:
-        external_score += min(dictionary["entries_count"], 5)
+    if int(webkr["total"] or 0) > 0:
+        external_score += min(int(webkr["total"]), 10)
+    if webkr["has_exact_compact_match"]:
+        external_score += 30
     external_score = min(external_score, 40)
 
     penalty = 0
@@ -245,8 +278,6 @@ def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int
         penalty -= 20
     if not _KOREAN_RE.search(candidate.word):
         penalty -= 10
-    if _normalize_word(candidate.word) != _normalize_word(str(dictionary.get("word") or candidate.word)):
-        penalty -= 5
 
     total = max(0, min(100, frequency_score + doc_count_score + recent_score + external_score + penalty))
     return total, {
@@ -260,12 +291,12 @@ def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int
 
 def decide_candidate(candidate: Candidate, evidence: dict[str, Any], score: int, threshold: int) -> str:
     stats = evidence["stats"]
-    dictionary = evidence["free_dictionary"]
+    webkr = evidence["naver_webkr"]
 
-    if not dictionary["ok"]:
+    if not webkr["ok"]:
         return DECISION_API_ERROR
-    if score >= threshold and candidate.doc_count >= 3 and candidate.frequency >= 5 and dictionary[
-        "has_entries"
+    if score >= threshold and candidate.doc_count >= 3 and candidate.frequency >= 5 and webkr[
+        "has_exact_compact_match"
     ] and float(stats["frequency_per_doc"]) <= 8:
         return DECISION_HIGH_CONFIDENCE
     if score < 50:
@@ -394,21 +425,22 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
             "frequency_min": 5,
             "doc_count_min": 3,
             "frequency_per_doc_max": 8,
-            "external_evidence": "free_dictionary_entries",
+            "external_evidence": "naver_webkr_exact_compact_match",
         }
         decision = decide_candidate(candidate, evidence, score, threshold)
-        dictionary = evidence["free_dictionary"]
+        webkr = evidence["naver_webkr"]
 
         logger.info(
-            "auto_review candidate decision | index=%d/%d | candidate_id=%d | word=%r | score=%d | decision=%s | entries=%d | has_entries=%s | elapsed_ms=%d",
+            "auto_review candidate decision | index=%d/%d | candidate_id=%d | word=%r | score=%d | decision=%s | total=%d | exact_compact_match=%s | matched_field=%s | elapsed_ms=%d",
             index,
             len(candidates),
             candidate.id,
             candidate.word,
             score,
             decision,
-            dictionary["entries_count"],
-            dictionary["has_entries"],
+            webkr["total"],
+            webkr["has_exact_compact_match"],
+            webkr["matched_field"],
             int((time.monotonic() - candidate_started_at) * 1000),
         )
 
