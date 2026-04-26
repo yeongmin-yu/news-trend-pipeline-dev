@@ -17,12 +17,21 @@ Spark의 역할:
 
 ```mermaid
 flowchart LR
-    A[Kafka Topic] --> B[Spark Structured Streaming]
-    B --> C[Preprocessing]
-    C --> D[Keyword Extraction]
-    D --> E[Aggregation]
-    E --> F[PostgreSQL Staging]
-    F --> G[PostgreSQL Analysis]
+    %% 입력
+    A["Kafka 입력<br/>news_topic (뉴스 원문 메시지)"] --> B["Spark Structured Streaming<br/>실시간 처리 (Micro-batch)"]
+
+    %% 전처리
+    B --> C["전처리<br/>JSON 파싱 + 정제<br/>title + summary 결합"]
+
+    %% 키워드 처리
+    C --> D["키워드 추출<br/>형태소 분석 + 복합명사 추출<br/>불용어 제거"]
+
+    %% 집계
+    D --> E["집계 처리<br/>기사별 키워드 빈도 계산<br/>시간 window 트렌드 집계<br/>연관 키워드 생성"]
+
+    %% 저장
+    E --> F["Staging 저장<br/>stg_* 테이블 (임시 결과)"]
+    F --> G["최종 반영<br/>PostgreSQL Analysis 테이블<br/>news_raw / keywords / keyword_trends / keyword_relations"]
 ```
 
 설명:

@@ -20,23 +20,34 @@ STEP 3는 수집과 처리 결과를 PostgreSQL에 안정적으로 저장하고,
 
 ```mermaid
 flowchart LR
-    A["Step 1 Ingestion"] --> B["news_raw"]
-    A --> C["collection_metrics"]
-    D["Step 2 Spark"] --> E["stg_news_raw"]
-    D --> F["stg_keywords"]
-    D --> G["stg_keyword_trends"]
-    D --> H["stg_keyword_relations"]
-    E --> I["upsert"]
+    %% STEP1: 수집 결과
+    A["STEP1 수집<br/>Airflow + Kafka Producer"] --> B["원본 기사 저장<br/>news_raw"]
+    A --> C["수집 운영 지표<br/>collection_metrics"]
+
+    %% STEP2: Spark 처리 결과
+    D["STEP2 처리<br/>Spark Structured Streaming"] --> E["원본 기사 staging<br/>stg_news_raw"]
+    D --> F["기사별 키워드 staging<br/>stg_keywords"]
+    D --> G["시간별 트렌드 staging<br/>stg_keyword_trends"]
+    D --> H["연관 키워드 staging<br/>stg_keyword_relations"]
+
+    %% STEP3: Storage 반영
+    E --> I["STEP3 저장 반영<br/>staging → upsert"]
     F --> I
     G --> I
     H --> I
+
     I --> B
-    I --> J["keywords"]
-    I --> K["keyword_trends"]
-    I --> L["keyword_relations"]
-    M["Dictionary/Admin"] --> N["compound_noun_dict / stopword_dict"]
-    M --> O["*_candidates / audit logs"]
-    P["Step 4 Analytics"] --> Q["keyword_events"]
+    I --> J["기사별 키워드<br/>keywords"]
+    I --> K["시간별 키워드 트렌드<br/>keyword_trends"]
+    I --> L["키워드 연관 관계<br/>keyword_relations"]
+
+    %% Dictionary/Admin
+    M["사전/관리 기능<br/>Dictionary + Admin API"] --> N["처리 품질 기준 사전<br/>compound_noun_dict / stopword_dict"]
+    M --> O["후보/변경 이력<br/>*_candidates / audit logs"]
+
+    %% STEP4: Analytics
+    P["STEP4 분석<br/>Event Detection"] --> Q["급상승 이벤트<br/>keyword_events"]
+    K --> P
 ```
 
 ## 3. 현재 저장 범위

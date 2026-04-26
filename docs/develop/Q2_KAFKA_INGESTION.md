@@ -16,18 +16,19 @@ Kafka의 역할:
 
 ```mermaid
 flowchart LR
-    A[Airflow DAG] --> B[NewsKafkaProducer]
-    B --> C[Naver News API]
-    C --> D[Normalize Article]
-    D --> E[Deduplicate]
-    E --> F[Kafka Producer]
-    F --> G[Kafka Topic: news_topic]
-    G --> H[Spark Structured Streaming]
+    A["Airflow DAG<br/>수집 작업 스케줄링"] --> B["NewsKafkaProducer<br/>수집 실행 주체"]
 
-    F --> I[Dead Letter File]
-    B --> J[Producer State]
-    B --> K[Collection Metrics]
-    K --> L[PostgreSQL]
+    B --> C["Naver News API<br/>도메인/검색어별 기사 수집"]
+    C --> D["기사 정규화<br/>Normalize Article<br/>표준 메시지 스키마 변환"]
+    D --> E["중복 제거<br/>Deduplicate<br/>provider + domain + url 기준"]
+    E --> F["Kafka Producer<br/>key=url<br/>acks=all / idempotence"]
+    F --> G["Kafka Topic<br/>news_topic"]
+    G --> H["다음 처리 단계<br/>Spark Structured Streaming"]
+
+    F -. "발행 실패 / validation 실패" .-> I["Dead Letter File<br/>dead_letter.jsonl"]
+    B --> J["Producer State<br/>발행 URL / query timestamp 저장"]
+    B --> K["수집 운영 지표<br/>collection_metrics"]
+    K --> L["PostgreSQL<br/>운영 지표 저장"]
 ```
 
 설명:

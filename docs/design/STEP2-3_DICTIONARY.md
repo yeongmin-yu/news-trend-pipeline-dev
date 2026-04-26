@@ -24,17 +24,26 @@
 
 ```mermaid
 flowchart LR
-    A["compound_noun_dict"] --> B["tokenize()"]
-    C["stopword_dict"] --> B
-    D["news_raw"] --> E["compound_extraction_dag"]
-    E --> F["compound_noun_candidates"]
-    F --> G["관리자 검토 / 자동 승인 보조"]
+    %% 기존 사전 → 전처리
+    A["복합명사 사전<br/>compound_noun_dict"] --> B["텍스트 토큰화<br/>tokenize()<br/>형태소 분석 + 복합명사 적용"]
+    C["불용어 사전<br/>stopword_dict"] --> B
+
+    %% 기사 기반 후보 생성
+    D["원본 기사 데이터<br/>news_raw"] --> E["복합명사 후보 추출 DAG<br/>compound_extraction_dag"]
+    E --> F["복합명사 후보<br/>compound_noun_candidates"]
+
+    %% 후보 검토 → 사전 반영
+    F --> G["관리자 검토 / 자동 승인 보조<br/>(빈도, 패턴 기반 필터링)"]
     G --> A
-    H["keyword_trends / keywords / keyword_relations"] --> I["stopword_recommender"]
-    I --> J["stopword_candidates"]
+
+    %% 불용어 추천 흐름
+    H["분석 데이터<br/>keyword_trends / keywords / relations"] --> I["불용어 추천 로직<br/>stopword_recommender"]
+    I --> J["불용어 후보<br/>stopword_candidates"]
     J --> K["관리자 검토"]
     K --> C
-    A --> L["dictionary_versions"]
+
+    %% 사전 버전 관리
+    A --> L["사전 버전 관리<br/>dictionary_versions"]
     C --> L
 ```
 

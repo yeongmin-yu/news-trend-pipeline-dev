@@ -21,19 +21,28 @@
 
 ```mermaid
 flowchart LR
-    A["safe_initialize_database()"] --> B["models.sql 실행"]
-    B --> C["domain/query seed"]
-    D["Step 1"] --> E["news_raw"]
-    D --> F["collection_metrics"]
-    G["Step 2 staging"] --> H["upsert_from_staging_*"]
+    %% STEP0: 초기화
+    A["DB 초기화<br/>safe_initialize_database()"] --> B["스키마 생성<br/>models.sql 실행"]
+    B --> C["기본 데이터 적재<br/>domain / query seed"]
+
+    %% STEP1: 수집
+    D["STEP1 수집<br/>(Airflow + Kafka)"] --> E["원본 기사 저장<br/>news_raw"]
+    D --> F["수집 메트릭 저장<br/>collection_metrics"]
+
+    %% STEP2~3: 처리 + 저장
+    G["STEP2 처리 결과<br/>(Spark staging)"] --> H["Staging → 운영 테이블 반영<br/>upsert_from_staging_*"]
     H --> E
-    H --> I["keywords"]
-    H --> J["keyword_trends"]
-    H --> K["keyword_relations"]
-    L["Step 4"] --> M["replace_keyword_events()"]
-    M --> N["keyword_events"]
-    O["Admin/API"] --> P["query_keywords / dictionaries"]
-    P --> Q["audit logs"]
+    H --> I["키워드 테이블<br/>keywords"]
+    H --> J["트렌드 집계<br/>keyword_trends"]
+    H --> K["연관어 분석<br/>keyword_relations"]
+
+    %% STEP4: 분석
+    L["STEP4 분석<br/>(이벤트 탐지)"] --> M["이벤트 계산<br/>replace_keyword_events()"]
+    M --> N["급상승 이벤트 저장<br/>keyword_events"]
+
+    %% 관리/운영
+    O["관리/API"] --> P["검색어/사전 관리<br/>query_keywords / dictionaries"]
+    P --> Q["변경 이력 저장<br/>audit logs"]
 ```
 
 ## 3. 현재 스키마 구성

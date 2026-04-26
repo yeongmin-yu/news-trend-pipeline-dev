@@ -38,6 +38,10 @@ flowchart LR
 
     DB --> E
     E --> EV["keyword_events"]
+    style B fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style C fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style D fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style E fill:#ffffde,stroke:#333,stroke-width:2px,color:black
 ```
 
 ### DAG 목록
@@ -46,7 +50,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `news_ingest_dag` | Naver 뉴스 수집 후 Kafka 발행 | 15분 주기 | `news_topic`, `collection_metrics` |
 | `auto_replay_dag` | `dead_letter.jsonl` 재처리 | 15분 주기 | 재발행 메시지, replay 결과 로그 |
-| `compound_noun_extraction` | 기사 데이터 기반 복합명사/불용어 후보 생성 | 주기 배치 | `compound_noun_candidates`, `stopword_candidates` |
+| `compound_noun_extraction` | 기사 데이터 기반 복합명사/불용어 후보 생성 | 일 1회 | `compound_noun_candidates(복합명사추천테이블)`, `stopword_candidates(불용어추천테이블)` |
 | `keyword_event_detection` | `keyword_trends` 기반 급상승 이벤트 계산 | 15분 주기 | `keyword_events` |
 
 정리:
