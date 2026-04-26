@@ -26,14 +26,14 @@ const CANDIDATE_STATUS_CHIP: Record<string, string> = {
   approved: "up",
   rejected: "muted",
 };
-const AUTO_DECISION_LABEL: Record<string, string> = {
+const autoDecision_LABEL: Record<string, string> = {
   high_confidence: "고신뢰",
   needs_manual_review: "수동검토",
   low_confidence: "낮은신뢰",
   api_error: "API오류",
 };
 
-const AUTO_DECISION_CHIP: Record<string, string> = {
+const autoDecision_CHIP: Record<string, string> = {
   high_confidence: "up",
   needs_manual_review: "warn",
   low_confidence: "muted",
@@ -41,14 +41,14 @@ const AUTO_DECISION_CHIP: Record<string, string> = {
 };
 
 function renderAutoEvidence(c: CompoundCandidateItem) {
-  const e = c.auto_evidence_summary;
+  const e = c.autoEvidenceSummary;
   if (!e) return "—";
 
   return [
-    e.has_exact_compact_match ? "exact" : "no exact",
-    e.naver_total != null ? `total ${e.naver_total}` : null,
-    e.frequency_per_doc != null ? `f/d ${e.frequency_per_doc}` : null,
-    e.matched_field ? `${e.matched_field}` : null,
+    e.hasExactCompactMatch ? "exact" : "no exact",
+    e.naverTotal != null ? `total ${e.naverTotal}` : null,
+    e.frequencyPerDoc != null ? `f/d ${e.frequencyPerDoc}` : null,
+    e.matchedField ? `${e.matchedField}` : null,
   ].filter(Boolean).join(" · ");
 }
 const SW_CANDIDATE_STATUS_LABEL: Record<string, string> = {
@@ -390,9 +390,9 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
     : swCandidates.loading;
 
   // badge counts
-  const compoundTotal = debouncedQ ? (compound.data?.total ?? meta?.compound_noun_count ?? 0) : (meta?.compound_noun_count ?? compound.data?.total ?? 0);
-  const stopwordTotal = debouncedQ ? (stopword.data?.total ?? meta?.stopword_count ?? 0) : (meta?.stopword_count ?? stopword.data?.total ?? 0);
-  const candidateTotal = (debouncedQ || statusFilter) ? (candidates.data?.total ?? meta?.candidate_count ?? 0) : (meta?.candidate_count ?? candidates.data?.total ?? 0);
+  const compoundTotal = debouncedQ ? (compound.data?.total ?? meta?.compoundNounCount ?? 0) : (meta?.compoundNounCount ?? compound.data?.total ?? 0);
+  const stopwordTotal = debouncedQ ? (stopword.data?.total ?? meta?.stopwordCount ?? 0) : (meta?.stopwordCount ?? stopword.data?.total ?? 0);
+  const candidateTotal = (debouncedQ || statusFilter) ? (candidates.data?.total ?? meta?.candidateCount ?? 0) : (meta?.candidateCount ?? candidates.data?.total ?? 0);
   const swCandidateTotal = swCandidates.data?.total ?? 0;
 
   const domainOptions = domains.some((d) => d.id === "all")
@@ -412,7 +412,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>용어 사전 관리</div>
           {meta && (
             <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
-              compound v{meta.versions.compound_noun_dict} · stopword v{meta.versions.stopword_dict}
+              compound v{meta.versions.compoundNounDict} · stopword v{meta.versions.stopwordDict}
             </div>
           )}
           <div style={{ flex: 1 }} />
@@ -632,7 +632,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                       />
                     </td>
                     <td><span className="chip muted" style={{ fontSize: 11 }}>{c.source}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.created_at?.slice(0, 16).replace("T", " ") ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.createdAt?.slice(0, 16).replace("T", " ") ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-c-${c.id}`}
@@ -673,7 +673,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                       />
                     </td>
                     <td><span className="chip info" style={{ fontSize: 11 }}>{s.language}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{s.created_at?.slice(0, 10) ?? "—"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{s.createdAt?.slice(0, 10) ?? "—"}</td>
                     <td>
                       <button
                         disabled={busy === `del-s-${s.id}`}
@@ -735,10 +735,10 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
             {c.frequency?.toLocaleString() ?? "—"}
           </td>
           <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-            {c.doc_count?.toLocaleString() ?? "—"}
+            {c.docCount?.toLocaleString() ?? "—"}
           </td>
           <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
-            {c.last_seen_at?.slice(0, 10) ?? "—"}
+            {c.lastSeenAt?.slice(0, 10) ?? "—"}
           </td>
           <td>
             <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
@@ -746,12 +746,12 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
             </span>
           </td>
           <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-            {c.auto_score != null ? Math.round(Number(c.auto_score)).toLocaleString() : "—"}
+            {c.autoScore != null ? Math.round(Number(c.autoScore)).toLocaleString() : "—"}
           </td>
           <td>
-            {c.auto_decision ? (
-              <span className={"chip " + (AUTO_DECISION_CHIP[c.auto_decision] ?? "muted")} style={{ fontSize: 11 }}>
-                {AUTO_DECISION_LABEL[c.auto_decision] ?? c.auto_decision}
+            {c.autoDecision ? (
+              <span className={"chip " + (autoDecision_CHIP[c.autoDecision] ?? "muted")} style={{ fontSize: 11 }}>
+                {autoDecision_LABEL[c.autoDecision] ?? c.autoDecision}
               </span>
             ) : (
               <span style={{ color: "var(--text-4)", fontSize: 11 }}>—</span>
@@ -761,9 +761,9 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
             <div style={{ fontSize: 11, color: "var(--text-2)", fontFamily: "var(--font-mono)", whiteSpace: "nowrap" }}>
               {renderAutoEvidence(c)}
             </div>
-            {c.auto_evidence_summary?.matched_title && (
+            {c.autoEvidenceSummary?.matchedTitle && (
               <div
-                title={c.auto_evidence_summary.matched_title}
+                title={c.autoEvidenceSummary.matchedTitle}
                 style={{
                   marginTop: 2,
                   fontSize: 10,
@@ -774,26 +774,26 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                   whiteSpace: "nowrap",
                 }}
               >
-                {c.auto_evidence_summary?.matched_link ? (
+                {c.autoEvidenceSummary?.matchedLink ? (
                   <a
-                    href={c.auto_evidence_summary.matched_link}
+                    href={c.autoEvidenceSummary.matchedLink}
                     target="_blank"
                     rel="noreferrer"
                     style={{ color: "inherit", textDecoration: "underline" }}
                   >
-                    {c.auto_evidence_summary.matched_title}
+                    {c.autoEvidenceSummary.matchedTitle}
                   </a>
                 ) : (
-                  c.auto_evidence_summary.matched_title
+                  c.autoEvidenceSummary.matchedTitle
                 )}
               </div>
             )}
           </td>
           <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
-            {c.auto_checked_at?.slice(0, 16).replace("T", " ") ?? "—"}
+            {c.autoCheckedAt?.slice(0, 16).replace("T", " ") ?? "—"}
           </td>
           <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>
-            {c.reviewed_by ?? "—"}
+            {c.reviewedBy ?? "—"}
           </td>
           <td style={{ display: "flex", gap: 4 }}>
             {c.status === "needs_review" && (
@@ -889,10 +889,10 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     <td><span style={{ fontFamily: "var(--font-mono)", color: "var(--down)", fontWeight: 600 }}>{c.word}</span></td>
                     <td style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-3)" }}>{c.domain ?? "all"}</td>
                     <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: c.score >= 0.6 ? "var(--down)" : "var(--text-2)" }}>{c.score?.toFixed(3) ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.domain_breadth?.toFixed(2) ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.repetition_rate?.toFixed(2) ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.trend_stability?.toFixed(2) ?? "—"}</td>
-                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.cooccurrence_breadth?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.domainBreadth?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.repetitionRate?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.trendStability?.toFixed(2) ?? "—"}</td>
+                    <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.cooccurrenceBreadth?.toFixed(2) ?? "—"}</td>
                     <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{c.frequency.toLocaleString()}</td>
                     <td>
                       <span className={"chip " + (SW_CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>

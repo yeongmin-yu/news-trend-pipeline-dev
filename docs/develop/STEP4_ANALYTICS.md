@@ -110,7 +110,7 @@ growth + count 기반 계산
 
 ---
 
-## 8. Idempotency
+## 8. 멱등성(Idempotency)
 
 - 동일 window 재처리 시 overwrite
 

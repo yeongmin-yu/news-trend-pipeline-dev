@@ -65,7 +65,7 @@ flowchart LR
 
 ---
 
-## 6. Idempotency
+## 6. 멱등성(Idempotency)
 
 - 동일 데이터 재처리 시 결과 동일
 - staging → analysis merge 구조

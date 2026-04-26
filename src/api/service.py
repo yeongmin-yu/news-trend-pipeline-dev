@@ -20,7 +20,6 @@ from storage.db import (
     fetch_collection_metrics_summary,
     fetch_compound_candidate_item,
     fetch_compound_noun_item,
-    fetch_dictionary_audit_logs,
     fetch_dictionary_versions,
     fetch_domain_catalog,
     fetch_query_keyword_audit_logs,
@@ -1221,6 +1220,82 @@ def get_dictionary_overview() -> dict[str, Any]:
         },
     }
 
+def _compound_noun_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "domain": row.get("domain", "all"),
+        "source": row.get("source"),
+        "createdAt": row.get("created_at"),
+    }
+
+
+def _stopword_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "domain": row.get("domain", "all"),
+        "language": row.get("language"),
+        "createdAt": row.get("created_at"),
+    }
+
+
+def _build_auto_evidence_summary(evidence: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not evidence:
+        return None
+
+    stats = evidence.get("stats") or {}
+    webkr = evidence.get("naver_webkr") or {}
+
+    return {
+        "frequencyPerDoc": stats.get("frequency_per_doc"),
+        "naverTotal": webkr.get("total"),
+        "hasExactCompactMatch": webkr.get("has_exact_compact_match"),
+        "matchedField": webkr.get("matched_field"),
+        "matchedTitle": webkr.get("matched_title"),
+        "matchedLink": webkr.get("matched_link"),
+    }
+
+
+def _compound_candidate_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "domain": row.get("domain", "all"),
+        "frequency": row.get("frequency"),
+        "docCount": row.get("doc_count"),
+        "firstSeenAt": row.get("first_seen_at"),
+        "lastSeenAt": row.get("last_seen_at"),
+        "status": row.get("status"),
+        "reviewedAt": row.get("reviewed_at"),
+        "reviewedBy": row.get("reviewed_by"),
+        "autoScore": row.get("auto_score"),
+        "autoDecision": row.get("auto_decision"),
+        "autoCheckedAt": row.get("auto_checked_at"),
+        "autoEvidence": row.get("auto_evidence"),
+        "autoEvidenceSummary": _build_auto_evidence_summary(row.get("auto_evidence")),
+    }
+
+
+def _stopword_candidate_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "word": row["word"],
+        "domain": row.get("domain", "all"),
+        "language": row.get("language"),
+        "score": row.get("score"),
+        "domainBreadth": row.get("domain_breadth"),
+        "repetitionRate": row.get("repetition_rate"),
+        "trendStability": row.get("trend_stability"),
+        "cooccurrenceBreadth": row.get("cooccurrence_breadth"),
+        "shortWord": row.get("short_word"),
+        "frequency": row.get("frequency"),
+        "status": row.get("status"),
+        "firstSeenAt": row.get("first_seen_at"),
+        "lastSeenAt": row.get("last_seen_at"),
+        "reviewedAt": row.get("reviewed_at"),
+        "reviewedBy": row.get("reviewed_by"),
+    }
 
 def list_compound_nouns_paged(*, page: int = 1, limit: int = 50, q: str = "", domain: str = "") -> dict[str, Any]:
     offset = (page - 1) * limit
@@ -1247,7 +1322,7 @@ def list_compound_nouns_paged(*, page: int = 1, limit: int = 50, q: str = "", do
                 """,
                 params + [limit, offset],
             )
-            items = list(cursor.fetchall())
+            items = [_compound_noun_to_api(dict(row)) for row in cursor.fetchall()]
     return {"items": items, "total": total, "page": page, "limit": limit}
 
 
@@ -1276,7 +1351,7 @@ def list_stopwords_paged(*, page: int = 1, limit: int = 50, q: str = "", domain:
                 """,
                 params + [limit, offset],
             )
-            items = list(cursor.fetchall())
+            items = [_stopword_to_api(dict(row)) for row in cursor.fetchall()]
     return {"items": items, "total": total, "page": page, "limit": limit}
 
 
@@ -1339,25 +1414,63 @@ def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status
                 """,
                 params + [limit, offset],
             )
-            items = list(cursor.fetchall())
-
-    for item in items:
-        item["auto_evidence_summary"] = _build_auto_evidence_summary(item.get("auto_evidence"))
+            items = [_compound_candidate_to_api(dict(row)) for row in cursor.fetchall()]
 
     return {"items": items, "total": total, "page": page, "limit": limit}
+
+def _query_keyword_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "provider": row.get("provider"),
+        "domainId": row.get("domain_id"),
+        "domainLabel": row.get("domain_label"),
+        "query": row.get("query"),
+        "sortOrder": row.get("sort_order"),
+        "isActive": row.get("is_active"),
+        "createdAt": row.get("created_at"),
+        "updatedAt": row.get("updated_at"),
+    }
+
+
+def _audit_log_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "queryKeywordId": row.get("query_keyword_id"),
+        "action": row.get("action"),
+        "beforeJson": row.get("before_json"),
+        "afterJson": row.get("after_json"),
+        "actor": row.get("actor"),
+        "actedAt": row.get("acted_at"),
+    }
+
+
+def _collection_metric_to_api(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider": row.get("provider"),
+        "domain": row.get("domain"),
+        "query": row.get("query"),
+        "requestCount": row.get("request_count"),
+        "successCount": row.get("success_count"),
+        "articleCount": row.get("article_count"),
+        "duplicateCount": row.get("duplicate_count"),
+        "publishCount": row.get("publish_count"),
+        "errorCount": row.get("error_count"),
+        "lastSeenAt": row.get("last_seen_at"),
+    }
 
 def get_query_keyword_admin_overview() -> dict[str, Any]:
     return {
         "domains": fetch_domain_catalog(),
-        "queryKeywords": fetch_all_query_keywords(provider="naver"),
-        "auditLogs": fetch_query_keyword_audit_logs(limit=100),
-        "collectionMetrics": fetch_collection_metrics_summary(hours=24, provider="naver"),
+        "queryKeywords": [_query_keyword_to_api(dict(row)) for row in fetch_all_query_keywords(provider="naver")],
+        "auditLogs": [_audit_log_to_api(dict(row)) for row in fetch_query_keyword_audit_logs(limit=100)],
+        "collectionMetrics": [_collection_metric_to_api(dict(row)) for row in fetch_collection_metrics_summary(hours=24, provider="naver")],
     }
 
 
 def get_collection_metrics_overview(hours: int = 24) -> dict[str, Any]:
-    return {"items": fetch_collection_metrics_summary(hours=hours, provider="naver")}
-
+    return {
+        "items": [_collection_metric_to_api(dict(row)) for row in fetch_collection_metrics_summary(hours=hours, provider="naver")]
+    }
 
 def create_compound_noun(word: str, source: str, actor: str = "dashboard-admin", domain: str = "all") -> None:
     with get_connection() as conn:
@@ -1525,7 +1638,7 @@ def list_stopword_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "
                 """,
                 params + [limit, offset],
             )
-            items = list(cursor.fetchall())
+            items = [_stopword_candidate_to_api(dict(row)) for row in cursor.fetchall()]
     return {"items": items, "total": total, "page": page, "limit": limit}
 
 
