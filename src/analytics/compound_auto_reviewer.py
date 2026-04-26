@@ -3,33 +3,31 @@
 정책:
     - approved/rejected 후보는 재검증하지 않는다.
     - needs_review 후보만 평가한다.
-    - Naver 백과 결과 존재 여부만으로 승인하지 않고 evidence + score 기반으로 판단한다.
+    - Free Dictionary API entries 존재 여부를 외부 근거로 사용한다.
     - high_confidence 후보만 approved 처리하고 compound_noun_dict에 반영한다.
     - 승인 여부와 관계없이 auto_score/auto_evidence/auto_checked_at/auto_decision을 저장한다.
 """
 
 from __future__ import annotations
 
-import html
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from psycopg2.extras import Json, RealDictCursor
 
-from core.config import settings
 from core.logger import get_logger
 from storage.db import get_connection
 
 logger = get_logger(__name__)
 
-NAVER_ENCYC_URL = "https://openapi.naver.com/v1/search/encyc.json"
+FREE_DICTIONARY_BASE_URL = "https://freedictionaryapi.com/api/v1/entries/ko"
 DEFAULT_LIMIT = 2000
 DEFAULT_THRESHOLD = 85
-NAVER_DISPLAY = 3
-NAVER_TIMEOUT_SECONDS = 3.0
+DICTIONARY_TIMEOUT_SECONDS = 3.0
 
 REVIEWER = "auto-reviewer"
 DECISION_HIGH_CONFIDENCE = "high_confidence"
@@ -38,7 +36,6 @@ DECISION_LOW_CONFIDENCE = "low_confidence"
 DECISION_API_ERROR = "api_error"
 
 _KOREAN_RE = re.compile(r"[가-힣]")
-_TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 
 GENERIC_STOPWORDS = {
@@ -67,15 +64,8 @@ class Candidate:
     last_seen_at: datetime | None
 
 
-def _normalize_text(value: str | None) -> str:
-    if not value:
-        return ""
-    without_tags = _TAG_RE.sub("", value)
-    return _SPACE_RE.sub(" ", html.unescape(without_tags)).strip().lower()
-
-
 def _normalize_word(value: str) -> str:
-    return _SPACE_RE.sub("", _normalize_text(value))
+    return _SPACE_RE.sub("", value or "").strip().lower()
 
 
 def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
@@ -109,83 +99,88 @@ def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
             ]
 
 
-def _call_naver_encyc(word: str) -> dict[str, Any]:
-    if not settings.naver_client_id or not settings.naver_client_secret:
-        return {
-            "ok": False,
-            "error": "missing_credentials",
-            "total": 0,
-            "items": [],
-            "title_match": False,
-            "description_match": False,
-            "matched_title": None,
-        }
-
+def _call_free_dictionary(word: str) -> dict[str, Any]:
+    url = f"{FREE_DICTIONARY_BASE_URL}/{quote(word)}"
     try:
-        response = requests.get(
-            NAVER_ENCYC_URL,
-            params={"query": word, "display": NAVER_DISPLAY},
-            headers={
-                "X-Naver-Client-Id": settings.naver_client_id,
-                "X-Naver-Client-Secret": settings.naver_client_secret,
-            },
-            timeout=NAVER_TIMEOUT_SECONDS,
-        )
+        response = requests.get(url, timeout=DICTIONARY_TIMEOUT_SECONDS)
+        if response.status_code == 404:
+            return {
+                "ok": True,
+                "error": None,
+                "url": url,
+                "word": word,
+                "entries_count": 0,
+                "has_entries": False,
+                "parts_of_speech": [],
+                "definitions": [],
+                "source_url": None,
+                "license": None,
+            }
         if response.status_code != 200:
             return {
                 "ok": False,
                 "error": f"http_{response.status_code}",
-                "total": 0,
-                "items": [],
-                "title_match": False,
-                "description_match": False,
-                "matched_title": None,
+                "url": url,
+                "word": word,
+                "entries_count": 0,
+                "has_entries": False,
+                "parts_of_speech": [],
+                "definitions": [],
+                "source_url": None,
+                "license": None,
             }
 
         data = response.json()
-        items = data.get("items") or []
-        normalized_word = _normalize_word(word)
-        title_match = False
-        description_match = False
-        matched_title: str | None = None
-        normalized_items: list[dict[str, str]] = []
+        entries = data.get("entries") or []
+        parts_of_speech = sorted(
+            {
+                str(entry.get("partOfSpeech"))
+                for entry in entries
+                if entry.get("partOfSpeech")
+            }
+        )
+        definitions: list[str] = []
+        for entry in entries[:3]:
+            for sense in entry.get("senses") or []:
+                definition = sense.get("definition")
+                if definition:
+                    definitions.append(str(definition))
+                    break
+            if len(definitions) >= 3:
+                break
 
-        for item in items:
-            title = _normalize_text(item.get("title"))
-            description = _normalize_text(item.get("description"))
-            normalized_items.append({"title": title, "description": description})
-
-            if normalized_word and normalized_word in _normalize_word(title):
-                title_match = True
-                matched_title = title
-            if normalized_word and normalized_word in _normalize_word(description):
-                description_match = True
-
+        source = data.get("source") or {}
         return {
             "ok": True,
             "error": None,
-            "total": int(data.get("total") or 0),
-            "items": normalized_items,
-            "title_match": title_match,
-            "description_match": description_match,
-            "matched_title": matched_title,
+            "url": url,
+            "word": data.get("word") or word,
+            "entries_count": len(entries),
+            "has_entries": len(entries) > 0,
+            "parts_of_speech": parts_of_speech,
+            "definitions": definitions,
+            "source_url": source.get("url"),
+            "license": source.get("license"),
         }
     except Exception as exc:  # noqa: BLE001 - batch job should keep processing remaining candidates
-        logger.warning("Naver Encyc API error for %r: %s", word, exc)
+        logger.warning("Free Dictionary API error for %r: %s", word, exc)
         return {
             "ok": False,
             "error": exc.__class__.__name__,
-            "total": 0,
-            "items": [],
-            "title_match": False,
-            "description_match": False,
-            "matched_title": None,
+            "url": url,
+            "word": word,
+            "entries_count": 0,
+            "has_entries": False,
+            "parts_of_speech": [],
+            "definitions": [],
+            "source_url": None,
+            "license": None,
         }
 
 
 def build_candidate_evidence(candidate: Candidate) -> dict[str, Any]:
     frequency_per_doc = round(candidate.frequency / max(candidate.doc_count, 1), 2)
-    naver = _call_naver_encyc(candidate.word)
+    dictionary = _call_free_dictionary(candidate.word)
     return {
         "stats": {
             "frequency": candidate.frequency,
@@ -193,32 +188,23 @@ def build_candidate_evidence(candidate: Candidate) -> dict[str, Any]:
             "frequency_per_doc": frequency_per_doc,
             "last_seen_at": candidate.last_seen_at.isoformat() if candidate.last_seen_at else None,
         },
-        "naver_encyc": {
-            "ok": naver["ok"],
-            "error": naver["error"],
-            "total": naver["total"],
-            "title_match": naver["title_match"],
-            "description_match": naver["description_match"],
-            "matched_title": naver["matched_title"],
-        },
+        "free_dictionary": dictionary,
     }
 
 
 def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int, dict[str, int]]:
     stats = evidence["stats"]
-    naver = evidence["naver_encyc"]
+    dictionary = evidence["free_dictionary"]
 
     frequency_score = min(int(stats["frequency"]), 20)
     doc_count_score = min(int(stats["doc_count"]) * 4, 20)
     recent_score = 5 if candidate.last_seen_at else 0
 
     external_score = 0
-    if int(naver["total"] or 0) > 0:
-        external_score += min(int(naver["total"]), 10)
-    if naver["title_match"]:
-        external_score += 25
-    if naver["description_match"]:
-        external_score += 15
+    if dictionary["has_entries"]:
+        external_score += 35
+    if dictionary["entries_count"] > 1:
+        external_score += min(dictionary["entries_count"], 5)
     external_score = min(external_score, 40)
 
     penalty = 0
@@ -232,6 +218,8 @@ def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int
         penalty -= 20
     if not _KOREAN_RE.search(candidate.word):
         penalty -= 10
+    if _normalize_word(candidate.word) != _normalize_word(str(dictionary.get("word") or candidate.word)):
+        penalty -= 5
 
     total = max(0, min(100, frequency_score + doc_count_score + recent_score + external_score + penalty))
     return total, {
@@ -245,13 +233,13 @@ def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int
 
 def decide_candidate(candidate: Candidate, evidence: dict[str, Any], score: int, threshold: int) -> str:
     stats = evidence["stats"]
-    naver = evidence["naver_encyc"]
+    dictionary = evidence["free_dictionary"]
 
-    if not naver["ok"]:
+    if not dictionary["ok"]:
         return DECISION_API_ERROR
-    if score >= threshold and candidate.doc_count >= 3 and candidate.frequency >= 5 and (
-        naver["title_match"] or naver["description_match"]
-    ) and float(stats["frequency_per_doc"]) <= 8:
+    if score >= threshold and candidate.doc_count >= 3 and candidate.frequency >= 5 and dictionary[
+        "has_entries"
+    ] and float(stats["frequency_per_doc"]) <= 8:
         return DECISION_HIGH_CONFIDENCE
     if score < 50:
         return DECISION_LOW_CONFIDENCE
@@ -348,6 +336,7 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
             "frequency_min": 5,
             "doc_count_min": 3,
             "frequency_per_doc_max": 8,
+            "external_evidence": "free_dictionary_entries",
         }
         decision = decide_candidate(candidate, evidence, score, threshold)
 
