@@ -319,10 +319,12 @@ replay_dead_letters >> [summarize_replay_results, check_permanent_failures]
 
 ```mermaid
 flowchart LR
-    A["extract_compound_candidates<br/>news_raw 기반 후보 추출 / upsert"] --> B["summarize_dictionary_results<br/>추출 결과 요약"]
+    AA["extract_compound_candidates<br/>news_raw 기반 후보 추출 "]  --> B["transform_candidates<br/>토큰화 / 복합명사 후보 생성"]
+     B["transform_candidates<br/>토큰화 / 복합명사 후보 생성"] --> C["load_candidates<br/>frequency / doc_count 누적"]
+    C["load_candidates<br/>frequency / doc_count 누적"]--> BB["summarize_dictionary_results<br/>추출 결과 요약"]
 
-    style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
-    style B fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style AA fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style BB fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
 ```
 | task_id                        | Operator         | 역할                                                                                                                                                             |
 | ------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
