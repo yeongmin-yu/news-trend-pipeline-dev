@@ -11,7 +11,7 @@ import {
 } from "./data";
 import { Icon, LoadingState } from "./ui";
 
-type TabId = "compound" | "stopword" | "candidates" | "stopword-candidates";
+type TabId = "compound" | "stopword" | "candidates" | "stopword-candidates" | "history";
 
 const PAGE_SIZE = 50;
 
@@ -190,6 +190,24 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
   const [editDomain, setEditDomain] = useState("all");
   const [toast, setToast] = useState<string | null>(null);
 
+  const [history, setHistory] = useState<{
+    data: Array<{
+      id: number;
+      entity_type: string;
+      entity_id: number | null;
+      action: string;
+      before_json: Record<string, unknown> | null;
+      after_json: Record<string, unknown> | null;
+      actor: string;
+      acted_at: string;
+    }>;
+    loading: boolean;
+    error: string | null;
+  }>({
+    data: [],
+    loading: false,
+    error: null,
+  });
   // debounce search
   useEffect(() => {
     const t = setTimeout(() => {
@@ -256,6 +274,41 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
       .catch((e: unknown) => { if (alive) setSwCandidates((p) => ({ ...p, loading: false, error: e instanceof Error ? e.message : "오류" })); });
     return () => { alive = false; };
   }, [tab, pages["stopword-candidates"], debouncedQ, statusFilter, domainFilter]);
+
+  useEffect(() => {
+  if (tab !== "history") return;
+
+    let alive = true;
+    setHistory((prev) => ({ ...prev, loading: true, error: null }));
+
+    fetch("/api/v1/dictionary/history?limit=200")
+      .then((res) => {
+        if (!res.ok) throw new Error("사전 변경 로그를 불러오지 못했습니다.");
+        return res.json();
+      })
+      .then((data) => {
+        if (alive) {
+          setHistory({
+            data: data.items ?? [],
+            loading: false,
+            error: null,
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        if (alive) {
+          setHistory({
+            data: [],
+            loading: false,
+            error: err instanceof Error ? err.message : "오류",
+          });
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [tab]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -363,6 +416,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
             ["stopword", "불용어 사전", stopwordTotal],
             ["candidates", "복합명사 후보", candidateTotal],
             ["stopword-candidates", "불용어 후보", swCandidateTotal],
+          ["history", "사전 변경 로그", history.data.length],
           ] as [TabId, string, number][]).map(([id, label, count]) => (
             <button
               key={id}
@@ -683,7 +737,50 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                 )}
               </tbody>
             </table>
-          ) : (
+            ) : tab === "history" ? (
+              <table className="table" style={{ fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th>시각</th>
+                    <th>대상</th>
+                    <th>액션</th>
+                    <th>작업자</th>
+                    <th>이전 값</th>
+                    <th>변경 값</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {history.data.map((item) => (
+                    <tr key={item.id}>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                        {item.acted_at?.slice(0, 16).replace("T", " ")}
+                      </td>
+                      <td>
+                        <span className="chip muted">{item.entity_type}</span>
+                      </td>
+                      <td>
+                        <span className="chip info">{item.action}</span>
+                      </td>
+                      <td>{item.actor}</td>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                        {item.before_json ? JSON.stringify(item.before_json) : "-"}
+                      </td>
+                      <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                        {item.after_json ? JSON.stringify(item.after_json) : "-"}
+                      </td>
+                    </tr>
+                  ))}
+                  {history.data.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="empty">
+                        사전 변경 로그가 없습니다.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+          ) : 
+          (
             <table className="table" style={{ fontSize: 12 }}>
               <thead>
                 <tr>
