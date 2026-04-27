@@ -295,7 +295,7 @@ replay_dead_letters >> [summarize_replay_results, check_permanent_failures]
 실행 단위:
 
 ```text
-최근 기사 window 기준 hourly 후보 추출 batch
+최근 기사 window 기준 시간당 후보 추출 batch
 ```
 
 ### 8.2 입력 / 출력
@@ -338,7 +338,7 @@ extract_compound_candidates >> summarize_dictionary_results
 | 항목 | 값 |
 | --- | --- |
 | schedule interval | `0 * * * *` |
-| 근거 | 후보 추출은 실시간성이 낮고, hourly 누적으로 충분함 |
+| 근거 | 후보 추출은 실시간성이 낮고, 시간당 누적으로 충분함 |
 | timezone | `Asia/Seoul` |
 | start_date | 예: `2026-01-01` |
 | catchup | `False` 권장 |
