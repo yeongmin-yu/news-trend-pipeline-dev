@@ -271,7 +271,7 @@ replay_dead_letters >> [summarize_replay_results, check_permanent_failures]
 | --- | --- |
 | Kafka 연결 실패 | retry |
 | dead letter 저장소 연결 실패 | retry |
-| payload 자체가 깨진 경우 | retry하지 않고 unreplayable로 격리 |
+| payload 자체가 깨진 경우 | retry하지 않고 영구실패로 격리 |
 
 ### 7.6 멱등성(Idempotency)
 
