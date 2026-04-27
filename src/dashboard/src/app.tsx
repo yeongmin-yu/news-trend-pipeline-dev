@@ -185,6 +185,9 @@ export default function App() {
   const overviewCacheRef = useRef<
     Map<string, { data: DashboardOverviewResponse; identity: string; fetchStartMs: number; fetchEndMs: number }>
   >(new Map());
+  const overviewInFlightRef = useRef<
+    Map<string, Promise<{ data: DashboardOverviewResponse; identity: string }>>
+  >(new Map());
 
   const [overviewRaw, setOverviewRaw] = useState<AsyncState<{ data: DashboardOverviewResponse; identity: string }>>({
     data: null,
@@ -220,7 +223,28 @@ export default function App() {
       error: null,
     }));
 
-    api
+    const existingRequest = overviewInFlightRef.current.get(overviewRequestKey);
+    if (existingRequest) {
+      existingRequest
+        .then((data) => {
+          if (!alive) return;
+          setOverviewRaw({ data, loading: false, error: null });
+        })
+        .catch((error: unknown) => {
+          if (!alive) return;
+          setOverviewRaw((prev) => ({
+            data: prev.data,
+            loading: false,
+            error: error instanceof Error ? error.message : "알 수 없는 오류",
+          }));
+        });
+
+      return () => {
+        alive = false;
+      };
+    }
+
+    const request = api
       .overviewWindow(
         source, domain, rangeParam,
         overviewFetchStartIso, overviewFetchEndIso,
@@ -228,14 +252,24 @@ export default function App() {
         overviewFetchStartIso, overviewFetchEndIso,
       )
       .then((data) => {
-        if (!alive) return;
         overviewCacheRef.current.set(overviewRequestKey, {
           data,
           identity: overviewRequestKey,
           fetchStartMs: overviewFetchWindow.startMs,
           fetchEndMs: overviewFetchWindow.endMs,
         });
-        setOverviewRaw({ data: { data, identity: overviewRequestKey }, loading: false, error: null });
+        return { data, identity: overviewRequestKey };
+      })
+      .finally(() => {
+        overviewInFlightRef.current.delete(overviewRequestKey);
+      });
+
+    overviewInFlightRef.current.set(overviewRequestKey, request);
+
+    request
+      .then((data) => {
+        if (!alive) return;
+        setOverviewRaw({ data, loading: false, error: null });
       })
       .catch((error: unknown) => {
         if (!alive) return;
@@ -368,15 +402,17 @@ export default function App() {
   // Always-current snapshot for zoom-out prefetch (avoids stale closure in setTimeout)
   const zoomOutPrefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevZoomDurationForPrefetchRef = useRef(trendDurationMs);
+  const overviewPrefetchInFlightRef = useRef<Set<string>>(new Set());
+  const trendPrefetchInFlightRef = useRef<Set<string>>(new Set());
   const prefetchLatestRef = useRef({
     source, domain, rangeParam, search,
     effectiveTrendBucket, preloadedTrendKeywords, preloadedTrendKeywordKey,
-    overviewFetchClockMs, trendWindow,
+    overviewFetchClockMs, overviewRequestKey, trendWindow,
   });
   prefetchLatestRef.current = {
     source, domain, rangeParam, search,
     effectiveTrendBucket, preloadedTrendKeywords, preloadedTrendKeywordKey,
-    overviewFetchClockMs, trendWindow,
+    overviewFetchClockMs, overviewRequestKey, trendWindow,
   };
 
   const trendRequestKey = useMemo(
@@ -615,7 +651,7 @@ export default function App() {
       const {
         source: s, domain: d, rangeParam: rp, search: q,
         effectiveTrendBucket: etb, preloadedTrendKeywords: ptk, preloadedTrendKeywordKey: ptkk,
-        overviewFetchClockMs: ofcm, trendWindow: tw,
+        overviewFetchClockMs: ofcm, overviewRequestKey: currentOverviewRequestKey, trendWindow: tw,
       } = prefetchLatestRef.current;
 
       const duration = tw.endMs - tw.startMs;
@@ -628,21 +664,38 @@ export default function App() {
       const ofw = expandOverviewFetchWindow(ns, ne, ofcm);
       const obucket = pickOverviewBucket(ofw.endMs - ofw.startMs);
       const okey = [s, d, rp, obucket, q, ofw.startMs, ofw.endMs].join("::");
-      if (!overviewCacheRef.current.has(okey)) {
+      if (
+        okey !== currentOverviewRequestKey &&
+        !overviewCacheRef.current.has(okey) &&
+        !overviewPrefetchInFlightRef.current.has(okey)
+      ) {
+        overviewPrefetchInFlightRef.current.add(okey);
         const si = new Date(ofw.startMs).toISOString();
         const ei = new Date(ofw.endMs).toISOString();
         api.overviewWindow(s, d, rp, si, ei, obucket, q, 30, si, ei)
-          .then((data) => overviewCacheRef.current.set(okey, { data, identity: okey, fetchStartMs: ofw.startMs, fetchEndMs: ofw.endMs }))
-          .catch(() => {});
+          .then((data) =>
+            overviewCacheRef.current.set(okey, { data, identity: okey, fetchStartMs: ofw.startMs, fetchEndMs: ofw.endMs }),
+          )
+          .catch(() => {})
+          .finally(() => {
+            overviewPrefetchInFlightRef.current.delete(okey);
+          });
       }
 
       if (ptk.length) {
         const tfw = expandTrendFetchWindow(ns, ne, etb, ofcm);
         const tkey = [s, d, tfw.startMs, tfw.endMs, etb, ptkk].join("::");
-        if (!trendCacheRef.current.has(tkey)) {
+        if (
+          !trendCacheRef.current.has(tkey) &&
+          !trendPrefetchInFlightRef.current.has(tkey)
+        ) {
+          trendPrefetchInFlightRef.current.add(tkey);
           api.trendWindow(s, d, new Date(tfw.startMs).toISOString(), new Date(tfw.endMs).toISOString(), etb, ptk)
             .then((data) => trendCacheRef.current.set(tkey, data))
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+              trendPrefetchInFlightRef.current.delete(tkey);
+            });
         }
       }
     }, 250);
