@@ -254,7 +254,6 @@ flowchart LR
 check_kafka_health >> replay_dead_letters
 replay_dead_letters >> [summarize_replay_results, check_permanent_failures]
 ```
-    - 의존성은 check_kafka_health가 통과해야 produce_naver가 실행되고, 수집 이후 summarize_results와 check_dead_letter가 병렬로 실행되는 구조다. check_dead_letter는 실패 감시 목적이므로 수집 task 실패 여부와 관계없이 실행된다.
 
 - 데이터 전달:
     - 실패 메시지 payload는 dead letter 저장소에서 읽고 Kafka로 재발행한다.
