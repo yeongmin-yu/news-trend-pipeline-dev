@@ -599,47 +599,5 @@ flowchart LR
 
 
 
-## 12. 운영 검증 방법
-
-### 12.1 DAG import 확인
-
-```bash
-docker compose exec airflow-scheduler airflow dags list-import-errors
-```
-
-기대 결과:
-
-```text
-No data found
-```
-
-### 12.2 DAG 목록 확인
-
-```bash
-docker compose exec airflow-scheduler airflow dags list | grep compound
-```
-
-### 12.3 Task 단독 테스트
-
-```bash
-docker compose exec airflow-scheduler airflow tasks test compound_candidate_auto_review_dag auto_review 2026-04-27
-```
-
-### 12.4 API 결과 확인
-
-자동평가 실행 후 후보 API에서 근거 필드를 확인한다.
-
-```bash
-curl "http://localhost:<API_PORT>/api/v1/dictionary/candidates?page=1&limit=1" | jq '.items[0]'
-```
-
-확인 필드:
-
-```text
-auto_score
-auto_decision
-auto_checked_at
-auto_evidence
-auto_evidence_summary
-```
-
+### 12. DB결과확인
+Table : compound_noun, compound_noun_candidates, collection_metrics, news_raw
