@@ -106,6 +106,31 @@ a. title + summary 합산 → clean_text()
    - 기존 approved/rejected: 변경 없음
 ```
 
+#### Kiwi를 사용자 사전 없이 사용하는 이유
+
+전처리(`get_kiwi`)에서는 승인된 단어를 `add_user_word`로 등록해 복합어를 하나의 토큰으로 인식하지만, 후보 추출에서는 의도적으로 등록하지 않는다. 그래야 "인공지능" 같은 단어가 ["인공", "지능"]으로 분리되어 새 조합으로 탐색된다. 즉, **이미 아는 단어를 제외하고 모르는 복합어를 찾는 구조**다.
+
+#### 스팬 연속성 검사 상세
+
+```python
+# i번째 형태소부터 count개가 모두 연속된 경우에만 병합 후보로 인정
+contiguous = all(
+    noun_tokens[j][2] == noun_tokens[j + 1][1]   # j.end == (j+1).start
+    for j in range(i, i + count - 1)
+)
+if not contiguous:
+    break  # 더 긴 window도 같은 gap을 포함하므로 중단
+```
+
+#### 추출 파라미터 (config.py / 환경변수)
+
+| 설정 | 환경변수 | 기본값 | 의미 |
+|------|----------|--------|------|
+| 분석 기간 | `COMPOUND_EXTRACTION_WINDOW_DAYS` | `1` | 최근 N일치 기사 |
+| 최소 빈도 | `COMPOUND_EXTRACTION_MIN_FREQUENCY` | `3` | N회 이상 출현한 조합 |
+| 최소 글자 수 | `COMPOUND_EXTRACTION_MIN_CHAR_LENGTH` | `4` | 형태소 합산 N자 이상 |
+| 최대 형태소 수 | `COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT` | `4` | 최대 N개 형태소 결합 |
+
 후보 추출 결과는 `compound_noun_candidates`에 저장되며, 동일 `(word, domain)` 후보가 다시 발견되면 새 row를 추가하기보다 기존 row의 `frequency`, `doc_count`, `last_seen_at`을 누적 갱신한다.
 따라서 같은 기간을 다시 처리하더라도 후보 테이블은 후보 단위로 관리되고, 후속 자동평가나 관리자 검토의 입력 queue 역할을 한다.
 
