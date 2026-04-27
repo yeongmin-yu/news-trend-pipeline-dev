@@ -23,79 +23,54 @@ flowchart LR
 ```
 
 ## 3. `clean_text()`
+**파일**: `preprocessing.py`
 
-`clean_text()`는 텍스트를 정규화하고 노이즈를 제거한다.
+### 정제 단계
 
-현재 구현 순서는 다음과 같다.
+| 순서 | 처리 | 정규식/방법 |
+|------|------|------------|
+| 1 | Unicode NFC 정규화 | `unicodedata.normalize("NFC", text)` |
+| 2 | URL 제거 | `http\S+` → 공백 |
+| 3 | HTML 태그 제거 | `<[^>]+>` → 공백 |
+| 4 | 잔여 문자열 제거 | `\[\+\d+\s+chars\]` → 공백 |
+| 5 | 소문자 변환 | `text.lower()` |
+| 6 | 한글 외 문자 제거 | `[^\uAC00-\uD7A3\s]` → 공백 |
+| 7 | 연속 공백 정리 | `\s+` → 단일 공백 |
 
-1. Unicode NFC 정규화
-2. URL 제거
-3. HTML 태그 제거
-4. `"[+123 chars]"` 형식 문자열 제거
-5. 소문자 변환
-6. 한글과 공백만 남기기
-7. 연속 공백 정리
+### 케이스별 예시
 
-결과적으로 영문, 숫자, 특수문자는 제거된다.
+| 입력 | 출력 |
+|------|------|
+| `<b>AI</b> 2026 혁신!` | `혁신` |
+| `[+1500 chars]...더 읽기` | `` (빈 문자열) |
+| `인공지능 반도체 https://t.co/abc` | `인공지능 반도체` |
+| `<p>GPT 기반 챗봇</p>` | `기반 챗봇` |
+
+> 숫자·영문이 모두 제거된다.
 
 ## 4. `tokenize()`
 
-`tokenize(text, domain)`는 전처리 전체를 묶는 함수다.
+**파일**: `preprocessing.py`
 
-현재 구현 순서는 다음과 같다.
+`clean_text()` 호출 후 Kiwi 형태소 분석으로 명사를 추출한다.
 
-1. 사전 버전 갱신 필요 여부 확인
-2. `clean_text()` 수행
-3. domain별 stopword 로드
-4. domain별 Kiwi 인스턴스 로드
-5. Kiwi 형태소 분석
-6. `NNG`, `NNP`만 추출
-7. 복합명사 병합
-8. stopword 제거
-9. 길이 1 이하 토큰 제거
+<details>
+<summary>코드</summary>
 
-Kiwi를 사용할 수 없으면 공백 분리 fallback 경로를 사용한다.
+```
+cleaned text
+    └─ _get_stopwords()         ← DB에서 불용어 로드 (lru_cache)
+    └─ get_kiwi()               ← DB 복합명사 사전이 등록된 Kiwi 인스턴스 (lru_cache)
+        └─ kiwi.tokenize()
+            └─ 명사 태그 필터 (NNG, NNP)
+                └─ 한글 전용 패턴 매칭
+                    └─ merge_compound_nouns()   ← DB 사전 기반 병합
+                        └─ 길이 > 1 + 불용어 제거
+```
 
-## 5. 복합명사 병합
+</details>
 
-`merge_compound_nouns()`는 인접 토큰을 결합해 사전에 등록된 복합명사로 복원한다.
+- **Kiwi** 형태소 분석기로 명사(NNG=일반명사, NNP=고유명사)만 추출한다.
+- 추출된 명사 시퀀스에 대해 `compound_noun_dict` 기반 복합명사 병합을 수행한다.
+- Kiwi가 없으면 공백 분리 fallback으로 동작한다.
 
-현재 구현 특징은 다음과 같다.
-
-- 사전은 `compound_noun_dict`를 사용한다.
-- 가장 긴 후보부터 우선 매칭한다.
-- Kiwi span 정보가 있으면 실제로 붙어 있는 토큰만 병합한다.
-- 최대 병합 길이는 사전 길이를 기준으로 계산하되 2~6 범위로 제한한다.
-
-## 6. 불용어 처리
-
-불용어는 `stopword_dict`를 사용한다.
-
-현재 필터 조건은 다음과 같다.
-
-- stopword 집합에 포함되지 않을 것
-- 길이 1 초과일 것
-- 한글 패턴에 맞을 것
-
-DB 접근이 실패하면 코드 내 기본 stopword 집합을 fallback으로 사용한다.
-
-## 7. 사전 캐시
-
-전처리 모듈은 사전 로딩 비용을 줄이기 위해 캐시를 사용한다.
-
-캐시 대상은 다음과 같다.
-
-- `get_user_dictionary()`
-- `get_user_dictionary_set()`
-- `_get_max_compound_len()`
-- `get_kiwi()`
-- `_get_stopwords()`
-
-또한 `dictionary_versions`를 확인해 사전 변경이 감지되면 캐시를 비운다.
-
-## 8. 테스트로 확인되는 동작
-
-현재 단위 테스트는 다음 동작을 확인한다.
-
-- `clean_text()`가 HTML과 비한글 문자를 제거하는지
-- `merge_compound_nouns()`가 가장 긴 매치를 우선하는지
