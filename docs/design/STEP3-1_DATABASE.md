@@ -52,6 +52,10 @@ flowchart LR
     W["관리/API"] --> D
     W --> X["사전 관리<br/>compound_noun_dict / stopword_dict"]
     W --> Y["변경 이력<br/>query_keyword_audit_logs / dictionary_audit_logs"]
+
+    class D,F,J,L,M,N,O,Q,S,T,V,X,Y tableNode
+
+    classDef tableNode fill:#e8f4ff,stroke:#1f6feb,stroke-width:2px,color:black
 ```
 
 이 구성도는 각 처리 단계의 시작점과 최종 저장 테이블을 중심으로 정리한 것이다.
