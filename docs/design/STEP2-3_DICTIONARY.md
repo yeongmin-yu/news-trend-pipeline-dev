@@ -86,6 +86,25 @@ news_raw(title, summary, domain)
     ↓
 compound_noun_candidates(word, domain, frequency, doc_count)
 ```
+### 추출 알고리즘
+
+```
+1. news_raw에서 지정 기간(ingested_at 기준) 기사 조회
+2. Kiwi를 사용자 사전 없이 초기화          ← 미등록 복합어가 형태소로 분리됨
+3. 기사별 처리:
+a. title + summary 합산 → clean_text()
+   b. kiwi.tokenize() → NNG/NNP 명사 추출
+   c. 연속 형태소 조합 탐색 (2 ~ max_morpheme_count개)
+      └─ 스팬 연속성 검사: spans[j].end == spans[j+1].start
+      └─ 조합 길이 ≥ min_char_length
+      └─ 이미 승인된 단어(compound_noun_dict) 제외
+4. 전체 기사 집계 → frequency(총 출현), doc_count(기사 수)
+5. frequency ≥ min_frequency 인 후보만 선별
+6. upsert_compound_candidates():
+   - 신규: INSERT
+   - 기존 pending: frequency/doc_count 누적 UPDATE
+   - 기존 approved/rejected: 변경 없음
+```
 
 후보 추출 결과는 `compound_noun_candidates`에 저장되며, 동일 `(word, domain)` 후보가 다시 발견되면 새 row를 추가하기보다 기존 row의 `frequency`, `doc_count`, `last_seen_at`을 누적 갱신한다.
 따라서 같은 기간을 다시 처리하더라도 후보 테이블은 후보 단위로 관리되고, 후속 자동평가나 관리자 검토의 입력 queue 역할을 한다.
