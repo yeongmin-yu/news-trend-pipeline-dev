@@ -23,18 +23,72 @@
 flowchart LR
     A["DB 초기화<br/>safe_initialize_database()"] --> B["스키마 생성<br/>models.sql 실행"]
     B --> C["기본 데이터 적재<br/>domain / query seed"]
-    D["STEP1 수집<br/>(Airflow + Kafka)"] --> E["원본 기사 저장<br/>news_raw"]
-    D --> F["수집 메트릭 저장<br/>collection_metrics"]
-    G["STEP2 처리 결과<br/>(Spark staging)"] --> H["Staging → 운영 테이블 반영<br/>upsert_from_staging_*"]
-    H --> E
-    H --> I["키워드 테이블<br/>keywords"]
-    H --> J["트렌드 집계<br/>keyword_trends"]
-    H --> K["연관어 분석<br/>keyword_relations"]
-    L["STEP4 분석<br/>(이벤트 탐지)"] --> M["이벤트 계산<br/>replace_keyword_events()"]
-    M --> N["급상승 이벤트 저장<br/>keyword_events"]
-    O["관리/API"] --> P["검색어/사전 관리<br/>query_keywords / dictionaries"]
-    P --> Q["변경 이력 저장<br/>audit logs"]
+
+    C --> QC["수집 기준 테이블<br/>domain_catalog / query_keywords"]
+
+    AF["Airflow Scheduler"] --> NI["news_ingest_dag<br/>뉴스 수집 / Kafka 발행"]
+    AF --> RP["auto_replay_dag<br/>dead letter 재처리"]
+    AF --> CD["compound_dictionary_dag<br/>복합명사 후보 추출"]
+    AF --> AR["compound_candidate_auto_review_dag<br/>후보 자동 평가 / 보수적 승인"]
+    AF --> KE["keyword_event_detection<br/>급상승 이벤트 탐지"]
+
+    QC --> NI
+    NI --> KF["Kafka<br/>news_topic"]
+    RP --> KF
+    NI --> CM["수집 메트릭 저장<br/>collection_metrics"]
+
+    KF --> SS["Spark Streaming<br/>뉴스 consume / 분석 처리"]
+    SS --> STG["Staging Tables<br/>stg_news_raw / stg_keywords / stg_keyword_trends / stg_keyword_relations"]
+    STG --> UPS["Staging → 운영 테이블 반영<br/>upsert_from_staging_*"]
+
+    UPS --> NR["원본 기사<br/>news_raw"]
+    UPS --> KW["기사별 키워드<br/>keywords"]
+    UPS --> KT["트렌드 집계<br/>keyword_trends"]
+    UPS --> KR["연관어 분석<br/>keyword_relations"]
+
+    NR --> CD
+    CD --> CAND["복합명사 후보<br/>compound_noun_candidates<br/>status=needs_review"]
+
+    CAND --> AR
+    AR --> CAND
+    AR --> DICT["복합명사 사전<br/>compound_noun_dict<br/>source=auto-approved"]
+    DICT --> DV["사전 버전<br/>dictionary_versions"]
+    DV -. "Spark 사전 캐시 갱신 기준" .-> SS
+
+    KT --> KE
+    KW --> KE
+    NR --> KE
+    KE --> EV["급상승 이벤트<br/>keyword_events"]
+
+    MG["관리/API"] --> QC
+    MG --> DICT
+    MG --> SW["불용어 사전<br/>stopword_dict / stopword_candidates"]
+    MG --> AUD["변경 이력<br/>query_keyword_audit_logs / dictionary_audit_logs"]
+
+    style AF fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style NI fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style RP fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style CD fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style AR fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style KE fill:#ffffde,stroke:#333,stroke-width:2px,color:black
+    style STG fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style UPS fill:#e8f4ff,stroke:#333,stroke-width:1px,color:black
+    style CAND fill:#fff4de,stroke:#333,stroke-width:1px,color:black
+    style DICT fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
+    style EV fill:#e6ffed,stroke:#333,stroke-width:1px,color:black
 ```
+
+위 구성도는 Airflow DAG 문서의 실행 흐름을 DB 관점으로 다시 표현한 것이다.
+`news_ingest_dag`는 DB의 `query_keywords`와 `domain_catalog`를 읽어 수집 대상을 정하고, 수집 결과는 Kafka로 발행하며 수집 통계는 `collection_metrics`에 저장한다.
+Kafka 메시지는 Spark Streaming이 처리한 뒤 `stg_*` staging 테이블에 먼저 적재되고, `upsert_from_staging_*()` 함수가 `news_raw`, `keywords`, `keyword_trends`, `keyword_relations` 운영 테이블로 반영한다.
+
+이후 Airflow의 후속 DAG들은 PostgreSQL 분석 테이블을 입력으로 사용한다.
+`compound_dictionary_dag`는 `news_raw`에서 복합명사 후보를 추출해 `compound_noun_candidates`에 저장하고, `compound_candidate_auto_review_dag`는 후보를 자동 평가해 신뢰도가 높은 항목만 `compound_noun_dict`에 자동 승인한다.
+사전이 변경되면 `dictionary_versions`가 증가하며, Spark는 이 값을 기준으로 사전 캐시 갱신 여부를 판단한다.
+`keyword_event_detection`은 `keyword_trends`, `keywords`, `news_raw`를 읽어 급상승 이벤트를 계산하고 `keyword_events`에 저장한다.
+
+따라서 DB 계층은 단순 저장소가 아니라 Airflow, Kafka, Spark, 관리/API를 연결하는 상태 저장소 역할을 한다.
+수집 기준, staging 적재, 분석 결과, 후보 검토 상태, 사전 버전, 이벤트 결과가 모두 PostgreSQL에 남기 때문에 각 단계는 대량 payload를 XCom으로 넘기지 않고 DB row와 Kafka 메시지를 통해 느슨하게 연결된다.
 
 ## 3. 현재 스키마 구성
 
