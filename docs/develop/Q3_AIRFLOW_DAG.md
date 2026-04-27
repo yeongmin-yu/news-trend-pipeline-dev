@@ -79,7 +79,7 @@ flowchart LR
 | DAG | 목적 | 실행 단위 | 입력 | 출력 | 스케줄 |
 | --- | --- | --- | --- | --- | --- |
 | `news_ingest_dag` | Naver 뉴스 수집 및 Kafka 발행 | query/domain 단위 수집 배치 | `query_keywords`, Naver News API | Kafka `news_topic`, 수집 metric | 15분 |
-| `auto_replay_dag` | dead letter 메시지 재처리 | 실패 메시지 batch replay | dead letter 저장소/토픽 | Kafka `news_topic` 재발행 | 15분 |
+| `auto_replay_dag` | dead letter 메시지 재처리 | 실패 메시지 batch replay | dead letter 저장소/dead_letter_permanent.jsonl | Kafka `news_topic` 재발행 | 15분 |
 | `compound_dictionary_dag` | 복합명사 후보 추출 | 최근 기사 window batch | PostgreSQL `news_raw` | `compound_noun_candidates` | 1시간 |
 | `compound_candidate_auto_review_dag` | 후보 자동 평가 및 high confidence 자동승인 | 후보 batch review | `compound_noun_candidates`, Naver Web Search API | `auto_score`, `auto_evidence`, `compound_noun_dict` | 2시간 |
 | `keyword_event_detection` | 급상승 키워드 이벤트 탐지 | 최근 window 집계 batch | `keyword_trends`, `keywords`, `news_raw` | `keyword_events` | 15분 |
@@ -224,7 +224,7 @@ retry_exponential_backoff = True
 
 | 구분 | 내용 | 설명 |
 | --- | --- | --- |
-| 입력 | dead letter topic 또는 dead letter 저장 테이블 | Kafka 발행, Spark 처리, payload 파싱 중 실패한 메시지를 다시 처리하기 위해 읽는다. |
+| 입력 | dead_letter_permanent.jsonl | Kafka 발행, Spark 처리, payload 파싱 중 실패한 메시지를 다시 처리하기 위해 읽는다. |
 | 출력 | Kafka `news_topic` 재발행 | 재처리 가능한 메시지를 정상 Kafka topic으로 다시 발행해 Spark Streaming이 다시 처리할 수 있게 한다. |
 | 보조 출력 | replay 성공/실패 metric | 어떤 메시지가 재처리됐고, 어떤 메시지가 계속 실패했는지 추적하기 위한 운영 지표를 남긴다. |
 
