@@ -168,13 +168,12 @@ check_kafka_health >> produce_naver
 produce_naver >> summarize_results
 produce_naver >> check_dead_letter
 ```
-    - 의존성은 check_kafka_health가 통과해야 produce_naver가 실행되고, 수집 이후 summarize_results와 check_dead_letter가 병렬로 실행되는 구조다. check_dead_letter는 실패 감시 목적이므로 수집 task 실패 여부와 관계없이 실행된다.
+
 
 - 데이터 전달
-
-- query 목록은 DB에서 읽는다.
-- 기사 payload는 Kafka 메시지로 전달한다.
-- 수집량과 실패량은 PostgreSQL metric 테이블에 저장한다.
+    - query 목록은 DB에서 읽는다.
+    - 기사 payload는 Kafka 메시지로 전달한다.
+    - 수집량과 실패량은 PostgreSQL metric 테이블에 저장한다.
 
 ### 6.4 스케줄
 
