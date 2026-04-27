@@ -424,17 +424,17 @@ flowchart LR
 
 데이터 전달:
 
-- 평가 대상은 DB query로 읽는다.
-- 외부 API 응답과 score breakdown은 `auto_evidence` JSONB에 저장한다.
-- 승인 결과는 `compound_noun_candidates`와 `compound_noun_dict`에 저장한다.
-- XCom에는 최종 count dict만 반환할 수 있다.
+- 평가 대상은 DB에서 직접 조회합니다.
+- 외부 API 응답과 점수 계산 결과 `auto_evidence` JSONB에 저장한다.
+- 판단 결과에 따라 저장 위치가 나뉩니다. `compound_noun_candidates`(후보)와 `compound_noun_dict`(실제사전)에 저장한다.
+- 상세 데이터는 DB에 저장하고, XCom에는 결과 요약만 보낸다(로그용).
 
 ### 9.4 자동평가 기준
 
 외부 근거 수집:
 
 ```text
-Naver Web Search API
+Naver Web Search API(웹페이지검색)
 https://openapi.naver.com/v1/search/webkr.json
 ```
 
@@ -444,17 +444,17 @@ https://openapi.naver.com/v1/search/webkr.json
 items.title 또는 items.description에서 HTML 제거
 → 공백 제거
 → 후보 단어도 공백 제거
-→ 후보 단어가 title/description에 포함되면 has_exact_compact_match = true
+→ 후보 단어가 title/description에 포함되면 has_exact_compact_match = true (완벽일치 판단)
 ```
 
 `high_confidence` 조건:
 
 ```text
 auto_score >= 85
-AND doc_count >= 3
-AND frequency >= 5
-AND has_exact_compact_match = true
-AND frequency_per_doc <= 8
+AND doc_count >= 3 → 출현 뉴스 기사 수
+AND frequency >= 5 → 전체 출현 빈도
+AND has_exact_compact_match = true → 완벽일치 웹문서 검색(실제 존재하는 단어인지 검증하는 강력한 조건)
+AND frequency_per_doc <= 8 → 기사당 평균 등장 횟수 8 이하(특정 기사에서만 과하게 반복되는 케이스 제거 (노이즈 방지))
 ```
 
 ### 9.5 스케줄
