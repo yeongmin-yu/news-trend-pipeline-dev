@@ -472,20 +472,36 @@ export default function App() {
     expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, trendWindow.endMs),
   );
 
-  const overviewRequestKey = useMemo(
-    () => [
-      source,
-      domain,
-      rangeParam,
-      committedStartIso,
-      committedEndIso,
-      effectiveTrendBucket,
-      search,
-      overviewFetchWindow.startMs,
-      overviewFetchWindow.endMs,
-    ].join("::"),
-    [source, domain, rangeParam, committedStartIso, committedEndIso, effectiveTrendBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
-  );
+ const overviewFetchStartIso = useMemo(
+  () => new Date(overviewFetchWindow.startMs).toISOString(),
+  [overviewFetchWindow.startMs],
+);
+
+const overviewFetchEndIso = useMemo(
+  () => new Date(overviewFetchWindow.endMs).toISOString(),
+  [overviewFetchWindow.endMs],
+);
+
+const overviewRequestKey = useMemo(
+  () => [
+    source,
+    domain,
+    rangeParam,
+    effectiveTrendBucket,
+    search,
+    overviewFetchWindow.startMs,
+    overviewFetchWindow.endMs,
+  ].join("::"),
+  [
+    source,
+    domain,
+    rangeParam,
+    effectiveTrendBucket,
+    search,
+    overviewFetchWindow.startMs,
+    overviewFetchWindow.endMs,
+  ],
+);
 
   useEffect(() => {
     const desired = expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs);
@@ -501,27 +517,40 @@ export default function App() {
     });
   }, [trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs]);
 
-  const overviewIdentityKey = `${source}::${domain}::${effectiveTrendBucket}::${search}::${overviewFetchWindow.startMs}::${overviewFetchWindow.endMs}`;
-
+  //const overviewIdentityKey = `${source}::${domain}::${effectiveTrendBucket}::${search}::${overviewFetchWindow.startMs}::${overviewFetchWindow.endMs}`;
+const overviewIdentityKey = overviewRequestKey;
   const overviewRaw = useAsyncData<{ data: DashboardOverviewResponse; identity: string }>(
-    async () => {
-      const data = await api.overviewWindow(
-        source,
-        domain,
-        rangeParam,
-        committedStartIso,
-        committedEndIso,
-        effectiveTrendBucket,
-        search,
-        30,
-        new Date(overviewFetchWindow.startMs).toISOString(),
-        new Date(overviewFetchWindow.endMs).toISOString(),
-      );
-      return { data, identity: overviewIdentityKey };
-    },
-    [source, domain, rangeParam, committedStartIso, committedEndIso, effectiveTrendBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
-    { cacheKey: overviewRequestKey, keepPreviousData: true },
-  );
+  async () => {
+    const data = await api.overviewWindow(
+      source,
+      domain,
+      rangeParam,
+
+      // 서버 호출 기준은 fetch window로 고정
+      overviewFetchStartIso,
+      overviewFetchEndIso,
+
+      effectiveTrendBucket,
+      search,
+      30,
+      overviewFetchStartIso,
+      overviewFetchEndIso,
+    );
+
+    return { data, identity: overviewIdentityKey };
+  },
+  [
+    source,
+    domain,
+    rangeParam,
+    effectiveTrendBucket,
+    search,
+    overviewFetchWindow.startMs,
+    overviewFetchWindow.endMs,
+    overviewRequestKey,
+  ],
+  { cacheKey: overviewRequestKey, keepPreviousData: true },
+);
 
   const overviewIsStale = overviewRaw.data != null && overviewRaw.data.identity !== overviewIdentityKey;
   const overview: AsyncState<DashboardOverviewResponse> = {
@@ -580,18 +609,26 @@ export default function App() {
     setSelectedKeyword(displayKeywords[0].keyword);
   }, [selectedKeyword, displayKeywords, watchlist]);
 
+  const keywordSelectionContextKey = useMemo(
+    () => [source, domain, rangeParam, search].join("::"),
+    [source, domain, rangeParam, search],
+  );
+
+  const checkedTrendInitKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (!rankedKeywords.length) return;
-    const defaultTopFive = rankedKeywords
-      .slice(0, 5)
-      .map((item) => item.keyword);
-    setCheckedTrendKeywords(defaultTopFive);
-  }, [rankedKeywords, domain, source, rangeParam, search, committedStartIso, committedEndIso]);
+
+    const contextChanged = checkedTrendInitKeyRef.current !== keywordSelectionContextKey;
+    if (!contextChanged) return;
+
+    checkedTrendInitKeyRef.current = keywordSelectionContextKey;
+    setCheckedTrendKeywords(rankedKeywords.slice(0, 5).map((item) => item.keyword));
+  }, [rankedKeywords, keywordSelectionContextKey]);
 
   useEffect(() => {
     setTrendFetchLimit(topLimit);
-  }, [domain, source, rangeParam, topSort, search, committedStartIso, committedEndIso]);
-
+  }, [domain, source, rangeParam, topSort, search, topLimit]);
   useEffect(() => {
     setTrendFetchLimit((prev) => Math.max(prev, topLimit));
   }, [topLimit]);
@@ -629,6 +666,11 @@ export default function App() {
     });
   }, [trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs]);
 
+  const preloadedTrendKeywordKey = useMemo(
+    () => preloadedTrendKeywords.join("|"),
+    [preloadedTrendKeywords],
+  );
+
   const trendRequestKey = useMemo(
     () => [
       source,
@@ -636,11 +678,17 @@ export default function App() {
       trendFetchWindow.startMs,
       trendFetchWindow.endMs,
       effectiveTrendBucket,
-      preloadedTrendKeywords.join("|"),
+      preloadedTrendKeywordKey,
     ].join("::"),
-    [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords],
+    [
+      source,
+      domain,
+      trendFetchWindow.startMs,
+      trendFetchWindow.endMs,
+      effectiveTrendBucket,
+      preloadedTrendKeywordKey,
+    ],
   );
-
   useEffect(() => {
     if (!preloadedTrendKeywords.length) {
       setTrend({ data: { series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse, loading: false, error: null });
@@ -678,7 +726,16 @@ export default function App() {
     return () => {
       alive = false;
     };
-  }, [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywords, trendRequestKey]);
+ }, [
+  source,
+  domain,
+  trendFetchWindow.startMs,
+  trendFetchWindow.endMs,
+  effectiveTrendBucket,
+  preloadedTrendKeywordKey,
+  trendRequestKey,
+]);
+
   const detailTrend = useAsyncData(
     () =>
       selectedKeyword

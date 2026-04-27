@@ -7,7 +7,7 @@ from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
 _DEFAULT_ARGS = {
-    "owner": "airflow",
+    "owner": "ymyu",
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
