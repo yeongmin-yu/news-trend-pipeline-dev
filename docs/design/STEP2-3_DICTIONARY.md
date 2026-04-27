@@ -75,7 +75,20 @@ flowchart LR
 
 ### 4-2. 후보 추출
 
-`compound_dictionary_dag`는 `news_raw` 기사에서 복합명사 후보를 뽑아 `compound_noun_candidates`에 누적한다.
+`compound_dictionary_dag`는 `news_raw` 기사에서 복합명사 후보를 추출해 `compound_noun_candidates`에 누적한다.
+
+처리 흐름은 다음과 같다.
+
+```text
+news_raw(title, summary, domain)
+    ↓
+복합명사 후보 추출
+    ↓
+compound_noun_candidates(word, domain, frequency, doc_count)
+```
+
+후보 추출 결과는 `compound_noun_candidates`에 저장되며, 동일 `(word, domain)` 후보가 다시 발견되면 새 row를 추가하기보다 기존 row의 `frequency`, `doc_count`, `last_seen_at`을 누적 갱신한다.
+따라서 같은 기간을 다시 처리하더라도 후보 테이블은 후보 단위로 관리되고, 후속 자동평가나 관리자 검토의 입력 queue 역할을 한다.
 
 추출 기준은 다음 설정을 사용한다.
 
@@ -85,6 +98,10 @@ flowchart LR
 - `COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT`
 
 후보 추출은 사용자 사전을 주입하지 않은 Kiwi 분석 결과를 기반으로 한다. 이미 `compound_noun_dict`에 승인되어 있는 단어는 후보에서 제외한다.
+
+`compound_dictionary_dag`는 후보 생성과 빈도 누적까지만 담당한다.
+`approved` 또는 `rejected` 상태의 후보는 후보 추출 재실행으로 상태를 바꾸지 않는다.
+또한 이 DAG는 자동승인을 수행하지 않는다. 자동평가와 자동승인은 `compound_candidate_auto_review_dag`가 별도로 담당한다.
 
 ### 4-3. Domain-aware 후보 관리
 
