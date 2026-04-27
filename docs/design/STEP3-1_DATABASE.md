@@ -21,26 +21,17 @@
 
 ```mermaid
 flowchart LR
-    %% STEP0: 초기화
     A["DB 초기화<br/>safe_initialize_database()"] --> B["스키마 생성<br/>models.sql 실행"]
     B --> C["기본 데이터 적재<br/>domain / query seed"]
-
-    %% STEP1: 수집
     D["STEP1 수집<br/>(Airflow + Kafka)"] --> E["원본 기사 저장<br/>news_raw"]
     D --> F["수집 메트릭 저장<br/>collection_metrics"]
-
-    %% STEP2~3: 처리 + 저장
     G["STEP2 처리 결과<br/>(Spark staging)"] --> H["Staging → 운영 테이블 반영<br/>upsert_from_staging_*"]
     H --> E
     H --> I["키워드 테이블<br/>keywords"]
     H --> J["트렌드 집계<br/>keyword_trends"]
     H --> K["연관어 분석<br/>keyword_relations"]
-
-    %% STEP4: 분석
     L["STEP4 분석<br/>(이벤트 탐지)"] --> M["이벤트 계산<br/>replace_keyword_events()"]
     M --> N["급상승 이벤트 저장<br/>keyword_events"]
-
-    %% 관리/운영
     O["관리/API"] --> P["검색어/사전 관리<br/>query_keywords / dictionaries"]
     P --> Q["변경 이력 저장<br/>audit logs"]
 ```
@@ -133,6 +124,27 @@ flowchart LR
 ## 6. staging upsert
 
 Spark 처리 결과는 `upsert_from_staging_*()` 함수가 최종 테이블에 반영한다.
+
+Staging 테이블은 Spark 처리 결과를 최종 운영 테이블에 바로 반영하지 않고, 먼저 `stg_*` 테이블에 append 방식으로 적재하기 위한 중간 테이블이다.
+외부 수집 데이터와 Spark 처리 결과에는 중복, 필드 누락, 포맷 오류, 일부 row 실패가 포함될 수 있으므로 최종 테이블 반영 전에 staging 단계에서 검증·정제·중복 제거를 수행한다.
+
+이 구조의 목적은 다음과 같다.
+
+- 최종 테이블을 오염시키기 전에 중간 결과를 안전하게 보관한다.
+- DAG 또는 Spark job 재실행 시 동일 데이터가 최종 테이블에 중복 적재되지 않도록 한다.
+- `provider + domain + url`, 기사/키워드, window 기준 unique key와 upsert 로직을 통해 멱등성을 확보한다.
+- 장애 발생 시 staging 데이터와 최종 반영 로직을 분리해 원인 추적과 재처리를 쉽게 한다.
+- Spark output schema와 최종 분석 테이블 schema 사이의 완충 계층을 둔다.
+
+Spark 병렬처리 관점에서 staging 테이블은 병렬 처리 병목을 직접 해결하는 장치는 아니다.
+partition 수 부족, data skew, shuffle 과다, JDBC connection 수, batch size, PostgreSQL index/lock 경합, executor 리소스 부족 같은 병목은 Spark와 DB 쓰기 설정에서 별도로 튜닝해야 한다.
+
+다만 staging 테이블은 병렬 처리 결과를 최종 테이블에 반영하는 방식을 제어 가능한 단계로 분리한다.
+Spark executor들이 최종 테이블에 동시에 upsert하면 unique index lock 경합이나 deadlock 가능성이 커질 수 있다.
+현재 구조는 Spark 결과를 staging 테이블에 append한 뒤 DB 내부의 `upsert_from_staging_*()` 함수가 최종 테이블에 반영하므로, 최종 테이블의 upsert 경합을 줄이고 재실행 시 중복 적재 위험을 낮추는 완충 장치 역할을 한다.
+
+정리하면 staging 테이블의 주 목적은 Spark 성능 최적화가 아니라 데이터 품질 검증, 멱등성 확보, 장애 추적, 최종 테이블 반영 안정성이다.
+Spark 병렬처리 병목은 staging 구조와 별도로 partition, shuffle, JDBC write, DB index/lock 기준으로 관찰하고 튜닝한다.
 
 ### 6-1. `upsert_from_staging_news_raw()`
 
