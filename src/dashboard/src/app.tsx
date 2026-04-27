@@ -1047,6 +1047,11 @@ console.debug("[overview] prefetch overview decision", {
                 <span className="tag mono">{effectiveTrendBucket}</span>
               </div>
               <div className="panel-tools">
+                {trend.error && trend.data ? (
+                  <span className="tag" style={{ color: "var(--warn)" }}>
+                    갱신 실패 · 기존 데이터 표시 중
+                  </span>
+                ) : null}
                 {selectedBucket != null && (
                   <button className="panel-tool" onClick={() => setSelectedBucket(null)}>
                     clear
@@ -1080,26 +1085,34 @@ console.debug("[overview] prefetch overview decision", {
                   })}
                 </div>
               </div>
-              {trend.loading ? (
-                <LoadingState label="시계열 데이터를 불러오는 중..." />
-              ) : trend.error ? (
-                <EmptyState title="트렌드 로드 실패" body={trend.error} />
-              ) : !checkedTrendKeywords.length ? (
-                <EmptyState title="선택된 키워드 없음" body="상위 키워드 목록의 체크박스로 비교 대상을 선택하세요." />
-              ) : (
-                <TrendLine
-                  series={visibleTrendSeries}
-                  bucketMin={trend.data?.range.bucketMin ?? activeRange.bucketMin}
-                  viewStartMs={trendWindow.startMs}
-                  viewEndMs={trendWindow.endMs}
-                  hidden={hiddenSeries}
-                  onToggle={toggleSeries}
-                  selectedBucket={selectedBucket}
-                  onPointClick={setSelectedBucket}
-                  onWheelZoom={handleTrendWheelZoom}
-                  onDragPan={handleTrendDragPan}
-                />
-              )}
+              {trend.loading && !trend.data ? (
+                  <LoadingState label="시계열 데이터를 불러오는 중..." />
+                ) : trend.error && !trend.data ? (
+                  <EmptyState title="트렌드 로드 실패" body={trend.error} />
+                ) : !checkedTrendKeywords.length ? (
+                  <EmptyState title="선택된 키워드 없음" body="상위 키워드 목록의 체크박스로 비교 대상을 선택하세요." />
+                ) : (
+                  <>
+                    {/* {trend.loading && trend.data ? (
+                      <div className="chart-inline-status">
+                        시계열 데이터 갱신 중...
+                      </div>
+                    ) : null} */}
+
+                    <TrendLine
+                      series={visibleTrendSeries}
+                      bucketMin={trend.data?.range.bucketMin ?? activeRange.bucketMin}
+                      viewStartMs={trendWindow.startMs}
+                      viewEndMs={trendWindow.endMs}
+                      hidden={hiddenSeries}
+                      onToggle={toggleSeries}
+                      selectedBucket={selectedBucket}
+                      onPointClick={setSelectedBucket}
+                      onWheelZoom={handleTrendWheelZoom}
+                      onDragPan={handleTrendDragPan}
+                    />
+                  </>
+                )}
             </div>
           </div>
         </div>
