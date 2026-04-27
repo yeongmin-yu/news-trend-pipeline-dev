@@ -163,14 +163,8 @@ export default function App() {
     [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
   );
 
-  const previousTrendDurationRef = useRef(trendWindow.endMs - trendWindow.startMs);
-
   useEffect(() => {
     const durationMs = Math.max(MIN_TREND_WINDOW_MS, trendWindow.endMs - trendWindow.startMs);
-    const previousDurationMs = previousTrendDurationRef.current;
-    const isNarrowing = durationMs < previousDurationMs;
-    previousTrendDurationRef.current = durationMs;
-
     const edgeSlackMs = Math.max(2 * 60_000, Math.floor(durationMs * 0.05));
 
     setOverviewFetchWindow((prev) => {
@@ -178,43 +172,86 @@ export default function App() {
       const leftBufferMs = trendWindow.startMs - prev.startMs;
       const rightBufferMs = prev.endMs - trendWindow.endMs;
       const nearCacheEdge = leftBufferMs <= edgeSlackMs || rightBufferMs <= edgeSlackMs;
-      const shouldRefresh = outsideCache || (!isNarrowing && nearCacheEdge);
-      if (!shouldRefresh) return prev;
-      return expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs);
+      if (!outsideCache && !nearCacheEdge) return prev;
+      const expanded = expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs);
+      return {
+        startMs: Math.min(prev.startMs, expanded.startMs),
+        endMs: Math.max(prev.endMs, expanded.endMs),
+      };
     });
   }, [trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs]);
 
   const overviewIdentityKey = overviewRequestKey;
-  const overviewCacheRef = useRef<Map<string, { data: DashboardOverviewResponse; identity: string }>>(new Map());
+  const overviewCacheRef = useRef<
+    Map<string, { data: DashboardOverviewResponse; identity: string; fetchStartMs: number; fetchEndMs: number }>
+  >(new Map());
 
-  const overviewRaw = useAsyncData<{ data: DashboardOverviewResponse; identity: string }>(
-    async () => {
-      const data = await api.overviewWindow(
-        source,
-        domain,
-        rangeParam,
-        overviewFetchStartIso,
-        overviewFetchEndIso,
-        overviewBucket,
-        search,
-        30,
-        overviewFetchStartIso,
-        overviewFetchEndIso,
-      );
-      return { data, identity: overviewIdentityKey };
-    },
-    [
-      source,
-      domain,
-      rangeParam,
-      overviewBucket,
-      search,
-      overviewFetchWindow.startMs,
-      overviewFetchWindow.endMs,
-      overviewRequestKey,
-    ],
-    { cacheKey: overviewRequestKey, keepPreviousData: true, externalCache: overviewCacheRef },
-  );
+  const [overviewRaw, setOverviewRaw] = useState<AsyncState<{ data: DashboardOverviewResponse; identity: string }>>({
+    data: null,
+    loading: true,
+    error: null,
+  });
+
+  useEffect(() => {
+    let alive = true;
+
+    const exact = overviewCacheRef.current.get(overviewRequestKey);
+    if (exact) {
+      setOverviewRaw({ data: { data: exact.data, identity: overviewRequestKey }, loading: false, error: null });
+      return () => { alive = false; };
+    }
+
+    const keyPrefix = [source, domain, rangeParam, overviewBucket, search].join("::");
+    for (const [key, entry] of overviewCacheRef.current) {
+      if (
+        key.startsWith(keyPrefix + "::") &&
+        entry.fetchStartMs <= overviewFetchWindow.startMs &&
+        entry.fetchEndMs >= overviewFetchWindow.endMs
+      ) {
+        overviewCacheRef.current.set(overviewRequestKey, { ...entry, identity: overviewRequestKey });
+        setOverviewRaw({ data: { data: entry.data, identity: overviewRequestKey }, loading: false, error: null });
+        return () => { alive = false; };
+      }
+    }
+
+    setOverviewRaw((prev) => ({
+      data: prev.data,
+      loading: prev.data == null,
+      error: null,
+    }));
+
+    api
+      .overviewWindow(
+        source, domain, rangeParam,
+        overviewFetchStartIso, overviewFetchEndIso,
+        overviewBucket, search, 30,
+        overviewFetchStartIso, overviewFetchEndIso,
+      )
+      .then((data) => {
+        if (!alive) return;
+        overviewCacheRef.current.set(overviewRequestKey, {
+          data,
+          identity: overviewRequestKey,
+          fetchStartMs: overviewFetchWindow.startMs,
+          fetchEndMs: overviewFetchWindow.endMs,
+        });
+        setOverviewRaw({ data: { data, identity: overviewRequestKey }, loading: false, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setOverviewRaw((prev) => ({
+          data: prev.data,
+          loading: false,
+          error: error instanceof Error ? error.message : "알 수 없는 오류",
+        }));
+      });
+
+    return () => { alive = false; };
+  }, [
+    source, domain, rangeParam, overviewBucket, search,
+    overviewFetchWindow.startMs, overviewFetchWindow.endMs,
+    overviewRequestKey,
+  ]);
 
   const overviewIsStale = overviewRaw.data != null && overviewRaw.data.identity !== overviewIdentityKey;
   const overview: AsyncState<DashboardOverviewResponse> = {
@@ -567,7 +604,7 @@ export default function App() {
 
   // Zoom-out prefetch: when the user zooms out, pre-load the next zoom level's data
   useEffect(() => {
-    const isZoomingOut = trendDurationMs > prevZoomDurationForPrefetchRef.current * 1.01;
+    const isZoomingOut = trendDurationMs > prevZoomDurationForPrefetchRef.current * 1.2;
     prevZoomDurationForPrefetchRef.current = trendDurationMs;
 
     if (!isZoomingOut || trendDurationMs >= MAX_TREND_WINDOW_MS) return;
@@ -595,7 +632,7 @@ export default function App() {
         const si = new Date(ofw.startMs).toISOString();
         const ei = new Date(ofw.endMs).toISOString();
         api.overviewWindow(s, d, rp, si, ei, obucket, q, 30, si, ei)
-          .then((data) => overviewCacheRef.current.set(okey, { data, identity: okey }))
+          .then((data) => overviewCacheRef.current.set(okey, { data, identity: okey, fetchStartMs: ofw.startMs, fetchEndMs: ofw.endMs }))
           .catch(() => {});
       }
 
