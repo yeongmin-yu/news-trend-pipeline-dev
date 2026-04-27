@@ -401,13 +401,20 @@ needs_review 후보 queue batch review
 
 ```mermaid
 flowchart LR
-    A["fetch_candidates<br/>needs_review<br/>limit 2000"] --> B["collect_external_evidence<br/>Naver Web Search API"]
-    B --> C["score_candidate<br/>auto_score 계산"]
-    C --> D["store_evidence<br/>auto_evidence 저장"]
-    D --> E["decide<br/>high_confidence 여부"]
-    E -->|"high_confidence"| F["approve_candidate<br/>status=approved<br/>dict insert"]
-    E -->|"else"| G["keep_needs_review<br/>수동검토 대기"]
-    F --> H["summarize<br/>처리 결과 로그"]
+    A["후보 데이터 가져오기<br/>(needs_review 상태, 최대 2000개)"] 
+        --> B["외부 근거 수집<br/>(Naver 검색 API로 관련 정보 조회)"]
+
+    B --> C["후보 점수 계산<br/>(auto_score 산출)"]
+
+    C --> D["근거 저장<br/>(검색 결과 + 점수 저장)"]
+
+    D --> E["승인 여부 판단<br/>(high_confidence 기준 체크)"]
+
+    E -->|"신뢰도 높음"| F["자동 승인 처리<br/>(status=approved, 사전에 등록)"]
+
+    E -->|"불확실"| G["검토 유지<br/>(needs_review 상태 유지, 수동 검토 대기)"]
+
+    F --> H["결과 요약<br/>(처리 로그 기록)"]
     G --> H
 
     style A fill:#ffffde,stroke:#333,stroke-width:2px,color:black
