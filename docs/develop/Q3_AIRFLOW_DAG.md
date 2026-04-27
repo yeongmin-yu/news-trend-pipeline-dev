@@ -160,7 +160,7 @@ flowchart LR
 | `check_kafka_health` | `PythonOperator` | Kafka broker에 연결 가능한지 먼저 확인한다. 실패하면 후속 수집 task를 실행하지 않는다.                                                         |
 | `produce_naver`      | `PythonOperator` | `NewsKafkaProducer().run_for_provider("naver")`를 실행해 Naver 뉴스를 수집하고 Kafka로 발행한다. 발행 건수는 XCom `naver_count`로 저장한다. |
 | `summarize_results`  | `PythonOperator` | `produce_naver`가 저장한 XCom 값을 읽어 이번 실행의 수집 건수를 로그로 남긴다.                                                            |
-| `check_dead_letter`  | `PythonOperator` | `dead_letter.jsonl` 누적 건수를 확인한다. `trigger_rule="all_done"`이므로 `produce_naver` 실패 여부와 무관하게 실행된다.                   |
+| `check_dead_letter`  | `PythonOperator` | `dead_letter.jsonl` 누적 건수를 확인한다. `trigger_rule="all_done"`이므로 `produce_naver` 실패 여부와 무관하게 실행된다.  Dead Letter 누적 감시                 |
 
 - 의존성
 ```
