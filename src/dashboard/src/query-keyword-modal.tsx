@@ -61,22 +61,22 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
 
   const domains: DomainOption[] = useMemo(() => data?.domains ?? [], [data]);
   const filteredKeywords = useMemo(() => {
-    return (data?.query_keywords ?? []).filter((item) => {
-      const domainMatched = domainFilter === "all" || item.domain_id === domainFilter;
+    return (data?.queryKeywords ?? []).filter((item) => {
+      const domainMatched = domainFilter === "all" || item.domainId === domainFilter;
       const searchMatched = !search || item.query.toLowerCase().includes(search.toLowerCase());
       return domainMatched && searchMatched;
     });
   }, [data, domainFilter, search]);
 
   const filteredMetrics = useMemo(() => {
-    return (data?.collection_metrics ?? []).filter((item) => domainFilter === "all" || item.domain === domainFilter);
+    return (data?.collectionMetrics ?? []).filter((item) => domainFilter === "all" || item.domain === domainFilter);
   }, [data, domainFilter]);
 
   const filteredLogs = useMemo(() => {
-    return (data?.audit_logs ?? []).filter((item) => {
+    return (data?.auditLogs ?? []).filter((item) => {
       if (domainFilter === "all") return true;
-      const afterDomain = item.after_json && typeof item.after_json["domain_id"] === "string" ? String(item.after_json["domain_id"]) : null;
-      const beforeDomain = item.before_json && typeof item.before_json["domain_id"] === "string" ? String(item.before_json["domain_id"]) : null;
+      const afterDomain = item.afterJson && typeof item.afterJson["domainId"] === "string" ? String(item.afterJson["domainId"]) : null;
+      const beforeDomain = item.beforeJson && typeof item.beforeJson["domainId"] === "string" ? String(item.beforeJson["domainId"]) : null;
       return afterDomain === domainFilter || beforeDomain === domainFilter;
     });
   }, [data, domainFilter]);
@@ -84,10 +84,10 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
   function startEdit(item: QueryKeywordItem) {
     setForm({
       id: item.id,
-      domainId: item.domain_id,
+      domainId: item.domainId,
       query: item.query,
-      sortOrder: item.sort_order,
-      isActive: item.is_active,
+      sortOrder: item.sortOrder,
+      isActive: item.isActive,
     });
   }
 
@@ -124,7 +124,7 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
         <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 16, background: "var(--bg-2)", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>도메인 키워드 관리</div>
           <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--font-mono)" }}>
-            naver queries {data?.query_keywords.length ?? 0}
+            naver queries {data?.queryKeywords.length ?? 0}
           </div>
           <div style={{ flex: 1 }} />
           <button
@@ -245,16 +245,16 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
                   () =>
                     form.id == null
                       ? api.createQueryKeyword({
-                          domain_id: form.domainId,
+                          domainId: form.domainId,
                           query: form.query.trim(),
-                          sort_order: form.sortOrder,
-                          is_active: form.isActive,
+                          sortOrder: form.sortOrder,
+                          isActive: form.isActive,
                         })
                       : api.updateQueryKeyword(form.id, {
-                          domain_id: form.domainId,
+                          domainId: form.domainId,
                           query: form.query.trim(),
-                          sort_order: form.sortOrder,
-                          is_active: form.isActive,
+                          sortOrder: form.sortOrder,
+                          isActive: form.isActive,
                         }),
                   form.id == null ? "키워드를 추가했습니다." : "키워드를 수정했습니다.",
                 )
@@ -296,25 +296,25 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
               <tbody>
                 {filteredKeywords.map((item) => (
                   <tr key={item.id}>
-                    <td>{item.domain_label}</td>
+                    <td>{item.domainLabel}</td>
                     <td><span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)", fontWeight: 600 }}>{item.query}</span></td>
-                    <td className="num">{item.sort_order}</td>
-                    <td><span className={"chip " + (item.is_active ? "up" : "muted")}>{item.is_active ? "활성" : "비활성"}</span></td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.updated_at?.slice(0, 16).replace("T", " ")}</td>
+                    <td className="num">{item.sortOrder}</td>
+                    <td><span className={"chip " + (item.isActive ? "up" : "muted")}>{item.isActive ? "활성" : "비활성"}</span></td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.updatedAt?.slice(0, 16).replace("T", " ")}</td>
                     <td style={{ display: "flex", gap: 4 }}>
                       <button onClick={() => startEdit(item)} className="table-action">수정</button>
                       <button
                         onClick={() =>
                           void run(`toggle-${item.id}`, () => api.updateQueryKeyword(item.id, {
-                            domain_id: item.domain_id,
+                            domainId: item.domainId,
                             query: item.query,
-                            sort_order: item.sort_order,
-                            is_active: !item.is_active,
-                          }), item.is_active ? "키워드를 비활성화했습니다." : "키워드를 활성화했습니다.")
+                            sortOrder: item.sortOrder,
+                            isActive: !item.isActive,
+                          }), item.isActive ? "키워드를 비활성화했습니다." : "키워드를 활성화했습니다.")
                         }
                         className="table-action"
                       >
-                        {item.is_active ? "비활성화" : "활성화"}
+                        {item.isActive ? "비활성화" : "활성화"}
                       </button>
                       <button
                         onClick={() => void run(`delete-${item.id}`, () => api.deleteQueryKeyword(item.id), "키워드를 삭제했습니다.")}
@@ -350,13 +350,13 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
                   <tr key={`${item.domain}-${item.query}`}>
                     <td>{domains.find((domain) => domain.id === item.domain)?.label ?? item.domain}</td>
                     <td>{item.query}</td>
-                    <td className="num">{item.request_count}</td>
-                    <td className="num">{item.success_count}</td>
-                    <td className="num">{item.article_count}</td>
-                    <td className="num">{item.duplicate_count}</td>
-                    <td className="num">{item.publish_count}</td>
-                    <td className="num">{item.error_count}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.last_seen_at?.slice(0, 16).replace("T", " ")}</td>
+                    <td className="num">{item.requestCount}</td>
+                    <td className="num">{item.successCount}</td>
+                    <td className="num">{item.articleCount}</td>
+                    <td className="num">{item.duplicateCount}</td>
+                    <td className="num">{item.publishCount}</td>
+                    <td className="num">{item.errorCount}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.lastSeenAt?.slice(0, 16).replace("T", " ")}</td>
                   </tr>
                 ))}
                 {filteredMetrics.length === 0 && (
@@ -378,11 +378,11 @@ export function QueryKeywordModal({ onClose }: { onClose: () => void }) {
               <tbody>
                 {filteredLogs.map((item) => (
                   <tr key={item.id}>
-                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.acted_at?.slice(0, 16).replace("T", " ")}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 10 }}>{item.actedAt?.slice(0, 16).replace("T", " ")}</td>
                     <td><span className="chip info">{item.action}</span></td>
                     <td>{item.actor}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{item.before_json ? JSON.stringify(item.before_json) : "-"}</td>
-                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{item.after_json ? JSON.stringify(item.after_json) : "-"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{item.beforeJson ? JSON.stringify(item.beforeJson) : "-"}</td>
+                    <td style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{item.afterJson ? JSON.stringify(item.afterJson) : "-"}</td>
                   </tr>
                 ))}
                 {filteredLogs.length === 0 && (
