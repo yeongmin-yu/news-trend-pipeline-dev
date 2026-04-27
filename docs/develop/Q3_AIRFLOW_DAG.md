@@ -86,38 +86,40 @@ flowchart LR
 
 ---
 
-## 5. 공통 DAG 설계 원칙
+## 5. 공통 DAG 옵션
+```
+default_args = {
+    "owner": "ymyu",  
+    "depends_on_past": False,  
+    # 이전 실행(task instance)의 성공 여부에 의존할지 여부
+    # False: 이전 실행 실패와 관계없이 현재 실행 진행
+    # True: 이전 실행이 성공해야 현재 실행 수행 (순차 데이터 처리에 사용)
 
-### 5.1 실행 단위
+    "retries": 3,  
+    # 태스크 실패 시 재시도 횟수 (총 3번까지 재시도)
+    # 특정 작업에선 override (데이터 파싱 오류 재시도)
+    
+    "retry_delay": timedelta(minutes=5),  
+    # 재시도 간 기본 대기 시간 (최소 5분 후 재시도)
 
-- Airflow의 논리 실행일자는 `ds` 또는 `data_interval_start/end`로 해석한다.
-- 뉴스 수집은 현재 시점 기준 반복 수집이므로 15분 단위 실행이다.
-- 후보 추출과 이벤트 탐지는 PostgreSQL에 이미 적재된 최근 window를 대상으로 한다.
-- 자동리뷰는 특정 날짜 파티션보다는 `status = 'needs_review'` 후보 queue를 batch로 처리한다.
+    "retry_exponential_backoff": True,  
+    # 재시도 간격을 지수적으로 증가시킴
+    # 예: 5분 → 10분 → 20분 → ... (점점 간격 증가)
 
-### 5.2 태스크 간 데이터 전달 방식
+    "max_retry_delay": timedelta(minutes=30),  
+    # 지수 백오프 적용 시 최대 대기 시간 제한
+    # 아무리 증가해도 30분을 넘지 않음
 
-이 프로젝트는 대량 데이터를 XCom으로 전달하지 않는다.
+    "max_active_runs" : 1
+    # 동시 처리 방지
 
-| 데이터 유형 | 전달 방식 |
-| --- | --- |
-| 기사 원문 | Kafka topic / PostgreSQL table |
-| 키워드 및 trend 결과 | PostgreSQL table |
-| 복합명사 후보 | PostgreSQL table |
-| 자동평가 근거 | PostgreSQL JSONB column |
-| 태스크 요약 count | Airflow log / 작은 dict return |
+    "execution_timeout": timedelta(minutes=30)
+    # TimeOut 설정, 특정 작업에선 override
 
-XCom은 count, status 등 작은 메타데이터만 반환하는 용도로 제한한다.
-
-### 5.3 멱등성(Idempotency) 기본 원칙
-
-- insert는 가능한 `ON CONFLICT` 또는 동일 구간 삭제 후 재삽입 방식을 사용한다.
-- 후보 누적은 `status = 'needs_review'`인 row만 frequency/doc_count를 증가시킨다.
-- `approved` 또는 `rejected` 후보는 재실행으로 자동 변경하지 않는다.
-- 이벤트 탐지는 동일 window를 다시 실행해도 중복 이벤트가 쌓이지 않도록 replace/upsert 전략을 사용한다.
-- 자동승인된 후보 row는 삭제하지 않고 evidence를 보존한다.
-
----
+    "catchup" : False
+    # 과거 누락 실행 스킵
+}
+```
 
 ## 6. `news_ingest_dag`
 
