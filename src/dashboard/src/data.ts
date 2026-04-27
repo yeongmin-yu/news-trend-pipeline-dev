@@ -3,7 +3,11 @@ export type RangeId = "10m" | "30m" | "1h" | "6h" | "12h" | "1d";
 export type TrendBucketId = "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 type RawRecord = Record<string, unknown>;
-
+export type OverviewRawPayload = {
+  data: DashboardOverviewResponse;
+  identity: string;
+  contextKey: string;
+};
 export interface DomainOption {
   id: string;
   label: string;

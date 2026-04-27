@@ -10,6 +10,7 @@ import {
   type ThemeDistributionResponse,
   type TrendBucketId,
   type TrendResponse,
+  type OverviewRawPayload
 } from "./data";
 import { SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
 import { DictionaryApiModal } from "./dictionary-modal";
@@ -46,6 +47,8 @@ import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSubbar } from "./DashboardSubbar";
 import { DashboardSidebar } from "./DashboardSidebar";
 import { DashboardRightRail } from "./DashboardRightRail";
+
+const ENABLE_TREND_PREFETCH = false;
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -84,6 +87,7 @@ export default function App() {
     }
   });
   const searchRef = useRef<HTMLDivElement>(null);
+  const lastWheelZoomAtRef = useRef(0);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -162,18 +166,61 @@ export default function App() {
       [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs].join("::"),
     [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
   );
+const overviewContextKey = useMemo(
+  () => [source, domain, rangeParam, search].join("::"),
+  [source, domain, rangeParam, search],
+);
 
+/* FetchWindow Effect*/ 
   useEffect(() => {
     const durationMs = Math.max(MIN_TREND_WINDOW_MS, trendWindow.endMs - trendWindow.startMs);
-    const edgeSlackMs = Math.max(2 * 60_000, Math.floor(durationMs * 0.05));
+
+    // 실제 cache 밖으로 나갔다고 볼 허용치
+    const outsideSlackMs = Math.max(60_000, Math.floor(durationMs * 0.02));
+
+    // cache 안쪽에서 이 정도만 남으면 미리 확장
+    const prefetchEdgeSlackMs = Math.max(5 * 60_000, Math.floor(durationMs * 0.12));
 
     setOverviewFetchWindow((prev) => {
-      const outsideCache = trendWindow.startMs < prev.startMs || trendWindow.endMs > prev.endMs;
+      const leftOverflowMs = prev.startMs - trendWindow.startMs;
+      const rightOverflowMs = trendWindow.endMs - prev.endMs;
+
+      const outsideCache =
+        leftOverflowMs > outsideSlackMs ||
+        rightOverflowMs > outsideSlackMs;
+
+      const strictlyInsideCache =
+        leftOverflowMs <= 0 &&
+        rightOverflowMs <= 0;
+
       const leftBufferMs = trendWindow.startMs - prev.startMs;
       const rightBufferMs = prev.endMs - trendWindow.endMs;
-      const nearCacheEdge = leftBufferMs <= edgeSlackMs || rightBufferMs <= edgeSlackMs;
+
+      const nearCacheEdge =
+        strictlyInsideCache &&
+        (leftBufferMs <= prefetchEdgeSlackMs || rightBufferMs <= prefetchEdgeSlackMs);
+
+       console.debug("[overview] fetch-window decision", {
+          durationMs,
+          prefetchEdgeSlackMs,
+          outsideSlackMs,
+          leftOverflowMs,
+          rightOverflowMs,
+          leftBufferMs,
+          rightBufferMs,
+          strictlyInsideCache,
+          outsideCache,
+          nearCacheEdge,
+        });
+
       if (!outsideCache && !nearCacheEdge) return prev;
-      const expanded = expandOverviewFetchWindow(trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs);
+
+      const expanded = expandOverviewFetchWindow(
+        trendWindow.startMs,
+        trendWindow.endMs,
+        overviewFetchClockMs,
+      );
+
       return {
         startMs: Math.min(prev.startMs, expanded.startMs),
         endMs: Math.max(prev.endMs, expanded.endMs),
@@ -181,26 +228,38 @@ export default function App() {
     });
   }, [trendWindow.startMs, trendWindow.endMs, overviewFetchClockMs]);
 
+
   const overviewIdentityKey = overviewRequestKey;
   const overviewCacheRef = useRef<
     Map<string, { data: DashboardOverviewResponse; identity: string; fetchStartMs: number; fetchEndMs: number }>
   >(new Map());
-  const overviewInFlightRef = useRef<
-    Map<string, Promise<{ data: DashboardOverviewResponse; identity: string }>>
-  >(new Map());
+const overviewInFlightRef = useRef<Map<string, Promise<OverviewRawPayload>>>(new Map());
 
-  const [overviewRaw, setOverviewRaw] = useState<AsyncState<{ data: DashboardOverviewResponse; identity: string }>>({
-    data: null,
-    loading: true,
-    error: null,
-  });
+const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
+  data: null,
+  loading: true,
+  error: null,
+});
 
   useEffect(() => {
     let alive = true;
 
     const exact = overviewCacheRef.current.get(overviewRequestKey);
     if (exact) {
-      setOverviewRaw({ data: { data: exact.data, identity: overviewRequestKey }, loading: false, error: null });
+       console.debug("[overview] exact cache hit", {
+      overviewRequestKey,
+      overviewBucket,
+      fetchWindow: overviewFetchWindow,
+    });
+     setOverviewRaw({
+        data: {
+          data: exact.data,
+          identity: overviewRequestKey,
+          contextKey: overviewContextKey,
+        },
+        loading: false,
+        error: null,
+      });
       return () => { alive = false; };
     }
 
@@ -211,8 +270,26 @@ export default function App() {
         entry.fetchStartMs <= overviewFetchWindow.startMs &&
         entry.fetchEndMs >= overviewFetchWindow.endMs
       ) {
+        console.debug("[overview] coverage cache hit", {
+      overviewRequestKey,
+      coveredBy: key,
+      overviewBucket,
+      requestedWindow: overviewFetchWindow,
+      cachedWindow: {
+        startMs: entry.fetchStartMs,
+        endMs: entry.fetchEndMs,
+      },
+    });
         overviewCacheRef.current.set(overviewRequestKey, { ...entry, identity: overviewRequestKey });
-        setOverviewRaw({ data: { data: entry.data, identity: overviewRequestKey }, loading: false, error: null });
+       setOverviewRaw({
+  data: {
+    data: entry.data,
+    identity: overviewRequestKey,
+    contextKey: overviewContextKey,
+  },
+  loading: false,
+  error: null,
+});
         return () => { alive = false; };
       }
     }
@@ -225,6 +302,11 @@ export default function App() {
 
     const existingRequest = overviewInFlightRef.current.get(overviewRequestKey);
     if (existingRequest) {
+      console.debug("[overview] regular in-flight hit", {
+      overviewRequestKey,
+      overviewBucket,
+      fetchWindow: overviewFetchWindow,
+    });
       existingRequest
         .then((data) => {
           if (!alive) return;
@@ -250,15 +332,24 @@ export default function App() {
         overviewFetchStartIso, overviewFetchEndIso,
         overviewBucket, search, 30,
         overviewFetchStartIso, overviewFetchEndIso,
+        
       )
       .then((data) => {
+        console.debug("[overview] regular fetch", {
+    overviewRequestKey,
+    overviewBucket,
+    fetchWindow: overviewFetchWindow,
+    fetchStartIso: overviewFetchStartIso,
+    fetchEndIso: overviewFetchEndIso,
+    trendWindow,
+  });
         overviewCacheRef.current.set(overviewRequestKey, {
           data,
           identity: overviewRequestKey,
           fetchStartMs: overviewFetchWindow.startMs,
           fetchEndMs: overviewFetchWindow.endMs,
         });
-        return { data, identity: overviewRequestKey };
+       return { data, identity: overviewRequestKey, contextKey: overviewContextKey };
       })
       .finally(() => {
         overviewInFlightRef.current.delete(overviewRequestKey);
@@ -287,10 +378,19 @@ export default function App() {
     overviewRequestKey,
   ]);
 
-  const overviewIsStale = overviewRaw.data != null && overviewRaw.data.identity !== overviewIdentityKey;
+  const overviewHasDifferentContext =
+  overviewRaw.data != null &&
+  overviewRaw.data.contextKey !== overviewContextKey;
+
+  const overviewHasDifferentRequest =
+    overviewRaw.data != null &&
+    overviewRaw.data.identity !== overviewIdentityKey;
+
   const overview: AsyncState<DashboardOverviewResponse> = {
-    data: overviewIsStale ? null : (overviewRaw.data?.data ?? null),
-    loading: overviewRaw.loading || overviewIsStale,
+    // 도메인/source/search/bucket 등 컨텍스트가 바뀐 경우만 이전 데이터 숨김
+    // chart zoom/pan으로 requestKey만 바뀐 경우는 이전 데이터를 유지
+    data: overviewHasDifferentContext ? null : (overviewRaw.data?.data ?? null),
+    loading: overviewRaw.loading || overviewHasDifferentRequest,
     error: overviewRaw.error,
   };
   const derivedOverview = useMemo(
@@ -374,25 +474,54 @@ export default function App() {
     [rankedKeywords, trendFetchLimit],
   );
   const trendCacheRef = useRef<Map<string, TrendResponse>>(new Map());
+  const trendInFlightRef = useRef<Map<string, Promise<TrendResponse>>>(new Map());
   const [trend, setTrend] = useState<AsyncState<TrendResponse>>({ data: null, loading: true, error: null });
   const [trendFetchWindow, setTrendFetchWindow] = useState(() =>
     expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, Date.now()),
   );
 
   useEffect(() => {
-    const desired = expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs);
-    const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
-    const visibleBuckets = Math.max(1, Math.ceil((trendWindow.endMs - trendWindow.startMs) / bucketMs));
-    const edgeSlackMs = bucketMs * Math.max(3, Math.min(10, Math.ceil(visibleBuckets * 0.2)));
-    setTrendFetchWindow((prev) => {
-      const shouldRefresh =
-        desired.startMs < prev.startMs ||
-        desired.endMs > prev.endMs ||
-        trendWindow.startMs <= prev.startMs + edgeSlackMs ||
-        trendWindow.endMs >= prev.endMs - edgeSlackMs;
-      return shouldRefresh ? desired : prev;
-    });
-  }, [trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs]);
+  const desired = expandTrendFetchWindow(
+    trendWindow.startMs,
+    trendWindow.endMs,
+    effectiveTrendBucket,
+    trendFetchClockMs,
+  );
+
+  const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
+  const durationMs = Math.max(MIN_TREND_WINDOW_MS, trendWindow.endMs - trendWindow.startMs);
+  const visibleBuckets = Math.max(1, Math.ceil(durationMs / bucketMs));
+
+  const edgeSlackMs = bucketMs * Math.max(3, Math.min(10, Math.ceil(visibleBuckets * 0.2)));
+  const outsideSlackMs = Math.max(bucketMs, Math.floor(durationMs * 0.02));
+
+  setTrendFetchWindow((prev) => {
+    const leftOverflowMs = prev.startMs - trendWindow.startMs;
+    const rightOverflowMs = trendWindow.endMs - prev.endMs;
+
+    const outsideCache =
+      leftOverflowMs > outsideSlackMs ||
+      rightOverflowMs > outsideSlackMs;
+
+    const strictlyInsideCache =
+      leftOverflowMs <= 0 &&
+      rightOverflowMs <= 0;
+
+    const leftBufferMs = trendWindow.startMs - prev.startMs;
+    const rightBufferMs = prev.endMs - trendWindow.endMs;
+
+    const nearCacheEdge =
+      strictlyInsideCache &&
+      (leftBufferMs <= edgeSlackMs || rightBufferMs <= edgeSlackMs);
+
+    if (!outsideCache && !nearCacheEdge) return prev;
+
+    return {
+      startMs: Math.min(prev.startMs, desired.startMs),
+      endMs: Math.max(prev.endMs, desired.endMs),
+    };
+  });
+}, [trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, trendFetchClockMs]);
 
   const preloadedTrendKeywordKey = useMemo(
     () => preloadedTrendKeywords.join("|"),
@@ -431,9 +560,49 @@ export default function App() {
       setTrend({ data: cached, loading: false, error: null });
       return;
     }
+
+    const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
+    const points = Math.ceil((trendFetchWindow.endMs - trendFetchWindow.startMs) / bucketMs);
+    const estimatedCells = points * preloadedTrendKeywords.length;
+    if (import.meta.env.DEV) {
+      console.debug("[trend] regular fetch", {
+        trendRequestKey, effectiveTrendBucket,
+        keywordCount: preloadedTrendKeywords.length, points, estimatedCells,
+        windowMs: trendFetchWindow.endMs - trendFetchWindow.startMs,
+      });
+    }
+    if (estimatedCells > 2000) {
+      console.warn("[trend] skip oversized request", { estimatedCells, points, keywordCount: preloadedTrendKeywords.length, effectiveTrendBucket });
+      setTrend((prev) => ({
+        data: prev.data,
+        loading: false,
+        error: "요청 범위가 너무 커서 트렌드 데이터를 건너뛰었습니다. 봉 간격을 키우거나 기간을 줄여주세요.",
+      }));
+      return;
+    }
+
     let alive = true;
     setTrend((prev) => ({ data: prev.data, loading: true, error: null }));
-    api
+
+    const existingTrendRequest = trendInFlightRef.current.get(trendRequestKey);
+    if (existingTrendRequest) {
+      existingTrendRequest
+        .then((data) => {
+          if (!alive) return;
+          setTrend({ data, loading: false, error: null });
+        })
+        .catch((error: unknown) => {
+          if (!alive) return;
+          setTrend((prev) => ({
+            data: prev.data,
+            loading: false,
+            error: error instanceof Error ? error.message : "알 수 없는 오류",
+          }));
+        });
+      return () => { alive = false; };
+    }
+
+    const request = api
       .trendWindow(
         source,
         domain,
@@ -443,17 +612,27 @@ export default function App() {
         preloadedTrendKeywords,
       )
       .then((data) => {
-        if (!alive) return;
         trendCacheRef.current.set(trendRequestKey, data);
+        return data;
+      })
+      .finally(() => {
+        trendInFlightRef.current.delete(trendRequestKey);
+      });
+
+    trendInFlightRef.current.set(trendRequestKey, request);
+
+    request
+      .then((data) => {
+        if (!alive) return;
         setTrend({ data, loading: false, error: null });
       })
       .catch((error: unknown) => {
         if (!alive) return;
-        setTrend({
-          data: null,
+        setTrend((prev) => ({
+          data: prev.data,
           loading: false,
           error: error instanceof Error ? error.message : "알 수 없는 오류",
-        });
+        }));
       });
     return () => {
       alive = false;
@@ -605,6 +784,10 @@ export default function App() {
   }
 
   function handleTrendWheelZoom(direction: "in" | "out", anchorRatio: number) {
+    const nowMs = Date.now();
+    if (nowMs - lastWheelZoomAtRef.current < 120) return;
+    lastWheelZoomAtRef.current = nowMs;
+
     setRangePreset(null);
     setTrendWindow((prev) => {
       const currentDuration = prev.endMs - prev.startMs;
@@ -640,9 +823,16 @@ export default function App() {
 
   // Zoom-out prefetch: when the user zooms out, pre-load the next zoom level's data
   useEffect(() => {
-    const isZoomingOut = trendDurationMs > prevZoomDurationForPrefetchRef.current * 1.2;
-    prevZoomDurationForPrefetchRef.current = trendDurationMs;
-
+    const previousDurationMs = prevZoomDurationForPrefetchRef.current;
+  const isZoomingOut = trendDurationMs > previousDurationMs * 1.5 ;
+  prevZoomDurationForPrefetchRef.current = trendDurationMs;
+ console.debug("[overview] prefetch check", {
+      previousDurationMs,
+      trendDurationMs,
+      ratio: trendDurationMs / previousDurationMs,
+      isZoomingOut,
+    });
+    
     if (!isZoomingOut || trendDurationMs >= MAX_TREND_WINDOW_MS) return;
     if (zoomOutPrefetchTimerRef.current != null) clearTimeout(zoomOutPrefetchTimerRef.current);
 
@@ -669,6 +859,13 @@ export default function App() {
         !overviewCacheRef.current.has(okey) &&
         !overviewPrefetchInFlightRef.current.has(okey)
       ) {
+         console.debug("[overview] prefetch fetch", {
+    okey,
+    currentOverviewRequestKey,
+    obucket,
+    prefetchWindow: ofw,
+    nextVisibleWindow: { startMs: ns, endMs: ne },
+  });
         overviewPrefetchInFlightRef.current.add(okey);
         const si = new Date(ofw.startMs).toISOString();
         const ei = new Date(ofw.endMs).toISOString();
@@ -681,8 +878,16 @@ export default function App() {
             overviewPrefetchInFlightRef.current.delete(okey);
           });
       }
-
-      if (ptk.length) {
+console.debug("[overview] prefetch overview decision", {
+    okey,
+    currentOverviewRequestKey,
+    sameAsCurrent: okey === currentOverviewRequestKey,
+    cacheHit: overviewCacheRef.current.has(okey),
+    inFlight: overviewPrefetchInFlightRef.current.has(okey),
+    obucket,
+    prefetchWindow: ofw,
+  });
+      if (ENABLE_TREND_PREFETCH && ptk.length) {
         const tfw = expandTrendFetchWindow(ns, ne, etb, ofcm);
         const tkey = [s, d, tfw.startMs, tfw.endMs, etb, ptkk].join("::");
         if (
@@ -698,7 +903,7 @@ export default function App() {
             });
         }
       }
-    }, 250);
+    }, 800);
 
     return () => {
       if (zoomOutPrefetchTimerRef.current != null) {
