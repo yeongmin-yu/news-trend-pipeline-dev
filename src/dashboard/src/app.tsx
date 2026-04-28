@@ -10,7 +10,8 @@ import {
   type ThemeDistributionResponse,
   type TrendBucketId,
   type TrendResponse,
-  type OverviewRawPayload
+  type OverviewRawPayload,
+  type TrendRawPayload
 } from "./data";
 import { SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
 import { DictionaryApiModal } from "./dictionary-modal";
@@ -49,8 +50,29 @@ import { DashboardSidebar } from "./DashboardSidebar";
 import { DashboardRightRail } from "./DashboardRightRail";
 
 const ENABLE_TREND_PREFETCH = false;
+const MAX_TREND_CELLS_PER_REQUEST = 12000;
+const MAX_TREND_BUCKETS_PER_REQUEST = 720;
+
+function getTrendRequestStats(
+  startMs: number,
+  endMs: number,
+  bucketId: TrendBucketId,
+  nowMs: number,
+  keywordCount: number,
+) {
+  const bucketMs = getTrendbucketMinutes(bucketId) * 60_000;
+  const fetchWindow = expandTrendFetchWindow(startMs, endMs, bucketId, nowMs);
+  const visiblePoints = Math.max(1, Math.ceil((endMs - startMs) / bucketMs));
+  const fetchBuckets = Math.max(1, Math.ceil((fetchWindow.endMs - fetchWindow.startMs) / bucketMs));
+  return {
+    visiblePoints,
+    fetchBuckets,
+    estimatedCells: fetchBuckets * Math.max(1, keywordCount),
+  };
+}
 
 export default function App() {
+
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
   const [rangePreset, setRangePreset] = useState<RangeId | null>("1h");
@@ -88,7 +110,9 @@ export default function App() {
   });
   const searchRef = useRef<HTMLDivElement>(null);
   const lastWheelZoomAtRef = useRef(0);
-
+  const trendWindowChangeReasonRef = useRef<
+  "init" | "wheel" | "pan" | "date-input" | "preset" | "bucket" | "auto-refresh"
+>("init");
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
@@ -116,13 +140,24 @@ export default function App() {
   const effectiveTrendBucket = useMemo<TrendBucketId>(() => {
     const preferred = trendBucketMode === "auto" ? pickAutoTrendBucket(trendDurationMs) : trendBucketMode;
     const preferredOption = TREND_BUCKET_OPTIONS.find((item) => item.id === preferred) ?? TREND_BUCKET_OPTIONS[1];
-    const maxAllowedMinutes = Math.ceil(trendDurationMs / MAX_POINTS_PER_QUERY / 60_000);
     const safeOption =
-      TREND_BUCKET_OPTIONS.find(
-        (item) => item.minutes >= maxAllowedMinutes && item.minutes >= preferredOption.minutes,
-      ) ?? TREND_BUCKET_OPTIONS[TREND_BUCKET_OPTIONS.length - 1];
+      TREND_BUCKET_OPTIONS.find((item) => {
+        if (item.minutes < preferredOption.minutes) return false;
+        const stats = getTrendRequestStats(
+          trendWindow.startMs,
+          trendWindow.endMs,
+          item.id,
+          Math.min(now, trendWindow.endMs),
+          trendFetchLimit,
+        );
+        return (
+          stats.visiblePoints <= MAX_POINTS_PER_QUERY &&
+          stats.fetchBuckets <= MAX_TREND_BUCKETS_PER_REQUEST &&
+          stats.estimatedCells <= MAX_TREND_CELLS_PER_REQUEST
+        );
+      }) ?? TREND_BUCKET_OPTIONS[TREND_BUCKET_OPTIONS.length - 1];
     return safeOption.id;
-  }, [trendBucketMode, trendDurationMs]);
+  }, [trendBucketMode, trendDurationMs, trendWindow.startMs, trendWindow.endMs, now, trendFetchLimit]);
   const committedStartIso = useMemo(() => new Date(committedWindow.startMs).toISOString(), [committedWindow.startMs]);
   const committedEndIso = useMemo(() => new Date(committedWindow.endMs).toISOString(), [committedWindow.endMs]);
   const autoRefreshTick = Math.floor(now / AUTO_REFRESH_INTERVAL_MS);
@@ -466,7 +501,14 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
     const selected = activeFilters.ranges.find((item) => item.id === rangePreset) ?? DEFAULT_FILTERS.ranges[2];
     const endMs = Math.min(now, autoRefreshTick * AUTO_REFRESH_INTERVAL_MS);
     const startMs = endMs - selected.bucketMin * selected.buckets * 60_000;
-    setTrendWindow((prev) => (prev.startMs === startMs && prev.endMs === endMs ? prev : { startMs, endMs }));
+    setTrendWindow((prev) => {
+      if (prev.startMs === startMs && prev.endMs === endMs) {
+        return prev;
+      }
+
+      trendWindowChangeReasonRef.current = "auto-refresh";
+      return { startMs, endMs };
+    });
   }, [autoRefresh, autoRefreshTick, activeFilters.ranges, now, rangePreset]);
 
   const preloadedTrendKeywords = useMemo(
@@ -475,10 +517,17 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
   );
   const trendCacheRef = useRef<Map<string, TrendResponse>>(new Map());
   const trendInFlightRef = useRef<Map<string, Promise<TrendResponse>>>(new Map());
-  const [trend, setTrend] = useState<AsyncState<TrendResponse>>({ data: null, loading: true, error: null });
+ 
+
+  const [trendRaw, setTrendRaw] = useState<AsyncState<TrendRawPayload>>({
+    data: null,
+    loading: true,
+    error: null,
+  });
   const [trendFetchWindow, setTrendFetchWindow] = useState(() =>
     expandTrendFetchWindow(trendWindow.startMs, trendWindow.endMs, effectiveTrendBucket, Date.now()),
   );
+  const previousEffectiveTrendBucketRef = useRef(effectiveTrendBucket);
 
   useEffect(() => {
   const desired = expandTrendFetchWindow(
@@ -491,11 +540,16 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
   const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
   const durationMs = Math.max(MIN_TREND_WINDOW_MS, trendWindow.endMs - trendWindow.startMs);
   const visibleBuckets = Math.max(1, Math.ceil(durationMs / bucketMs));
+  const bucketChanged = previousEffectiveTrendBucketRef.current !== effectiveTrendBucket;
+  previousEffectiveTrendBucketRef.current = effectiveTrendBucket;
 
   const edgeSlackMs = bucketMs * Math.max(3, Math.min(10, Math.ceil(visibleBuckets * 0.2)));
   const outsideSlackMs = Math.max(bucketMs, Math.floor(durationMs * 0.02));
 
   setTrendFetchWindow((prev) => {
+    const prevBuckets = Math.ceil((prev.endMs - prev.startMs) / bucketMs);
+    if (bucketChanged || prevBuckets > MAX_TREND_BUCKETS_PER_REQUEST) return desired;
+
     const leftOverflowMs = prev.startMs - trendWindow.startMs;
     const rightOverflowMs = trendWindow.endMs - prev.endMs;
 
@@ -527,6 +581,36 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
     () => preloadedTrendKeywords.join("|"),
     [preloadedTrendKeywords],
   );
+  const trendBucketOptionState = useMemo(
+    () =>
+      Object.fromEntries(
+        TREND_BUCKET_OPTIONS.map((option) => {
+          const stats = getTrendRequestStats(
+            trendWindow.startMs,
+            trendWindow.endMs,
+            option.id,
+            trendFetchClockMs,
+            preloadedTrendKeywords.length || trendFetchLimit,
+          );
+          const disabled =
+            stats.visiblePoints > MAX_POINTS_PER_QUERY ||
+            stats.fetchBuckets > MAX_TREND_BUCKETS_PER_REQUEST ||
+            stats.estimatedCells > MAX_TREND_CELLS_PER_REQUEST;
+
+          let reason: string | null = null;
+          if (stats.fetchBuckets > MAX_TREND_BUCKETS_PER_REQUEST) {
+            reason = `현재 기간이 ${option.label} 최대 조회 범위를 넘습니다. 기간을 줄이거나 더 큰 봉을 선택하세요.`;
+          } else if (stats.estimatedCells > MAX_TREND_CELLS_PER_REQUEST) {
+            reason = `현재 비교 키워드 수에서는 ${option.label} 요청 범위가 너무 큽니다. 기간을 줄이거나 비교 대상을 줄여주세요.`;
+          } else if (stats.visiblePoints > MAX_POINTS_PER_QUERY) {
+            reason = `현재 기간에서는 ${option.label} 포인트 수가 너무 많습니다.`;
+          }
+
+          return [option.id, { disabled, reason }];
+        }),
+      ) as Record<TrendBucketId, { disabled: boolean; reason: string | null }>,
+    [trendWindow.startMs, trendWindow.endMs, trendFetchClockMs, preloadedTrendKeywords.length, trendFetchLimit],
+  );
 
   // Always-current snapshot for zoom-out prefetch (avoids stale closure in setTimeout)
   const zoomOutPrefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -549,103 +633,194 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
       [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey].join("::"),
     [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey],
   );
+  const trendContextKey = useMemo(
+  () => [
+    source,
+    domain,
+    effectiveTrendBucket,
+    preloadedTrendKeywordKey,
+  ].join("::"),
+  [source, domain, effectiveTrendBucket, preloadedTrendKeywordKey],
+);
+const trendHasDifferentContext =
+  trendRaw.data != null &&
+  trendRaw.data.contextKey !== trendContextKey;
 
-  useEffect(() => {
-    if (!preloadedTrendKeywords.length) {
-      setTrend({ data: { series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse, loading: false, error: null });
-      return;
-    }
-    const cached = trendCacheRef.current.get(trendRequestKey);
-    if (cached) {
-      setTrend({ data: cached, loading: false, error: null });
-      return;
-    }
+const trendHasDifferentRequest =
+  trendRaw.data != null &&
+  trendRaw.data.identity !== trendRequestKey;
 
-    const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
-    const points = Math.ceil((trendFetchWindow.endMs - trendFetchWindow.startMs) / bucketMs);
-    const estimatedCells = points * preloadedTrendKeywords.length;
-    if (import.meta.env.DEV) {
-      console.debug("[trend] regular fetch", {
-        trendRequestKey, effectiveTrendBucket,
-        keywordCount: preloadedTrendKeywords.length, points, estimatedCells,
-        windowMs: trendFetchWindow.endMs - trendFetchWindow.startMs,
-      });
-    }
-    if (estimatedCells > 2000) {
-      console.warn("[trend] skip oversized request", { estimatedCells, points, keywordCount: preloadedTrendKeywords.length, effectiveTrendBucket });
-      setTrend((prev) => ({
-        data: prev.data,
-        loading: false,
-        error: "요청 범위가 너무 커서 트렌드 데이터를 건너뛰었습니다. 봉 간격을 키우거나 기간을 줄여주세요.",
-      }));
-      return;
-    }
+const trend: AsyncState<TrendResponse> = {
+  data: trendHasDifferentContext ? null : (trendRaw.data?.data ?? null),
+  loading: trendRaw.loading || trendHasDifferentRequest,
+  error: trendRaw.error,
+};
+useEffect(() => {
+  if (!preloadedTrendKeywords.length) {
+    setTrendRaw({
+      data: {
+        data: { series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse,
+        identity: trendRequestKey,
+        contextKey: trendContextKey,
+      },
+      loading: false,
+      error: null,
+    });
+    return;
+  }
 
-    let alive = true;
-    setTrend((prev) => ({ data: prev.data, loading: true, error: null }));
+  const cached = trendCacheRef.current.get(trendRequestKey);
+  if (cached) {
+    setTrendRaw({
+      data: {
+        data: cached,
+        identity: trendRequestKey,
+        contextKey: trendContextKey,
+      },
+      loading: false,
+      error: null,
+    });
+    return;
+  }
 
-    const existingTrendRequest = trendInFlightRef.current.get(trendRequestKey);
-    if (existingTrendRequest) {
-      existingTrendRequest
-        .then((data) => {
-          if (!alive) return;
-          setTrend({ data, loading: false, error: null });
-        })
-        .catch((error: unknown) => {
-          if (!alive) return;
-          setTrend((prev) => ({
-            data: prev.data,
-            loading: false,
-            error: error instanceof Error ? error.message : "알 수 없는 오류",
-          }));
-        });
-      return () => { alive = false; };
-    }
+  const bucketMs = getTrendbucketMinutes(effectiveTrendBucket) * 60_000;
+  const points = Math.ceil((trendFetchWindow.endMs - trendFetchWindow.startMs) / bucketMs);
+  const estimatedCells = points * preloadedTrendKeywords.length;
+  const isOversizedTrendRequest =
+    points > MAX_TREND_BUCKETS_PER_REQUEST ||
+    estimatedCells > MAX_TREND_CELLS_PER_REQUEST;
+  const oversizedTrendMessage =
+    points > MAX_TREND_BUCKETS_PER_REQUEST
+      ? `선택한 기간이 ${effectiveTrendBucket} 최대 조회 범위를 넘었습니다. 기간을 줄이거나 더 큰 봉으로 바꿔주세요.`
+      : `비교 키워드가 많아 ${effectiveTrendBucket} 요청 범위가 너무 큽니다. 기간을 줄이거나 비교 대상을 줄여주세요.`;
 
-    const request = api
-      .trendWindow(
-        source,
-        domain,
-        new Date(trendFetchWindow.startMs).toISOString(),
-        new Date(trendFetchWindow.endMs).toISOString(),
-        effectiveTrendBucket,
-        preloadedTrendKeywords,
-      )
-      .then((data) => {
-        trendCacheRef.current.set(trendRequestKey, data);
-        return data;
-      })
-      .finally(() => {
-        trendInFlightRef.current.delete(trendRequestKey);
-      });
+  if (isOversizedTrendRequest) {
+    console.warn("[trend] skip oversized request", {
+      estimatedCells,
+      points,
+      keywordCount: preloadedTrendKeywords.length,
+      effectiveTrendBucket,
+      reason: trendWindowChangeReasonRef.current,
+    });
 
-    trendInFlightRef.current.set(trendRequestKey, request);
+    setTrendRaw({
+      data: null,
+      loading: false,
+      error: oversizedTrendMessage,
+    });
 
-    request
+    return;
+  }
+
+  let alive = true;
+
+  setTrendRaw((prev) => {
+    const canKeepPrevious =
+      prev.data != null &&
+      prev.data.contextKey === trendContextKey;
+
+    return {
+      data: canKeepPrevious ? prev.data : null,
+      loading: true,
+      error: null,
+    };
+  });
+
+  const existingTrendRequest = trendInFlightRef.current.get(trendRequestKey);
+  if (existingTrendRequest) {
+    existingTrendRequest
       .then((data) => {
         if (!alive) return;
-        setTrend({ data, loading: false, error: null });
+        setTrendRaw({
+          data: {
+            data,
+            identity: trendRequestKey,
+            contextKey: trendContextKey,
+          },
+          loading: false,
+          error: null,
+        });
       })
       .catch((error: unknown) => {
         if (!alive) return;
-        setTrend((prev) => ({
-          data: prev.data,
-          loading: false,
-          error: error instanceof Error ? error.message : "알 수 없는 오류",
-        }));
+        setTrendRaw((prev) => {
+          const canKeepPrevious =
+            prev.data != null &&
+            prev.data.contextKey === trendContextKey;
+
+          return {
+            data: canKeepPrevious ? prev.data : null,
+            loading: false,
+            error: error instanceof Error ? error.message : "알 수 없는 오류",
+          };
+        });
       });
+
     return () => {
       alive = false;
     };
-  }, [
-    source,
-    domain,
-    trendFetchWindow.startMs,
-    trendFetchWindow.endMs,
-    effectiveTrendBucket,
-    preloadedTrendKeywordKey,
-    trendRequestKey,
-  ]);
+  }
+
+  const request = api
+    .trendWindow(
+      source,
+      domain,
+      new Date(trendFetchWindow.startMs).toISOString(),
+      new Date(trendFetchWindow.endMs).toISOString(),
+      effectiveTrendBucket,
+      preloadedTrendKeywords,
+    )
+    .then((data) => {
+      trendCacheRef.current.set(trendRequestKey, data);
+      return data;
+    })
+    .finally(() => {
+      trendInFlightRef.current.delete(trendRequestKey);
+    });
+
+  trendInFlightRef.current.set(trendRequestKey, request);
+
+  request
+    .then((data) => {
+      if (!alive) return;
+      setTrendRaw({
+        data: {
+          data,
+          identity: trendRequestKey,
+          contextKey: trendContextKey,
+        },
+        loading: false,
+        error: null,
+      });
+    })
+    .catch((error: unknown) => {
+      if (!alive) return;
+      setTrendRaw((prev) => {
+        const canKeepPrevious =
+          prev.data != null &&
+          prev.data.contextKey === trendContextKey;
+
+        return {
+          data: canKeepPrevious ? prev.data : null,
+          loading: false,
+          error: error instanceof Error ? error.message : "알 수 없는 오류",
+        };
+      });
+    });
+
+  return () => {
+    alive = false;
+  };
+}, [
+  source,
+  domain,
+  trendFetchWindow.startMs,
+  trendFetchWindow.endMs,
+  effectiveTrendBucket,
+  preloadedTrendKeywordKey,
+  trendRequestKey,
+  trendContextKey,
+]);
 
   const detailTrend = useAsyncData(
     () =>
@@ -763,6 +938,7 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
   function setTrendWindowBound(kind: "start" | "end", value: string) {
     const parsed = fromDateTimeLocalInput(value);
     if (parsed == null) return;
+      trendWindowChangeReasonRef.current = "date-input";
     setRangePreset(null);
     setTrendWindow((prev) => {
       const next =
@@ -773,6 +949,7 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
   }
 
   function applyRangePreset(nextRange: RangeId) {
+      trendWindowChangeReasonRef.current = "preset";
     setRangePreset(nextRange);
     const selected = activeFilters.ranges.find((item) => item.id === nextRange) ?? DEFAULT_FILTERS.ranges[2];
     const endMs = now;
@@ -787,6 +964,8 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
     const nowMs = Date.now();
     if (nowMs - lastWheelZoomAtRef.current < 120) return;
     lastWheelZoomAtRef.current = nowMs;
+
+    trendWindowChangeReasonRef.current = "wheel";
 
     setRangePreset(null);
     setTrendWindow((prev) => {
@@ -803,6 +982,7 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
 
   function handleTrendDragPan(deltaRatio: number) {
     if (!deltaRatio) return;
+     trendWindowChangeReasonRef.current = "pan";
     setRangePreset(null);
     setTrendWindow((prev) => {
       const duration = prev.endMs - prev.startMs;
@@ -1064,22 +1244,29 @@ console.debug("[overview] prefetch overview decision", {
                 <div className="seg">
                   <button
                     className={trendBucketMode === "auto" ? "is-active" : ""}
-                    onClick={() => setTrendBucketMode("auto")}
+                    onClick={() => {
+                      trendWindowChangeReasonRef.current = "bucket";
+                      setTrendBucketMode("auto");
+                    }}
                   >
                     자동
                   </button>
                   {TREND_BUCKET_OPTIONS.map((option) => {
                     const disabled =
-                      Math.ceil(trendDurationMs / (option.minutes * 60_000)) > MAX_POINTS_PER_QUERY;
+                      Math.ceil(trendDurationMs / (option.minutes * 60_000)) > MAX_POINTS_PER_QUERY ||
+                      trendBucketOptionState[option.id].disabled;
                     return (
-                      <button
-                        key={option.id}
-                        className={trendBucketMode === option.id ? "is-active" : ""}
-                        onClick={() => setTrendBucketMode(option.id)}
-                        disabled={disabled}
-                        title={disabled ? "현재 기간에서는 포인트 수가 너무 많습니다." : option.label}
-                      >
-                        {option.label}
+                       <button
+                          key={option.id}
+                          className={trendBucketMode === option.id ? "is-active" : ""}
+                          onClick={() => {
+                            trendWindowChangeReasonRef.current = "bucket";
+                            setTrendBucketMode(option.id);
+                          }}
+                          disabled={disabled}
+                          title={disabled ? "현재 기간에서는 포인트 수가 너무 많습니다." : option.label}
+                        >
+                          {option.label}
                       </button>
                     );
                   })}

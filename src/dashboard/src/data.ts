@@ -8,6 +8,11 @@ export type OverviewRawPayload = {
   identity: string;
   contextKey: string;
 };
+export  type TrendRawPayload = {
+    data: TrendResponse;
+    identity: string;
+    contextKey: string;
+  };
 export interface DomainOption {
   id: string;
   label: string;
@@ -554,7 +559,16 @@ async function requestRaw(path: string, init?: RequestInit): Promise<unknown> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text) as { detail?: unknown };
+      if (typeof parsed.detail === "string") {
+        message = parsed.detail;
+      }
+    } catch {
+      // Keep the raw response body when it is not JSON.
+    }
+    throw new Error(message || `Request failed: ${response.status}`);
   }
   if (response.status === 204) {
     return undefined;

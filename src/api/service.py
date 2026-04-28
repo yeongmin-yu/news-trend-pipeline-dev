@@ -1134,8 +1134,8 @@ def get_trend_window_series(
     domain_filter = _domain_filter(domain)
     bucket_interval, bucket_min = TREND_BUCKETS[bucket_id]
     bucket_delta = timedelta(minutes=bucket_min)
-    start_utc = start_at.astimezone(UTC)
-    end_utc = end_at.astimezone(UTC)
+    start_utc = _normalize_utc(start_at)
+    end_utc = _normalize_utc(end_at)
     total_buckets = max(1, ceil((end_utc - start_utc).total_seconds() / bucket_delta.total_seconds()))
     if total_buckets > 720:
         raise ValueError("Requested range is too wide for the selected bucket")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
@@ -163,14 +163,17 @@ def dashboard_trend_window(
     bucket: str = Query(default="15m"),
 ) -> dict:
     selected_keywords = [item.strip() for item in keywords.split(",") if item.strip()]
-    return get_trend_window_series(
-        source=source,
-        domain=domain,
-        start_at=start_at,
-        end_at=end_at,
-        bucket_id=bucket,
-        keywords=selected_keywords,
-    )
+    try:
+        return get_trend_window_series(
+            source=source,
+            domain=domain,
+            start_at=start_at,
+            end_at=end_at,
+            bucket_id=bucket,
+            keywords=selected_keywords,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/dashboard/spikes")

@@ -18,7 +18,7 @@ interface DashboardSubbarProps {
   setSearchFocus: (v: boolean) => void;
   typeaheadMatches: KeywordSummary[];
   setSelectedKeyword: (k: string | null) => void;
-  searchRef: React.RefObject<HTMLDivElement | null>;
+  searchRef: React.Ref<HTMLDivElement>;
 }
 
 export function DashboardSubbar({
