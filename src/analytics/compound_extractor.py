@@ -92,8 +92,17 @@ def _extract_candidates(
 
     total_counts: dict[str, Counter[str]] = defaultdict(Counter)
     doc_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    total_articles = len(articles)
+    progress_interval = max(1, total_articles // 10) if total_articles else 1
+    skipped_empty = 0
 
-    for article in articles:
+    logger.info(
+        "복합명사 후보 추출 진행 시작 | articles=%d | progress_interval=%d",
+        total_articles,
+        progress_interval,
+    )
+
+    for index, article in enumerate(articles, start=1):
         domain = _normalize_domain(article.get("domain"))
         text = " ".join(
             part
@@ -105,6 +114,16 @@ def _extract_candidates(
         )
         cleaned = _clean_for_extraction(text)
         if not cleaned:
+            skipped_empty += 1
+            if index % progress_interval == 0 or index == total_articles:
+                logger.info(
+                    "복합명사 후보 추출 진행률 | processed=%d/%d | percent=%d | skipped_empty=%d | domains=%d",
+                    index,
+                    total_articles,
+                    int(index * 100 / total_articles),
+                    skipped_empty,
+                    len(total_counts),
+                )
             continue
 
         tokens = kiwi.tokenize(cleaned)
@@ -136,6 +155,17 @@ def _extract_candidates(
 
         for word in article_words:
             doc_counts[domain][word] += 1
+
+        if index % progress_interval == 0 or index == total_articles:
+            logger.info(
+                "복합명사 후보 추출 진행률 | processed=%d/%d | percent=%d | skipped_empty=%d | domains=%d | unique_candidates=%d",
+                index,
+                total_articles,
+                int(index * 100 / total_articles),
+                skipped_empty,
+                len(total_counts),
+                sum(len(counter) for counter in total_counts.values()),
+            )
 
     return {
         domain: {
@@ -193,6 +223,7 @@ def run_extraction_job(
 
     # 이미 승인된 단어는 후보에서 제외
     excluded: set[str] = set(fetch_compound_nouns())
+    logger.info("기존 복합명사 사전 로드 완료 | excluded_words=%d", len(excluded))
 
     candidates_by_domain = _extract_candidates(
         articles,
@@ -207,9 +238,19 @@ def run_extraction_job(
 
     new_count = 0
     updated_count = 0
+    processed_domains = 0
+    total_domains = sum(1 for candidates in candidates_by_domain.values() if candidates)
     for domain, candidates in candidates_by_domain.items():
         if not candidates:
             continue
+        processed_domains += 1
+        logger.info(
+            "domain upsert 시작 | domain=%s | candidates=%d | progress=%d/%d",
+            domain,
+            len(candidates),
+            processed_domains,
+            total_domains,
+        )
         domain_new_count, domain_updated_count = upsert_compound_candidates(
             candidates,
             domain=domain,

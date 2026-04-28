@@ -31,6 +31,12 @@ def run_event_detection_job(
 ) -> dict[str, int]:
     until_dt = (until or datetime.now(UTC)).astimezone(UTC)
     since_dt = until_dt - timedelta(hours=lookback_hours)
+    logger.info(
+        "keyword event detection started | lookback_hours=%d | since=%s | until=%s",
+        lookback_hours,
+        since_dt.isoformat(),
+        until_dt.isoformat(),
+    )
 
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
@@ -51,15 +57,19 @@ def run_event_detection_job(
                 (since_dt, until_dt),
             )
             rows = list(cursor.fetchall())
+    logger.info("keyword trend source rows fetched | rows=%d", len(rows))
 
     grouped: defaultdict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for row in rows:
         grouped[(row["provider"], row["domain"], row["keyword"])].append(row)
+    logger.info("keyword groups built | groups=%d", len(grouped))
 
     detected_at = datetime.now(UTC)
     event_rows: list[dict] = []
+    total_groups = len(grouped)
+    progress_interval = max(1, total_groups // 10) if total_groups else 1
 
-    for (provider, domain, keyword), items in grouped.items():
+    for index, ((provider, domain, keyword), items) in enumerate(grouped.items(), start=1):
         previous = 0
         for item in items:
             current_mentions = int(item["keyword_count"] or 0)
@@ -84,6 +94,16 @@ def run_event_detection_job(
                 )
             previous = current_mentions
 
+        if index % progress_interval == 0 or index == total_groups:
+            logger.info(
+                "keyword event detection progress | processed_groups=%d/%d | percent=%d | event_rows=%d",
+                index,
+                total_groups,
+                int(index * 100 / total_groups),
+                len(event_rows),
+            )
+
+    logger.info("keyword events replace start | event_rows=%d", len(event_rows))
     replace_keyword_events(event_rows, since=since_dt, until=until_dt)
     logger.info(
         "keyword event detection finished | source_rows=%d | event_rows=%d | since=%s | until=%s",
