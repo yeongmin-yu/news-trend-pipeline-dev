@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
+    CompoundBackfillRequest,
     ReviewCandidateRequest,
     UpdateDomainRequest,
     UpsertCompoundNounRequest,
@@ -13,6 +14,9 @@ from api.schemas import (
     UpsertStopwordRequest,
 )
 from api.service import (
+    AirflowTriggerError,
+    DictionaryDomainConflictError,
+    DictionaryItemNotFoundError,
     approve_stopword_candidate,
     create_query_keyword,
     create_compound_noun,
@@ -41,6 +45,7 @@ from api.service import (
     reject_stopword_candidate,
     review_compound_candidate,
     trigger_compound_auto_approve,
+    trigger_compound_keyword_backfill_dag,
     trigger_stopword_recommender,
     update_compound_noun_domain,
     update_stopword_domain,
@@ -312,7 +317,12 @@ def dictionary_create_compound_noun(payload: UpsertCompoundNounRequest) -> dict[
 
 @app.patch("/api/v1/dictionary/compound-nouns/{item_id}/domain")
 def dictionary_update_compound_noun_domain(item_id: int, payload: UpdateDomainRequest) -> dict[str, str]:
-    update_compound_noun_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
+    try:
+        update_compound_noun_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
+    except DictionaryItemNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DictionaryDomainConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "ok"}
 
 
@@ -333,19 +343,24 @@ def dictionary_reject_candidate(candidate_id: int, payload: ReviewCandidateReque
 
 
 @app.post("/api/v1/dictionary/stopwords", status_code=201)
-def dictionary_create_stopword(payload: UpsertStopwordRequest) -> dict[str, str]:
-    create_stopword(
+def dictionary_create_stopword(payload: UpsertStopwordRequest) -> dict[str, object]:
+    cleanup = create_stopword(
         word=payload.word.strip(),
         language=payload.language.strip() or "ko",
         actor=payload.actor.strip() or "dashboard-admin",
         domain=payload.domain.strip() or "all",
     )
-    return {"status": "ok"}
+    return {"status": "ok", "cleanup": cleanup}
 
 
 @app.patch("/api/v1/dictionary/stopwords/{item_id}/domain")
 def dictionary_update_stopword_domain(item_id: int, payload: UpdateDomainRequest) -> dict[str, str]:
-    update_stopword_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
+    try:
+        update_stopword_domain(item_id, domain=payload.domain.strip() or "all", actor=payload.actor.strip() or "dashboard-admin")
+    except DictionaryItemNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DictionaryDomainConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "ok"}
 
 
@@ -386,6 +401,22 @@ def admin_run_compound_auto_approve() -> dict:
 @app.post("/api/v1/admin/run-stopword-recommender")
 def admin_run_stopword_recommender() -> dict:
     return trigger_stopword_recommender()
+
+
+@app.post("/api/v1/admin/compound-keyword-backfill", status_code=202)
+def admin_trigger_compound_keyword_backfill(payload: CompoundBackfillRequest) -> dict:
+    try:
+        return trigger_compound_keyword_backfill_dag(
+            word=payload.word,
+            domain=payload.domain,
+            since=payload.since,
+            until=payload.until,
+            dry_run=payload.dry_run,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AirflowTriggerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/admin/query-keywords")

@@ -258,6 +258,21 @@ export interface DictionaryPage<T> {
   limit: number;
 }
 
+export interface CompoundBackfillRequest {
+  word: string;
+  domain: string;
+  since: string;
+  until: string;
+  dryRun?: boolean;
+}
+
+export interface CompoundBackfillResponse {
+  status: string;
+  dagId: string;
+  dagRunId: string;
+  conf: Record<string, unknown>;
+}
+
 /** @deprecated 페이징 전환 전 호환용 — 신규 코드에서는 DictionaryMeta 사용 */
 export interface DictionaryOverview extends DictionaryMeta {
   compoundNouns: CompoundNounItem[];
@@ -792,6 +807,17 @@ export const api = {
     request<Record<string, number>>("/admin/run-compound-auto-approve", { method: "POST" }),
   runStopwordRecommender: () =>
     request<Record<string, number>>("/admin/run-stopword-recommender", { method: "POST" }),
+  triggerCompoundBackfill: (payload: CompoundBackfillRequest) =>
+    request<CompoundBackfillResponse>("/admin/compound-keyword-backfill", {
+      method: "POST",
+      body: JSON.stringify({
+        word: payload.word,
+        domain: payload.domain,
+        since: payload.since,
+        until: payload.until,
+        dry_run: payload.dryRun ?? false,
+      }),
+    }),
   createQueryKeyword: (payload: { domainId: string; query: string; sortOrder: number; isActive?: boolean }) =>
     request<QueryKeywordItem>("/admin/query-keywords", {
       method: "POST",

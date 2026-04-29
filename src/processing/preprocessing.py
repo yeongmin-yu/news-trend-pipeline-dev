@@ -236,6 +236,7 @@ def merge_compound_nouns(
     tokens: list[str],
     user_dict: frozenset[str] | None = None,
     spans: list[tuple[int, int]] | None = None,
+    text: str | None = None,
 ) -> list[str]:
     if not tokens:
         return tokens
@@ -253,7 +254,11 @@ def merge_compound_nouns(
         upper = min(max_window, n - i)
         for window_size in range(upper, 1, -1):
             if spans is not None:
-                contiguous = all(spans[j][1] == spans[j + 1][0] for j in range(i, i + window_size - 1))
+                contiguous = all(
+                    spans[j][1] == spans[j + 1][0]
+                    or (text is not None and text[spans[j][1] : spans[j + 1][0]].strip() == "")
+                    for j in range(i, i + window_size - 1)
+                )
                 if not contiguous:
                     continue
             candidate = "".join(tokens[i : i + window_size])
@@ -298,7 +303,7 @@ def tokenize(text: str | None, domain: str = "all") -> list[str]:
             if token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
                 raw_nouns.append(normalized)
                 raw_spans.append((token.start, token.start + token.len))
-        merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(domain), spans=raw_spans)
+        merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(domain), spans=raw_spans, text=cleaned)
         nouns = [token for token in merged if len(token) > 1 and token not in stopwords]
         if nouns:
             return nouns

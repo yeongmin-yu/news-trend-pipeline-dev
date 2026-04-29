@@ -388,6 +388,69 @@ def update_stopword_domain(*, item_id: int, domain: str) -> dict[str, Any] | Non
             return cursor.fetchone()
 
 
+def delete_keyword_data_for_stopword(*, word: str, domain: str = "all") -> dict[str, int]:
+    domain_filter = None if domain == "all" else domain
+    counts: dict[str, int] = {}
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM keyword_relations
+                WHERE (keyword_a = %s OR keyword_b = %s)
+                  AND (%s IS NULL OR domain = %s)
+                """,
+                (word, word, domain_filter, domain_filter),
+            )
+            counts["keyword_relations"] = cursor.rowcount
+
+            cursor.execute(
+                """
+                DELETE FROM keyword_events
+                WHERE keyword = %s
+                  AND (%s IS NULL OR domain = %s)
+                """,
+                (word, domain_filter, domain_filter),
+            )
+            counts["keyword_events"] = cursor.rowcount
+
+            cursor.execute(
+                """
+                DELETE FROM keyword_trends
+                WHERE keyword = %s
+                  AND (%s IS NULL OR domain = %s)
+                """,
+                (word, domain_filter, domain_filter),
+            )
+            counts["keyword_trends"] = cursor.rowcount
+
+            cursor.execute(
+                """
+                DELETE FROM keywords
+                WHERE keyword = %s
+                  AND (%s IS NULL OR article_domain = %s)
+                """,
+                (word, domain_filter, domain_filter),
+            )
+            counts["keywords"] = cursor.rowcount
+
+            cursor.execute(
+                """
+                DELETE FROM stg_keyword_relations
+                WHERE keyword_a = %s OR keyword_b = %s
+                """,
+                (word, word),
+            )
+            counts["stg_keyword_relations"] = cursor.rowcount
+
+            cursor.execute("DELETE FROM stg_keyword_trends WHERE keyword = %s", (word,))
+            counts["stg_keyword_trends"] = cursor.rowcount
+
+            cursor.execute("DELETE FROM stg_keywords WHERE keyword = %s", (word,))
+            counts["stg_keywords"] = cursor.rowcount
+
+    return counts
+
+
 def fetch_dictionary_versions() -> dict[str, int]:
     with get_connection() as conn:
         with conn.cursor() as cursor:

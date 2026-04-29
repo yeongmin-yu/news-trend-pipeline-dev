@@ -294,7 +294,7 @@ with DAG(
     schedule="*/15 * * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["news", "kafka", "replay"],
+    tags=["뉴스", "카프카", "재처리"],
 ) as dag:
 
     check_kafka_health = PythonOperator(

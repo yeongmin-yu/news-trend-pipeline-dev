@@ -79,7 +79,7 @@ with DAG(
     schedule="0 * * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["dictionary", "compound-noun", "analytics"],
+    tags=["용어사전", "복합명사", "후보추출"],
 ) as dag:
 
     extract_compound_candidates = PythonOperator(

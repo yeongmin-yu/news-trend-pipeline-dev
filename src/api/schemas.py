@@ -192,6 +192,14 @@ class ReviewCandidateRequest(BaseModel):
     reviewed_by: str = "admin"
 
 
+class CompoundBackfillRequest(BaseModel):
+    word: str
+    domain: str = "all"
+    since: str
+    until: str
+    dry_run: bool = False
+
+
 class UpsertQueryKeywordRequest(BaseModel):
     domain_id: str
     query: str

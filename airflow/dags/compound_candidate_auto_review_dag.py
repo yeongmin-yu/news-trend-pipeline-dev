@@ -36,6 +36,7 @@ with DAG(
     schedule="0 */2 * * *",
     catchup=False,
     max_active_runs=1,
+    tags=["용어사전", "복합명사", "자동검토"],
 ) as dag:
 
     auto_review = PythonOperator(

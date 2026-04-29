@@ -99,6 +99,8 @@ export default function App() {
   const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [dataRefreshNonce, setDataRefreshNonce] = useState(0);
+  const [stopwordMessage, setStopwordMessage] = useState<string | null>(null);
   const [dictionaryOpen, setDictionaryOpen] = useState(false);
   const [queryKeywordOpen, setQueryKeywordOpen] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
@@ -125,6 +127,12 @@ export default function App() {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!stopwordMessage) return;
+    const id = window.setTimeout(() => setStopwordMessage(null), 3200);
+    return () => window.clearTimeout(id);
+  }, [stopwordMessage]);
 
   const filters = useAsyncData(() => api.filters(), []);
   const activeFilters = filters.data ?? DEFAULT_FILTERS;
@@ -198,8 +206,8 @@ export default function App() {
   );
   const overviewRequestKey = useMemo(
     () =>
-      [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs].join("::"),
-    [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs],
+      [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs, dataRefreshNonce].join("::"),
+    [source, domain, rangeParam, overviewBucket, search, overviewFetchWindow.startMs, overviewFetchWindow.endMs, dataRefreshNonce],
   );
 const overviewContextKey = useMemo(
   () => [source, domain, rangeParam, search].join("::"),
@@ -630,8 +638,8 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
 
   const trendRequestKey = useMemo(
     () =>
-      [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey].join("::"),
-    [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey],
+      [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey, dataRefreshNonce].join("::"),
+    [source, domain, trendFetchWindow.startMs, trendFetchWindow.endMs, effectiveTrendBucket, preloadedTrendKeywordKey, dataRefreshNonce],
   );
   const trendContextKey = useMemo(
   () => [
@@ -827,7 +835,7 @@ useEffect(() => {
       selectedKeyword
         ? api.trendWindow(source, domain, committedStartIso, committedEndIso, effectiveTrendBucket, [selectedKeyword])
         : Promise.resolve({ series: [], range: DEFAULT_FILTERS.ranges[2] } as TrendResponse),
-    [source, domain, selectedKeyword, effectiveTrendBucket, committedStartIso, committedEndIso],
+    [source, domain, selectedKeyword, effectiveTrendBucket, committedStartIso, committedEndIso, dataRefreshNonce],
   );
   const related = useAsyncData(
     () =>
@@ -1102,6 +1110,44 @@ console.debug("[overview] prefetch overview decision", {
     setWatchlist((prev) => prev.filter((k) => k !== keyword));
   }
 
+  async function addCheckedKeywordsToStopwords() {
+    await addKeywordsToStopwords(checkedTrendKeywords, { confirmBeforeRun: true });
+  }
+
+  async function addKeywordsToStopwords(keywordsToAdd: string[], { confirmBeforeRun }: { confirmBeforeRun: boolean }) {
+    const normalizedKeywords = Array.from(new Set(keywordsToAdd.map((item) => item.trim()).filter(Boolean)));
+    if (!normalizedKeywords.length) return;
+    if (confirmBeforeRun) {
+      const confirmed = window.confirm(
+        `체크된 키워드 ${normalizedKeywords.length}개를 "${domain}" 도메인의 불용어로 등록할까요?\n\n${normalizedKeywords.join(", ")}`,
+      );
+      if (!confirmed) return;
+    }
+    try {
+      for (const item of normalizedKeywords) {
+        await api.createStopword(item, domain);
+      }
+      overviewCacheRef.current.clear();
+      trendCacheRef.current.clear();
+      overviewInFlightRef.current.clear();
+      trendInFlightRef.current.clear();
+      overviewPrefetchInFlightRef.current.clear();
+      trendPrefetchInFlightRef.current.clear();
+      setCheckedTrendKeywords((prev) => prev.filter((item) => !normalizedKeywords.includes(item)));
+      setHiddenSeries((prev) => prev.filter((item) => !normalizedKeywords.includes(item)));
+      setWatchlist((prev) => prev.filter((item) => !normalizedKeywords.includes(item)));
+      setSelectedKeyword((prev) => (prev && normalizedKeywords.includes(prev) ? null : prev));
+      setStopwordMessage(
+        normalizedKeywords.length === 1
+          ? `불용어 추가: ${normalizedKeywords[0]}`
+          : `불용어 ${normalizedKeywords.length}개 추가 완료`,
+      );
+      setDataRefreshNonce((prev) => prev + 1);
+    } catch (error) {
+      setStopwordMessage(error instanceof Error ? error.message : "불용어 처리 실패");
+    }
+  }
+
   return (
     <div className="app" data-right-closed={selectedKeyword ? "false" : "true"}>
       <DashboardHeader
@@ -1113,6 +1159,7 @@ console.debug("[overview] prefetch overview decision", {
         setDictionaryOpen={setDictionaryOpen}
         setQueryKeywordOpen={setQueryKeywordOpen}
       />
+      {stopwordMessage ? <div className="toast">{stopwordMessage}</div> : null}
 
       <DashboardSubbar
         activeFilters={activeFilters}
@@ -1213,6 +1260,7 @@ console.debug("[overview] prefetch overview decision", {
               sortBy={topSort}
               onLimitChange={setTopLimit}
               onSortChange={setTopSort}
+              onAddCheckedStopwords={addCheckedKeywordsToStopwords}
             />
           )}
 

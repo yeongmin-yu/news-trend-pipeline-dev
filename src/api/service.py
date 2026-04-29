@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 import socket
+import time
 from math import ceil
 from collections import defaultdict
 from dataclasses import dataclass
@@ -9,12 +13,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from psycopg2 import errors
 from psycopg2.extras import RealDictCursor
 
 from core.config import settings
 from core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
 from storage.db import (
     create_query_keyword as db_create_query_keyword,
+    delete_keyword_data_for_stopword,
     delete_query_keyword as db_delete_query_keyword,
     fetch_all_query_keywords,
     fetch_collection_metrics_summary,
@@ -44,6 +50,18 @@ class RangeSpec:
     @property
     def duration(self) -> timedelta:
         return timedelta(minutes=self.bucket_min * self.buckets)
+
+
+class DictionaryItemNotFoundError(ValueError):
+    pass
+
+
+class DictionaryDomainConflictError(ValueError):
+    pass
+
+
+class AirflowTriggerError(RuntimeError):
+    pass
 
 
 RANGES: dict[str, RangeSpec] = {
@@ -1544,7 +1562,7 @@ def review_compound_candidate(candidate_id: int, action: str, reviewed_by: str) 
     )
 
 
-def create_stopword(word: str, language: str, actor: str = "dashboard-admin", domain: str = "all") -> None:
+def create_stopword(word: str, language: str, actor: str = "dashboard-admin", domain: str = "all") -> dict[str, int]:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -1565,11 +1583,17 @@ def create_stopword(word: str, language: str, actor: str = "dashboard-admin", do
         after=after,
         actor=actor,
     )
+    return delete_keyword_data_for_stopword(word=word, domain=domain)
 
 
 def update_compound_noun_domain(item_id: int, domain: str, actor: str = "dashboard-admin") -> None:
     before = fetch_compound_noun_item(item_id)
-    after = db_update_compound_noun_domain(item_id=item_id, domain=domain)
+    if before is None:
+        raise DictionaryItemNotFoundError("Compound noun not found")
+    try:
+        after = db_update_compound_noun_domain(item_id=item_id, domain=domain)
+    except errors.UniqueViolation as exc:
+        raise DictionaryDomainConflictError("Compound noun already exists in the target domain") from exc
     log_dictionary_audit(
         entity_type="compound_noun",
         entity_id=item_id,
@@ -1582,7 +1606,12 @@ def update_compound_noun_domain(item_id: int, domain: str, actor: str = "dashboa
 
 def update_stopword_domain(item_id: int, domain: str, actor: str = "dashboard-admin") -> None:
     before = fetch_stopword_item(item_id)
-    after = db_update_stopword_domain(item_id=item_id, domain=domain)
+    if before is None:
+        raise DictionaryItemNotFoundError("Stopword not found")
+    try:
+        after = db_update_stopword_domain(item_id=item_id, domain=domain)
+    except errors.UniqueViolation as exc:
+        raise DictionaryDomainConflictError("Stopword already exists in the target domain") from exc
     log_dictionary_audit(
         entity_type="stopword",
         entity_id=item_id,
@@ -1676,6 +1705,82 @@ def trigger_compound_auto_approve() -> dict[str, int]:
 def trigger_stopword_recommender() -> dict[str, int]:
     from analytics.stopword_recommender import run_stopword_recommender
     return run_stopword_recommender()
+
+
+def trigger_compound_keyword_backfill_dag(
+    *,
+    word: str,
+    domain: str,
+    since: str,
+    until: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    normalized_word = word.strip()
+    normalized_domain = (domain or "all").strip() or "all"
+    if not normalized_word:
+        raise ValueError("word is required")
+    if not since.strip() or not until.strip():
+        raise ValueError("since and until are required")
+
+    dag_id = "compound_keyword_backfill"
+    airflow_base_url = os.getenv("AIRFLOW_API_BASE_URL", "http://airflow-apiserver:8080").rstrip("/")
+    username = os.getenv("AIRFLOW_API_USERNAME", os.getenv("_AIRFLOW_WWW_USER_USERNAME", "airflow"))
+    password = os.getenv("AIRFLOW_API_PASSWORD", os.getenv("_AIRFLOW_WWW_USER_PASSWORD", "airflow"))
+    # Airflow run_id must match ^[A-Za-z0-9_.~:+-]+$ — strip everything else
+    # and fall back to a short hash so non-ASCII words (e.g. Korean) still work.
+    safe_word = re.sub(r"[^A-Za-z0-9_.~:+-]", "", normalized_word)
+    word_hash = hashlib.sha1(normalized_word.encode("utf-8")).hexdigest()[:8]
+    word_slug = f"{safe_word[:32]}_{word_hash}" if safe_word else word_hash
+    dag_run_id = f"compound-backfill-{int(time.time())}-{word_slug}"
+    logical_date = datetime.now(UTC).isoformat()
+    conf = {
+        "word": normalized_word,
+        "domain": normalized_domain,
+        "since": since.strip(),
+        "until": until.strip(),
+        "dry_run": dry_run,
+    }
+    payload = {"dag_run_id": dag_run_id, "logical_date": logical_date, "conf": conf}
+    endpoints = [
+        f"{airflow_base_url}/api/v2/dags/{dag_id}/dagRuns",
+        f"{airflow_base_url}/api/v1/dags/{dag_id}/dagRuns",
+    ]
+
+    headers: dict[str, str] = {}
+    try:
+        token_response = requests.post(
+            f"{airflow_base_url}/auth/token",
+            json={"username": username, "password": password},
+            timeout=10,
+        )
+        if token_response.status_code in {200, 201}:
+            token = token_response.json().get("access_token")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+    except requests.RequestException:
+        headers = {}
+
+    last_error = ""
+    for endpoint in endpoints:
+        try:
+            auth = None if headers else (username, password)
+            response = requests.post(endpoint, json=payload, headers=headers, auth=auth, timeout=10)
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            continue
+        if response.status_code in {200, 201}:
+            data = response.json()
+            return {
+                "status": "triggered",
+                "dagId": dag_id,
+                "dagRunId": data.get("dag_run_id") or data.get("dagRunId") or dag_run_id,
+                "conf": conf,
+            }
+        last_error = f"{response.status_code} {response.text[:500]}"
+        if response.status_code != 404:
+            break
+
+    raise AirflowTriggerError(f"Airflow DAG trigger failed: {last_error}")
 
 
 def create_query_keyword(domain_id: str, query: str, sort_order: int, actor: str) -> dict[str, Any]:

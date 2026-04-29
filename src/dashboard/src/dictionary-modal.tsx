@@ -211,6 +211,14 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
   const [editWord, setEditWord] = useState("");
   const [editDomain, setEditDomain] = useState("all");
   const [toast, setToast] = useState<string | null>(null);
+  const [backfillDialog, setBackfillDialog] = useState<{
+    item: CompoundNounItem;
+    word: string;
+    domain: string;
+    since: string;
+    until: string;
+    dryRun: boolean;
+  } | null>(null);
 
   const [history, setHistory] = useState<{
     data: Array<{
@@ -222,7 +230,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
       after_json: Record<string, unknown> | null;
       actor: string;
       acted_at: string;
-    }>;
+  }>;
     loading: boolean;
     error: string | null;
   }>({
@@ -230,6 +238,7 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
     loading: false,
     error: null,
   });
+
   // debounce search
   useEffect(() => {
     const t = setTimeout(() => {
@@ -335,6 +344,45 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
+  }
+
+  function toDateTimeLocal(date: Date) {
+    const offsetMs = date.getTimezoneOffset() * 60_000;
+    return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  }
+
+  function openBackfillDialog(item: CompoundNounItem) {
+    const until = new Date();
+    const since = new Date(until.getTime() - 30 * 24 * 60 * 60 * 1000);
+    setBackfillDialog({
+      item,
+      word: item.word,
+      domain: item.domain ?? "all",
+      since: toDateTimeLocal(since),
+      until: toDateTimeLocal(until),
+      dryRun: false,
+    });
+  }
+
+  async function submitBackfill() {
+    if (!backfillDialog) return;
+    setBusy("compound-backfill");
+    setGlobalError(null);
+    try {
+      const result = await api.triggerCompoundBackfill({
+        word: backfillDialog.word.trim(),
+        domain: backfillDialog.domain,
+        since: new Date(backfillDialog.since).toISOString(),
+        until: new Date(backfillDialog.until).toISOString(),
+        dryRun: backfillDialog.dryRun,
+      });
+      setBackfillDialog(null);
+      showToast(`과거 데이터 재처리 DAG 실행됨: ${result.dagRunId}`);
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : "과거 데이터 재처리 DAG를 실행하지 못했습니다.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function reloadCurrentTab() {
@@ -633,7 +681,14 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
                     </td>
                     <td><span className="chip muted" style={{ fontSize: 11 }}>{c.source}</span></td>
                     <td style={{ fontFamily: "var(--font-mono)", color: "var(--text-3)", fontSize: 11 }}>{c.createdAt?.slice(0, 16).replace("T", " ") ?? "—"}</td>
-                    <td>
+                    <td style={{ display: "flex", gap: 4 }}>
+                      <button
+                        disabled={busy === "compound-backfill"}
+                        onClick={() => openBackfillDialog(c)}
+                        className="table-action"
+                      >
+                        과거 재처리
+                      </button>
                       <button
                         disabled={busy === `del-c-${c.id}`}
                         onClick={() => void run(`del-c-${c.id}`, () => api.deleteCompound(c.id), `"${c.word}" 삭제됨`)}
@@ -967,6 +1022,80 @@ export function DictionaryApiModal({ onClose }: { onClose: () => void }) {
           <span>변경사항은 다음 Spark 집계 주기(최대 5분)에 반영됩니다</span>
         </div>
       </div>
+
+      {backfillDialog && (
+        <div className="dialog-backdrop" style={{ zIndex: 330 }} onClick={() => setBackfillDialog(null)}>
+          <div className="compact-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="compact-dialog__header">
+              <div>
+                <div className="compact-dialog__title">과거 데이터 재처리</div>
+                <div className="compact-dialog__subtitle">{backfillDialog.item.word}</div>
+              </div>
+              <button className="icon-button" onClick={() => setBackfillDialog(null)} aria-label="닫기">
+                <Icon.Close size={15} />
+              </button>
+            </div>
+            <div className="compact-dialog__body">
+              <label>
+                복합명사
+                <input
+                  value={backfillDialog.word}
+                  onChange={(e) => setBackfillDialog((p) => p ? { ...p, word: e.target.value } : p)}
+                />
+              </label>
+              <label>
+                도메인
+                <select
+                  value={backfillDialog.domain}
+                  onChange={(e) => setBackfillDialog((p) => p ? { ...p, domain: e.target.value } : p)}
+                >
+                  <option value="all">전체</option>
+                  {domains.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                </select>
+              </label>
+              <label>
+                시작
+                <input
+                  type="datetime-local"
+                  value={backfillDialog.since}
+                  onChange={(e) => setBackfillDialog((p) => p ? { ...p, since: e.target.value } : p)}
+                />
+              </label>
+              <label>
+                종료
+                <input
+                  type="datetime-local"
+                  value={backfillDialog.until}
+                  onChange={(e) => setBackfillDialog((p) => p ? { ...p, until: e.target.value } : p)}
+                />
+              </label>
+              <label className="compact-dialog__check">
+                <input
+                  type="checkbox"
+                  checked={backfillDialog.dryRun}
+                  onChange={(e) => setBackfillDialog((p) => p ? { ...p, dryRun: e.target.checked } : p)}
+                />
+                실행 전 영향 범위만 확인
+              </label>
+            </div>
+            <div className="compact-dialog__footer">
+              <button className="secondary-button" onClick={() => setBackfillDialog(null)}>취소</button>
+              <button
+                className="primary-button"
+                disabled={
+                  busy === "compound-backfill"
+                  || !backfillDialog.word.trim()
+                  || !backfillDialog.since
+                  || !backfillDialog.until
+                }
+                onClick={() => void submitBackfill()}
+              >
+                {busy === "compound-backfill" ? "실행 중..." : "DAG 실행"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (

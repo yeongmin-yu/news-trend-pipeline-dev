@@ -13,6 +13,7 @@ export function TopKeywords({
   sortBy = "mentions",
   onLimitChange,
   onSortChange,
+  onAddCheckedStopwords,
 }: {
   keywords: KeywordSummary[];
   selected: string | null;
@@ -24,6 +25,7 @@ export function TopKeywords({
   sortBy?: "mentions" | "growth";
   onLimitChange?: (n: number) => void;
   onSortChange?: (s: "mentions" | "growth") => void;
+  onAddCheckedStopwords?: () => Promise<void> | void;
 }) {
   const list = useMemo(() => {
     const arr = [...keywords];
@@ -73,6 +75,17 @@ export function TopKeywords({
                   </button>
                 ))}
               </div>
+            )}
+            {onAddCheckedStopwords && (
+              <button
+                className="panel-tool danger"
+                disabled={checkedKeywords.length === 0}
+                onClick={() => void onAddCheckedStopwords()}
+                title="체크된 키워드를 불용어로 등록"
+              >
+                <Icon.Close size={12} />
+                불용어 처리
+              </button>
             )}
           </div>
         )}

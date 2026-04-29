@@ -49,12 +49,27 @@ CREATE TABLE IF NOT EXISTS news_raw (
 
 ALTER TABLE news_raw DROP CONSTRAINT IF EXISTS news_raw_url_key;
 DROP INDEX IF EXISTS idx_news_raw_provider_url;
-DROP INDEX IF EXISTS idx_keyword_trends_unique;
-DROP INDEX IF EXISTS idx_keyword_relations_unique;
-DROP INDEX IF EXISTS idx_keywords_unique;
 ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS domain VARCHAR(50) NOT NULL DEFAULT 'ai_tech';
 ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS query VARCHAR(100);
 ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
+
+DO $$
+BEGIN
+    IF to_regclass('idx_keywords_unique') IS NOT NULL
+       AND pg_get_indexdef('idx_keywords_unique'::regclass) NOT ILIKE '%article_domain%' THEN
+        DROP INDEX idx_keywords_unique;
+    END IF;
+
+    IF to_regclass('idx_keyword_trends_unique') IS NOT NULL
+       AND pg_get_indexdef('idx_keyword_trends_unique'::regclass) NOT ILIKE '%domain%' THEN
+        DROP INDEX idx_keyword_trends_unique;
+    END IF;
+
+    IF to_regclass('idx_keyword_relations_unique') IS NOT NULL
+       AND pg_get_indexdef('idx_keyword_relations_unique'::regclass) NOT ILIKE '%domain%' THEN
+        DROP INDEX idx_keyword_relations_unique;
+    END IF;
+END $$;
 
 DO $$
 BEGIN

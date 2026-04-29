@@ -39,7 +39,7 @@ with DAG(
     catchup=False,
     max_active_runs=1,
     default_args=_DEFAULT_ARGS,
-    tags=["event", "analytics", "step3"],
+    tags=["분석", "이벤트탐지", "급상승"],
 ) as dag:
     detect_events = PythonOperator(
         task_id="detect_keyword_events",
