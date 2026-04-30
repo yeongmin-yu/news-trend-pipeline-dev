@@ -83,6 +83,16 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - cub kafka-ready -b localhost:9092 1 10
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+        
     networks:
       - dev-network
 
