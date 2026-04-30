@@ -19,6 +19,7 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/news-trend-pipeline/src
+    KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     STATE_DIR: /opt/news-trend-pipeline/runtime/state
     POSTGRES_HOST: app-postgres
@@ -39,6 +40,7 @@ x-airflow-common:
     - ./runtime/logs:/opt/airflow/logs
     - ./infra/airflow/config:/opt/airflow/config
     - ./infra/airflow/plugins:/opt/airflow/plugins
+    - /var/run/docker.sock:/var/run/docker.sock
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -69,6 +71,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    container_name: ${KAFKA_CONTAINER_NAME:-kafka}
     restart: unless-stopped
     depends_on:
       - zookeeper

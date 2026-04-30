@@ -22,12 +22,17 @@ def _run_event_detection(**context) -> None:
         sys.path.insert(0, src_path)
 
     from analytics.event_detector import run_event_detection_job
+    from core.logger import get_logger
+
+    logger = get_logger(__name__)
 
     until: datetime = context["data_interval_end"]
+    logger.info("[이벤트 탐지] 키워드 이벤트 후보 계산을 시작합니다. 기준시각=%s, 조회기간=%d시간", until, 24)
     result = run_event_detection_job(until=until, lookback_hours=24)
-    print(
-        f"[keyword_event_detection] source_rows={result['source_row_count']} "
-        f"event_rows={result['event_row_count']}"
+    logger.info(
+        "[이벤트 탐지] 키워드 이벤트 후보 계산 완료: 원본행=%s건, 이벤트행=%s건",
+        result["source_row_count"],
+        result["event_row_count"],
     )
 
 

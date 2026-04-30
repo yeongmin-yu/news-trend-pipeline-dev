@@ -46,11 +46,13 @@ def task_extract_compound_candidates(**context: object) -> dict[str, int]:
     from core.logger import get_logger
 
     logger = get_logger(__name__)
+    logger.info("[후보 추출] news_raw 기반 복합명사 후보 추출을 시작합니다.")
     result = run_extraction_job()
-    logger.info("복합명사 후보 추출 결과: %s", result)
+    logger.info("[후보 추출] 복합명사 후보 추출 완료: %s", result)
 
     ti = context["ti"]
     ti.xcom_push(key="extraction_result", value=result)
+    logger.info("[후보 추출] 요약 task에서 사용할 추출 결과를 XCom에 저장했습니다. key=extraction_result")
     return result
 
 
@@ -65,10 +67,10 @@ def task_summarize_dictionary_results(**context: object) -> None:
 
     extraction = ti.xcom_pull(task_ids="extract_compound_candidates", key="extraction_result") or {}
 
-    logger.info("=== 복합명사 후보 추출 요약 === extraction=%s", extraction)
+    logger.info("[후보 추출 요약] 복합명사 후보 추출 결과 요약: %s", extraction)
 
     if int(extraction.get("candidate_count", 0) or 0) == 0:
-        logger.info("이번 실행에서 새로 추출된 복합명사 후보가 없습니다.")
+        logger.info("[후보 추출 요약] 이번 실행에서 새로 추출된 복합명사 후보가 없습니다.")
 
 
 with DAG(

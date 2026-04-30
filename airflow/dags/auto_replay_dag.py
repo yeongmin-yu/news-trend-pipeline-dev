@@ -66,13 +66,14 @@ def task_check_kafka_health() -> None:
     logger = get_logger(__name__)
 
     try:
+        logger.info("[Kafka 확인] 재처리 DAG의 Kafka 브로커 연결 상태 확인을 시작합니다. 부트스트랩서버=%s", settings.kafka_bootstrap_servers)
         admin = KafkaAdminClient(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             request_timeout_ms=10_000,
         )
         topics = admin.list_topics()
         admin.close()
-        logger.info("Kafka 헬스체크 통과 (재처리 DAG): broker=%s", settings.kafka_bootstrap_servers)
+        logger.info("[Kafka 확인] Kafka 헬스체크 통과: 브로커=%s, 토픽목록=%s", settings.kafka_bootstrap_servers, topics)
     except NoBrokersAvailable as exc:
         raise RuntimeError(
             f"Kafka 브로커에 연결할 수 없습니다: {settings.kafka_bootstrap_servers}"
@@ -108,8 +109,9 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
     # dead_letter.jsonl 파일 확인
     state_dir = Path(settings.state_dir)
     dead_letter_file = state_dir / "dead_letter.jsonl"
+    logger.info("[Dead Letter 재처리] 재처리 대상 파일을 확인합니다. path=%s", dead_letter_file)
     if not dead_letter_file.exists():
-        logger.info("Dead Letter 파일이 없습니다. 재처리할 메시지가 없습니다.")
+        logger.info("[Dead Letter 재처리] Dead Letter 파일이 없습니다. 재처리할 메시지가 없습니다.")
         return {
             "success": 0,
             "skip": 0,
@@ -121,7 +123,7 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
     src_dir = project_root / "src"
 
     try:
-        logger.info("재처리 모듈 실행: python -m ingestion.replay (cwd=%s)", project_root)
+        logger.info("[Dead Letter 재처리] 재처리 모듈을 실행합니다. 명령어=python -m ingestion.replay, 작업경로=%s", project_root)
 
         env = os.environ.copy()
         # src/ 를 PYTHONPATH 앞에 유지
@@ -140,10 +142,10 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
         )
 
         if result.returncode != 0:
-            logger.error("재처리 모듈 실패 (code=%d): %s", result.returncode, result.stderr)
+            logger.error("[Dead Letter 재처리] 재처리 모듈 실행 실패: code=%d, stderr=%s", result.returncode, result.stderr)
             raise RuntimeError(f"replay 실행 실패: {result.stderr}")
 
-        logger.info("재처리 모듈 완료:\n%s", result.stderr)
+        logger.info("[Dead Letter 재처리] 재처리 모듈 실행 완료:\n%s", result.stderr)
 
         # 결과 파일들의 건수를 파악해 결과 딕셔너리 생성
         replayed_file = state_dir / "dead_letter_replayed.jsonl"
@@ -165,7 +167,7 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
         ti.xcom_push(key="replay_results", value=results)
 
         logger.info(
-            "재처리 결과 (DAG): 성공=%d건 | 재실패=%d건 | 영구실패=%d건",
+            "[Dead Letter 재처리] 재처리 결과: 성공=%d건 | 재실패=%d건 | 영구실패=%d건",
             replayed_count,
             remaining_count,
             permanent_count,
@@ -174,10 +176,10 @@ def task_replay_dead_letters(**context: object) -> dict[str, int]:
         return results
 
     except subprocess.TimeoutExpired as exc:
-        logger.error("재처리 모듈 타임아웃 (5분 초과)")
+        logger.error("[Dead Letter 재처리] 재처리 모듈 타임아웃: 5분을 초과했습니다.")
         raise RuntimeError("replay 타임아웃") from exc
     except Exception as exc:
-        logger.error("재처리 중 예외 발생: %s", exc)
+        logger.error("[Dead Letter 재처리] 재처리 중 예외 발생: %s", exc)
         raise
 
 
@@ -199,11 +201,11 @@ def task_summarize_replay_results(**context: object) -> None:
     total = results.get("total_processed", 0)
 
     if total == 0:
-        logger.info("Dead Letter가 없습니다. 재처리할 메시지가 없습니다.")
+        logger.info("[재처리 요약] Dead Letter가 없습니다. 재처리할 메시지가 없습니다.")
         return
 
     logger.info(
-        "=== 재처리 실행 요약 === 성공=%d건 | 중복skip=%d건 | 재실패=%d건 | 영구실패=%d건 | 합계=%d건",
+        "[재처리 요약] 재처리 실행 결과: 성공=%d건 | 중복skip=%d건 | 재실패=%d건 | 영구실패=%d건 | 합계=%d건",
         success,
         skip,
         retry_fail,
@@ -213,7 +215,7 @@ def task_summarize_replay_results(**context: object) -> None:
 
     if permanent_fail > 0:
         logger.warning(
-            "[경고] %d건의 메시지가 영구 실패 상태입니다. "
+            "[재처리 요약][경고] %d건의 메시지가 영구 실패 상태입니다. "
             "상세 내용은 runtime/state/dead_letter_permanent.jsonl을 확인하고 수동 개입하세요.",
             permanent_fail,
         )
@@ -229,22 +231,23 @@ def task_check_permanent_failures() -> None:
     logger = get_logger(__name__)
 
     perm_file = Path(settings.state_dir) / "dead_letter_permanent.jsonl"
+    logger.info("[영구 실패 확인] 영구 실패 메시지 파일을 확인합니다. path=%s", perm_file)
 
     if not perm_file.exists():
-        logger.info("영구 실패 메시지 없음 (파일 미존재).")
+        logger.info("[영구 실패 확인] 영구 실패 메시지 파일이 없습니다.")
         return
 
     try:
         count = sum(1 for _ in perm_file.open(encoding="utf-8"))
     except (IOError, OSError) as exc:
-        logger.error("영구 실패 파일 읽기 실패: %s", exc)
+        logger.error("[영구 실패 확인] 영구 실패 파일 읽기 실패: %s", exc)
         return
 
     if count == 0:
-        logger.info("영구 실패 메시지 없음.")
+        logger.info("[영구 실패 확인] 영구 실패 메시지가 없습니다.")
         return
 
-    logger.warning("[주의] 영구 실패 메시지 %d건 발견. 수동 개입이 필요합니다.", count)
+    logger.warning("[영구 실패 확인][주의] 영구 실패 메시지 %d건 발견. 수동 개입이 필요합니다.", count)
 
     # 최근 5건의 영구 실패 메시지 표시
     import json
@@ -258,13 +261,13 @@ def task_check_permanent_failures() -> None:
                     try:
                         recent_failures.append(json.loads(line))
                     except json.JSONDecodeError as exc:
-                        logger.warning("JSON 파싱 오류 (skip): %s", exc)
+                        logger.warning("[영구 실패 확인] JSON 파싱 오류로 해당 줄을 건너뜁니다: %s", exc)
 
         # 최근 5건 표시
         for i, record in enumerate(recent_failures[-5:], start=1):
             payload = record.get("payload", {})
             logger.warning(
-                "  [%d] provider=%s url=%s reason=%s attempt=%d permanent_fail_at=%s",
+                "[영구 실패 확인] 최근 실패 [%d] 제공자=%s 주소=%s 사유=%s 시도횟수=%d 영구실패시각=%s",
                 i,
                 payload.get("provider"),
                 payload.get("url"),
@@ -275,13 +278,13 @@ def task_check_permanent_failures() -> None:
 
         # 알림 발송 권장 (Slack, Email 등)
         logger.error(
-            "➜ 권장 조치: "
+            "[영구 실패 확인] 권장 조치: "
             "1. runtime/state/dead_letter_permanent.jsonl 내용 확인 "
             "2. API 설정 또는 Kafka 설정 검토 "
             "3. 원인 해결 후 영구 실패 메시지 수동 재처리"
         )
     except (IOError, OSError) as exc:
-        logger.error("영구 실패 메시지 상세 정보 읽기 실패: %s", exc)
+        logger.error("[영구 실패 확인] 영구 실패 메시지 상세 정보 읽기 실패: %s", exc)
 
 
 # ── DAG 정의 ─────────────────────────────────────────────────────────────────

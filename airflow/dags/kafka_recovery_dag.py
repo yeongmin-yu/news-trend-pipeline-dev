@@ -12,11 +12,15 @@ from __future__ import annotations
 """
 
 import os
+import logging
 import subprocess
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 default_args = {
@@ -28,6 +32,7 @@ default_args = {
 
 
 def _run_command(command: list[str]) -> str:
+    LOGGER.info("[공통] 명령어 실행: %s", " ".join(command))
     result = subprocess.run(
         command,
         check=False,
@@ -35,14 +40,22 @@ def _run_command(command: list[str]) -> str:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"command failed: {' '.join(command)}\nstdout={result.stdout}\nstderr={result.stderr}"
+        LOGGER.error(
+            "[공통] 명령어 실행 실패: returncode=%s, stdout=%s, stderr=%s",
+            result.returncode,
+            result.stdout.strip(),
+            result.stderr.strip(),
         )
+        raise RuntimeError(
+            f"명령어 실행 실패: {' '.join(command)}\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+    LOGGER.info("[공통] 명령어 실행 성공: %s", result.stdout.strip() or "(출력 없음)")
     return result.stdout.strip()
 
 
 def task_check_kafka_container_health(**context: object) -> str:
     container_name = os.getenv("KAFKA_CONTAINER_NAME", "kafka")
+    LOGGER.info("[상태 확인] Kafka 컨테이너 상태 확인을 시작합니다. 컨테이너=%s", container_name)
     status = _run_command([
         "docker",
         "inspect",
@@ -52,27 +65,35 @@ def task_check_kafka_container_health(**context: object) -> str:
     ])
 
     context["ti"].xcom_push(key="kafka_container_status", value=status)
-    print(f"Kafka container status: {status}")
+    LOGGER.info("[상태 확인] Kafka 컨테이너 현재 상태: %s", status)
+    LOGGER.info("[상태 확인] 다음 task에서 사용할 상태 값을 XCom에 저장했습니다. key=kafka_container_status")
     return status
 
 
 def task_restart_kafka_if_unhealthy(**context: object) -> str:
     container_name = os.getenv("KAFKA_CONTAINER_NAME", "kafka")
+    LOGGER.info("[재시작 판단] Kafka 컨테이너 재시작 필요 여부를 확인합니다. 컨테이너=%s", container_name)
     status = context["ti"].xcom_pull(
         task_ids="check_kafka_container_health",
         key="kafka_container_status",
     )
+    LOGGER.info("[재시작 판단] 이전 task에서 전달받은 Kafka 상태: %s", status)
 
     if status == "healthy":
-        print("Kafka container is healthy. Restart is skipped.")
+        LOGGER.info("[재시작 판단] Kafka가 healthy 상태입니다. 재시작하지 않고 건너뜁니다.")
         return "skipped"
 
     if status == "starting":
-        print("Kafka container is still starting. Restart is skipped to avoid interrupting bootstrap.")
+        LOGGER.info("[재시작 판단] Kafka가 아직 starting 상태입니다. 부팅 중단을 피하기 위해 재시작하지 않습니다.")
         return "skipped_starting"
 
-    print(f"Kafka container status is {status}. Restarting {container_name}...")
+    LOGGER.warning(
+        "[재시작 실행] Kafka 상태가 정상적이지 않습니다. 컨테이너를 재시작합니다. 상태=%s, 컨테이너=%s",
+        status,
+        container_name,
+    )
     _run_command(["docker", "restart", container_name])
+    LOGGER.info("[재시작 실행] Kafka 컨테이너 재시작 명령이 완료되었습니다. 컨테이너=%s", container_name)
     return "restarted"
 
 
@@ -80,26 +101,33 @@ def task_verify_kafka_broker() -> None:
     from kafka import KafkaAdminClient
 
     bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
+    LOGGER.info("[브로커 검증] Kafka 브로커 연결 검증을 시작합니다. 부트스트랩서버=%s", bootstrap_servers)
     admin = KafkaAdminClient(
         bootstrap_servers=bootstrap_servers,
         request_timeout_ms=10_000,
     )
     try:
         topics = admin.list_topics()
-        print(f"Kafka broker recovered: bootstrap={bootstrap_servers}, topics={topics}")
+        LOGGER.info(
+            "[브로커 검증] Kafka 브로커 연결 성공. 부트스트랩서버=%s, 토픽수=%d, 토픽목록=%s",
+            bootstrap_servers,
+            len(topics),
+            topics,
+        )
     finally:
         admin.close()
+        LOGGER.info("[브로커 검증] Kafka admin client 연결을 종료했습니다.")
 
 
 with DAG(
     dag_id="kafka_recovery_dag",
     default_args=default_args,
-    description="Check Kafka Docker health status and restart the Kafka container when unhealthy",
+    description="Kafka Docker health 상태를 확인하고 비정상 컨테이너를 재시작",
     start_date=datetime(2026, 1, 1),
     schedule=None,
     catchup=False,
     max_active_runs=1,
-    tags=["kafka", "recovery", "docker"],
+    tags=["카프카", "복구", "도커"],
 ) as dag:
     check_kafka_container_health = PythonOperator(
         task_id="check_kafka_container_health",

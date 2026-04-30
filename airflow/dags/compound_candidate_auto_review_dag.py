@@ -25,13 +25,20 @@ def _ensure_src_on_syspath() -> None:
 def task_auto_review(**context):
     _ensure_src_on_syspath()
     from analytics.compound_auto_reviewer import run_auto_review
-    return run_auto_review(limit=2000)
+    from core.logger import get_logger
+
+    logger = get_logger(__name__)
+    limit = 2000
+    logger.info("[자동 검토] 복합명사 후보 자동 검토를 시작합니다. limit=%d", limit)
+    result = run_auto_review(limit=limit)
+    logger.info("[자동 검토] 복합명사 후보 자동 검토 완료: %s", result)
+    return result
 
 
 with DAG(
     dag_id="compound_candidate_auto_review_dag",
     default_args=default_args,
-    description="compound candidate auto review",
+    description="복합명사 후보 자동 검토",
     start_date=datetime(2026, 1, 1),
     schedule="0 */2 * * *",
     catchup=False,

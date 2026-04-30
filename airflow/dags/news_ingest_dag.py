@@ -72,13 +72,14 @@ def task_check_kafka_health() -> None:
     logger = get_logger(__name__)
 
     try:
+        logger.info("[Kafka 확인] Kafka 브로커 연결 상태 확인을 시작합니다. 부트스트랩서버=%s", settings.kafka_bootstrap_servers)
         admin = KafkaAdminClient(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             request_timeout_ms=10_000,
         )
         topics = admin.list_topics()
         admin.close()
-        logger.info("Kafka 헬스체크 통과: broker=%s topics=%s", settings.kafka_bootstrap_servers, topics)
+        logger.info("[Kafka 확인] Kafka 헬스체크 통과: 브로커=%s, 토픽목록=%s", settings.kafka_bootstrap_servers, topics)
     except NoBrokersAvailable as exc:
         raise RuntimeError(
             f"Kafka 브로커에 연결할 수 없습니다: {settings.kafka_bootstrap_servers}"
@@ -100,11 +101,13 @@ def task_produce_naver(**context: object) -> int:
     from ingestion.producer import NewsKafkaProducer
 
     logger = get_logger(__name__)
+    logger.info("[뉴스 수집] Naver 뉴스 수집 및 Kafka 발행을 시작합니다. 제공자=naver")
     count = NewsKafkaProducer().run_for_provider("naver")
-    logger.info("Naver 발행 완료: %d건", count)
+    logger.info("[뉴스 수집] Naver 뉴스 Kafka 발행 완료: %d건", count)
 
     ti = context["ti"]
     ti.xcom_push(key="naver_count", value=count)
+    logger.info("[뉴스 수집] 요약 task에서 사용할 발행 건수를 XCom에 저장했습니다. key=naver_count")
     return count
 
 
@@ -119,9 +122,9 @@ def task_summarize_results(**context: object) -> None:
 
     naver_count: int = ti.xcom_pull(task_ids="produce_naver", key="naver_count") or 0
 
-    logger.info("=== 수집 요약 === naver=%d건", naver_count)
+    logger.info("[수집 요약] Naver 뉴스 발행 결과: naver=%d건", naver_count)
     if naver_count == 0:
-        logger.warning("이번 실행에서 발행된 기사가 없습니다. API 상태 및 키워드 설정을 확인하세요.")
+        logger.warning("[수집 요약] 이번 실행에서 발행된 기사가 없습니다. API 상태 및 키워드 설정을 확인하세요.")
 
 
 def task_check_dead_letter() -> None:
@@ -137,17 +140,18 @@ def task_check_dead_letter() -> None:
     logger = get_logger(__name__)
 
     dl_file = Path(settings.state_dir) / "dead_letter.jsonl"
+    logger.info("[Dead Letter 확인] 실패 메시지 파일을 확인합니다. path=%s", dl_file)
     if not dl_file.exists():
-        logger.info("Dead Letter 파일 없음 — 실패 메시지 없음.")
+        logger.info("[Dead Letter 확인] Dead Letter 파일이 없습니다. 실패 메시지가 없습니다.")
         return
 
     line_count = sum(1 for _ in dl_file.open(encoding="utf-8"))
-    logger.info("Dead Letter 누적: %d건 (%s)", line_count, dl_file)
+    logger.info("[Dead Letter 확인] Dead Letter 누적 건수: %d건 (%s)", line_count, dl_file)
 
     # 임계치: 100건 이상이면 경고 (운영 환경에서는 알림 연동 권장)
     if line_count >= 100:
         logger.warning(
-            "[경고] Dead Letter가 %d건 쌓였습니다. `python -m ingestion.replay` 로 재처리하세요.",
+            "[Dead Letter 확인][경고] Dead Letter가 %d건 쌓였습니다. `python -m ingestion.replay` 로 재처리하세요.",
             line_count,
         )
 
