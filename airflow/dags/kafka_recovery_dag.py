@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import logging
 import subprocess
+import time
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -101,22 +102,67 @@ def task_verify_kafka_broker() -> None:
     from kafka import KafkaAdminClient
 
     bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
-    LOGGER.info("[브로커 검증] Kafka 브로커 연결 검증을 시작합니다. 부트스트랩서버=%s", bootstrap_servers)
-    admin = KafkaAdminClient(
-        bootstrap_servers=bootstrap_servers,
-        request_timeout_ms=10_000,
+    max_wait_seconds = int(os.getenv("KAFKA_RECOVERY_VERIFY_MAX_WAIT_SECONDS", "180"))
+    retry_interval_seconds = int(os.getenv("KAFKA_RECOVERY_VERIFY_RETRY_INTERVAL_SECONDS", "10"))
+    request_timeout_ms = int(os.getenv("KAFKA_RECOVERY_VERIFY_REQUEST_TIMEOUT_MS", "5000"))
+    deadline = time.monotonic() + max_wait_seconds
+    attempt = 0
+
+    LOGGER.info(
+        "[브로커 검증] Kafka 브로커 연결 검증을 시작합니다. 부트스트랩서버=%s, 최대대기=%d초, 재시도간격=%d초",
+        bootstrap_servers,
+        max_wait_seconds,
+        retry_interval_seconds,
     )
-    try:
-        topics = admin.list_topics()
+
+    while True:
+        attempt += 1
+        admin = None
+        remaining_seconds = max(0, int(deadline - time.monotonic()))
         LOGGER.info(
-            "[브로커 검증] Kafka 브로커 연결 성공. 부트스트랩서버=%s, 토픽수=%d, 토픽목록=%s",
-            bootstrap_servers,
-            len(topics),
-            topics,
+            "[브로커 검증] Kafka 브로커 연결 확인 시도 중입니다. 시도=%d, 남은대기=%d초",
+            attempt,
+            remaining_seconds,
         )
-    finally:
-        admin.close()
-        LOGGER.info("[브로커 검증] Kafka admin client 연결을 종료했습니다.")
+
+        try:
+            admin = KafkaAdminClient(
+                bootstrap_servers=bootstrap_servers,
+                request_timeout_ms=request_timeout_ms,
+            )
+            topics = admin.list_topics()
+            LOGGER.info(
+                "[브로커 검증] Kafka 브로커 연결 성공. 시도=%d, 부트스트랩서버=%s, 토픽수=%d, 토픽목록=%s",
+                attempt,
+                bootstrap_servers,
+                len(topics),
+                topics,
+            )
+            return
+        except Exception as exc:
+            if time.monotonic() >= deadline:
+                LOGGER.error(
+                    "[브로커 검증] Kafka 브로커 연결 검증 실패. 최대 대기시간을 초과했습니다. 시도=%d, 최대대기=%d초, 마지막오류=%s",
+                    attempt,
+                    max_wait_seconds,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"Kafka 브로커 연결 검증 실패: {max_wait_seconds}초 동안 연결되지 않았습니다."
+                ) from exc
+
+            sleep_seconds = min(retry_interval_seconds, max(1, int(deadline - time.monotonic())))
+            LOGGER.warning(
+                "[브로커 검증] 아직 Kafka 브로커에 연결할 수 없습니다. 컨테이너 기동을 기다린 뒤 재시도합니다. 시도=%d, 다음재시도=%d초후, 오류=%s",
+                attempt,
+                sleep_seconds,
+                exc,
+            )
+            time.sleep(sleep_seconds)
+        finally:
+            if admin is not None:
+                admin.close()
+                LOGGER.info("[브로커 검증] Kafka admin client 연결을 종료했습니다. 시도=%d", attempt)
 
 
 with DAG(

@@ -102,8 +102,9 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
             payload = record.get("payload", {})
             attempt = record.get("attempt", 1)
             logger.info(
-                "[%d] provider=%s url=%s reason=%s attempt=%d",
+                "[Dead Letter 재전송][DRY-RUN] 대상 확인: 순번=%d/%d, 제공자=%s, url=%s, 사유=%s, 현재시도=%d",
                 index,
+                len(records),
                 payload.get("provider"),
                 payload.get("url"),
                 record.get("reason"),
@@ -119,6 +120,29 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
 
     seen_urls = _load_seen_urls()
     producer = NewsKafkaProducer()
+    if producer.producer is None:
+        logger.warning(
+            "Kafka producer를 초기화할 수 없어 Dead Letter 재전송을 건너뜁니다. 기존 Dead Letter %d건은 유지됩니다.",
+            len(records),
+        )
+        for index, record in enumerate(records, start=1):
+            payload = record.get("payload", {})
+            logger.warning(
+                "[Dead Letter 재전송] Kafka 연결 불가로 재시도 대기 유지: 순번=%d/%d, 제공자=%s, url=%s, 사유=%s, 현재시도=%s",
+                index,
+                len(records),
+                payload.get("provider"),
+                payload.get("url"),
+                record.get("reason"),
+                record.get("attempt", 1),
+            )
+        return {
+            "success": 0,
+            "skip": 0,
+            "retry_fail": len(records),
+            "permanent_fail": 0,
+            "total_processed": len(records),
+        }
 
     success_count = 0
     skip_count = 0
@@ -126,12 +150,28 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
     remaining: list[dict[str, Any]] = []
     permanent_failed: list[dict[str, Any]] = []
 
-    for record in records:
+    total_records = len(records)
+    for index, record in enumerate(records, start=1):
         payload = record.get("payload", {})
+        logger.info(
+            "[Dead Letter 재전송] 메시지 처리 시작: 순번=%d/%d, 제공자=%s, url=%s, 실패사유=%s, 현재시도=%s",
+            index,
+            total_records,
+            payload.get("provider"),
+            payload.get("url"),
+            record.get("reason"),
+            record.get("attempt", 1),
+        )
         try:
             article = NormalizedNewsArticle.from_dict(payload)
         except ValueError as exc:
-            logger.error("잘못된 Dead Letter payload 영구 실패 처리: error=%s payload=%s", exc, payload)
+            logger.error(
+                "[Dead Letter 재전송] 잘못된 payload라 영구 실패로 분류합니다. 순번=%d/%d, 오류=%s, payload=%s",
+                index,
+                total_records,
+                exc,
+                payload,
+            )
             permanent_failed.append(
                 {
                     **record,
@@ -149,7 +189,9 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
 
         if attempt > MAX_RETRY_ATTEMPTS:
             logger.error(
-                "영구 실패 처리: url=%s attempt=%d max=%d",
+                "[Dead Letter 재전송] 최대 재시도 횟수를 초과해 영구 실패로 분류합니다. 순번=%d/%d, url=%s, 이전시도=%d, 최대시도=%d",
+                index,
+                total_records,
                 url,
                 attempt - 1,
                 MAX_RETRY_ATTEMPTS,
@@ -161,11 +203,28 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
             continue
 
         if unique_key in seen_urls:
-            logger.info("중복 URL로 재전송 건너뜀: %s", url)
+            logger.info(
+                "[Dead Letter 재전송] 이미 발행된 URL이라 재전송을 건너뜁니다. 순번=%d/%d, 제공자=%s, url=%s, 시도=%d",
+                index,
+                total_records,
+                provider,
+                url,
+                attempt,
+            )
             skip_count += 1
             continue
 
         try:
+            logger.info(
+                "[Dead Letter 재전송] Kafka 재전송을 시도합니다. 순번=%d/%d, 토픽=%s, 제공자=%s, url=%s, 시도=%d/%d",
+                index,
+                total_records,
+                settings.kafka_topic,
+                provider,
+                url,
+                attempt,
+                MAX_RETRY_ATTEMPTS,
+            )
             message = build_message(article)
             partition_key = url or provider
             future = producer.producer.send(
@@ -177,10 +236,20 @@ def run_replay(dry_run: bool = False) -> dict[str, int] | None:
             seen_urls.add(unique_key)
             _append_replayed(record)
             success_count += 1
-            logger.info("재전송 성공: url=%s attempt=%d", url, attempt)
+            logger.info(
+                "[Dead Letter 재전송] Kafka 재전송 성공: 순번=%d/%d, 제공자=%s, url=%s, 시도=%d",
+                index,
+                total_records,
+                provider,
+                url,
+                attempt,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "재전송 실패: url=%s error=%s attempt=%d/%d",
+                "[Dead Letter 재전송] Kafka 재전송 실패, Dead Letter에 남겨 다음 실행에서 재시도합니다. 순번=%d/%d, 제공자=%s, url=%s, 오류=%s, 시도=%d/%d",
+                index,
+                total_records,
+                provider,
                 url,
                 exc,
                 attempt,

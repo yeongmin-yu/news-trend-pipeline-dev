@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from kafka import KafkaProducer
-from kafka.errors import KafkaError, KafkaTimeoutError
+from kafka.errors import KafkaError, KafkaTimeoutError, NoBrokersAvailable
 
 from core.config import settings
 from core.logger import get_logger
@@ -56,10 +56,27 @@ class NewsKafkaProducer:
     def __init__(self) -> None:
         safe_initialize_database()
         self.clients: list[BaseNewsClient] = self._build_clients()
-        self.producer: KafkaProducer = self._create_producer()
+        self.producer: KafkaProducer | None = None
         self._send_errors: list[tuple[dict[str, Any], Exception]] = []
+        self._kafka_unavailable = False
         self._lock = threading.Lock()
         ensure_dir(STATE_FILE.parent)
+        try:
+            self.producer = self._create_producer()
+        except NoBrokersAvailable as exc:
+            self._kafka_unavailable = True
+            logger.warning(
+                "Kafka producer 초기화 실패: 브로커에 연결할 수 없습니다. 수집 데이터는 Dead Letter로 저장합니다. broker=%s error=%s",
+                settings.kafka_bootstrap_servers,
+                exc,
+            )
+        except KafkaError as exc:
+            self._kafka_unavailable = True
+            logger.warning(
+                "Kafka producer 초기화 실패: 수집 데이터는 Dead Letter로 저장합니다. broker=%s error=%s",
+                settings.kafka_bootstrap_servers,
+                exc,
+            )
 
     @staticmethod
     def _create_producer() -> KafkaProducer:
@@ -138,8 +155,9 @@ class NewsKafkaProducer:
             )
 
         def on_error(exc: Exception) -> None:
-            logger.error("Delivery error url=%s error=%s", article.get("url"), exc)
+            logger.error("Kafka 발행 실패: url=%s error=%s", article.get("url"), exc)
             with self._lock:
+                self._kafka_unavailable = True
                 self._send_errors.append((article, exc))
 
         return on_success, on_error
@@ -149,6 +167,10 @@ class NewsKafkaProducer:
         return article.get("url") or article.get("provider", "unknown")
 
     def _publish(self, article: dict[str, Any]) -> bool:
+        if self._kafka_unavailable:
+            self._append_dead_letter(article, "kafka_unavailable: 이번 수집 실행에서 Kafka 발행 실패가 이미 감지되어 즉시 Dead Letter로 저장")
+            return False
+
         try:
             message = build_message(article)
         except ValueError as exc:
@@ -157,6 +179,11 @@ class NewsKafkaProducer:
         partition_key = self._resolve_partition_key(article)
         on_success, on_error = self._make_callbacks(article)
         try:
+            if self.producer is None:
+                self._kafka_unavailable = True
+                self._append_dead_letter(article, "kafka_unavailable: Kafka producer가 초기화되지 않아 Dead Letter로 저장")
+                return False
+
             self.producer.send(
                 settings.kafka_topic,
                 value=message,
@@ -164,9 +191,11 @@ class NewsKafkaProducer:
             ).add_callback(on_success).add_errback(on_error)
             return True
         except KafkaTimeoutError as exc:
+            self._kafka_unavailable = True
             self._append_dead_letter(article, f"KafkaTimeoutError: {exc}")
             return False
         except KafkaError as exc:
+            self._kafka_unavailable = True
             self._append_dead_letter(article, f"KafkaError: {exc}")
             return False
 
@@ -244,6 +273,7 @@ class NewsKafkaProducer:
 
             fetch_count = 0
             skip_count = 0
+            client_published_count = 0
             advanced_keywords = 0
             failed_keywords = 0
 
@@ -265,6 +295,7 @@ class NewsKafkaProducer:
                     if self._publish(article):
                         seen_urls.add(unique_key)
                         published_count += 1
+                        client_published_count += 1
                         query_publish_count += 1
 
                 if ok:
@@ -302,15 +333,20 @@ class NewsKafkaProducer:
                 client.provider,
                 fetch_count,
                 skip_count,
-                fetch_count - skip_count,
+                client_published_count,
                 advanced_keywords,
                 failed_keywords,
             )
 
-        try:
-            self.producer.flush(timeout=60)
-        except KafkaTimeoutError as exc:
-            logger.error("Flush timeout: %s", exc)
+        if self.producer is not None:
+            try:
+                self.producer.flush(timeout=settings.kafka_flush_timeout_seconds)
+            except KafkaTimeoutError as exc:
+                logger.error("Kafka flush 타임아웃: 제한시간=%d초, 오류=%s", settings.kafka_flush_timeout_seconds, exc)
+            except KafkaError as exc:
+                logger.error("Kafka flush 실패: 오류=%s", exc)
+        else:
+            logger.warning("Kafka producer가 초기화되지 않아 flush를 건너뜁니다.")
 
         if self._send_errors:
             for failed_article, exc in self._send_errors:

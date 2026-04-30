@@ -4,14 +4,14 @@ from __future__ import annotations
 
 Task 흐름:
     check_kafka_health
-        └── produce_naver
-            ├── summarize_results
-            └── check_dead_letter   (all_done: 실패해도 항상 실행)
+        ├── produce_naver
+        │   └── summarize_results
+        └── check_dead_letter   (all_done: 실패해도 항상 실행)
 
 설계 원칙:
   - max_active_runs=1 : 동시 실행 방지 (중복 수집 방지)
   - catchup=False     : 과거 누락 실행 스킵
-  - Kafka 헬스체크 통과 후 Naver 수집 실행
+  - Kafka 헬스체크는 경고성으로만 수행하고, 실패해도 Naver 수집은 계속 실행
   - Naver 내부에서 테마 키워드(AI, 인공지능, 생성형AI 등) 8개를 병렬 호출
   - XCom으로 발행 건수를 집계해 요약 로그 기록
   - check_dead_letter는 all_done trigger_rule로 Dead Letter 누적 감시
@@ -57,9 +57,10 @@ def _ensure_src_on_syspath() -> None:
 
 
 def task_check_kafka_health() -> None:
-    """KafkaAdminClient로 브로커 연결 상태를 확인합니다.
+    """KafkaAdminClient로 브로커 연결 상태를 확인하고 경고 로그만 남깁니다.
 
-    연결 실패 시 예외를 발생시켜 후속 Task(produce_naver)를 차단합니다.
+    Kafka 장애 때문에 뉴스 수집 자체가 끊기지 않도록 연결 실패 시 예외를 다시 던지지 않습니다.
+    발행 실패 데이터는 producer가 Dead Letter에 저장하고 auto_replay_dag가 후속 처리합니다.
     """
     _ensure_src_on_syspath()
 
@@ -71,6 +72,7 @@ def task_check_kafka_health() -> None:
 
     logger = get_logger(__name__)
 
+    admin = None
     try:
         logger.info("[Kafka 확인] Kafka 브로커 연결 상태 확인을 시작합니다. 부트스트랩서버=%s", settings.kafka_bootstrap_servers)
         admin = KafkaAdminClient(
@@ -78,14 +80,21 @@ def task_check_kafka_health() -> None:
             request_timeout_ms=10_000,
         )
         topics = admin.list_topics()
-        admin.close()
         logger.info("[Kafka 확인] Kafka 헬스체크 통과: 브로커=%s, 토픽목록=%s", settings.kafka_bootstrap_servers, topics)
     except NoBrokersAvailable as exc:
-        raise RuntimeError(
-            f"Kafka 브로커에 연결할 수 없습니다: {settings.kafka_bootstrap_servers}"
-        ) from exc
+        logger.warning(
+            "[Kafka 확인][경고] Kafka 브로커에 연결할 수 없습니다. 수집은 계속 진행하고 발행 실패분은 Dead Letter로 적재합니다. 브로커=%s, 오류=%s",
+            settings.kafka_bootstrap_servers,
+            exc,
+        )
     except Exception as exc:
-        raise RuntimeError(f"Kafka 헬스체크 실패: {exc}") from exc
+        logger.warning(
+            "[Kafka 확인][경고] Kafka 헬스체크 중 오류가 발생했습니다. 수집은 계속 진행합니다. 오류=%s",
+            exc,
+        )
+    finally:
+        if admin is not None:
+            admin.close()
 
 
 def task_produce_naver(**context: object) -> int:
@@ -191,6 +200,6 @@ with DAG(
     )
 
     # Task 의존성 정의
-    check_kafka_health >> produce_naver
+    check_kafka_health >> [produce_naver, check_dead_letter]
     produce_naver >> summarize_results
     produce_naver >> check_dead_letter

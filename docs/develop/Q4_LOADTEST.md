@@ -73,6 +73,46 @@
 | 대응 전략 | Producer timeout/retry 설정 확인, 실패 메시지는 `runtime/state/dead_letter.jsonl`에 저장, broker 복구 후 `auto_replay_dag` 또는 수동 replay 실행 |
 | 데모 | `docker compose stop kafka` 후 수집 실행 → 실패 확인 → `docker compose start kafka` → replay 실행 |
 
+produce_naver에서 Dead Letter까지 못 가고 죽은 이유는 send() 단계가 아니라 NewsKafkaProducer() 생성 시점에서 KafkaProducer 초기화가 NoBrokersAvailable로 터지면 deadletter를 기록하지 않고 task가 에러로 끝나는 문제 해결을 위해 경고성 task로 변경
+변경전
+```
+        self.producer: KafkaProducer = self._create_producer()
+```
+변경후
+```
+        try:
+            self.producer = self._create_producer()
+        except NoBrokersAvailable as exc:
+            self._kafka_unavailable = True
+            logger.warning(
+                "Kafka producer 초기화 실패: 브로커에 연결할 수 없습니다. 수집 데이터는 Dead Letter로 저장합니다. broker=%s error=%s",
+                settings.kafka_bootstrap_servers,
+                exc,
+            )
+        except KafkaError as exc:
+            self._kafka_unavailable = True
+            logger.warning(
+                "Kafka producer 초기화 실패: 수집 데이터는 Dead Letter로 저장합니다. broker=%s error=%s",
+                settings.kafka_bootstrap_servers,
+                exc,
+            )
+```
+news_ingest_dag
+>> kafka 통신
+- 뉴스 수집을 계속 수행
+- Kafka 상태는 경고성으로만 확인
+- Kafka 발행 실패 데이터는 dead_letter.jsonl에 저장
+
+kafka_recovery_dag
+- Kafka 컨테이너 health 상태 확인
+- unhealthy 상태면 Kafka 컨테이너 재시작
+- Kafka broker 연결 복구 여부 검증
+
+auto_replay_dag
+- dead_letter.jsonl에 쌓인 메시지 재처리
+- Kafka가 복구되면 실패 메시지를 다시 발행
+- 반복 실패 메시지는 영구 실패 파일로 분리
+
 #### Consumer lag 급증 시 대응 - 만약에 발생한다면
 
 | 항목 | 내용 |
@@ -92,7 +132,7 @@
 | 예상 현상 | `news_raw`, `keywords`, `keyword_trends` 중복 증가 가능, 유실 기간에 대한 back fill 필요|
 | 현재 구현 | `provider + domain + url` 기준 중복 제어 및 PostgreSQL upsert  |
 | 미구현 | api 한계로 backfill 불가. 현재시간 기준으로 최근기사만 가져옴. |
-| 대응 전략 |  |
+| 대응 전략 | deadletter를 통한 backfill |
 | 데모 | |
 
 ### 2.2 Spark 장애
@@ -131,6 +171,7 @@
 | 현재 구현 | dead letter/replay 경로 존재 |
 | 미구현/확인 필요 |  |
 | 대응 전략 | dead letter 파일 확인, 장애 복구 후 replay DAG 실행, 필요 시 수동 backfill |
+
 
 #### SLA 미달 시 처리
 
