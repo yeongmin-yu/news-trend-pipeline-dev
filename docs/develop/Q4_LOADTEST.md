@@ -32,9 +32,9 @@
 
 | 구분 | 평상시 | 피크 시 | 비고 |
 | --- | --- | --- | --- |
-| 검색어 수 | 8개 | 8개 | `query_keywords` 기준 확장 |
+| 검색어 수 | 24개 | 24개 | `query_keywords` 기준 확장 |
 | 수집 주기 | 15분 단위 | 2분 단위 | Airflow DAG 동적 schedule 조정 필요 |
-| 기사 수집량 | 실행 1회당 최대 300건 | 실행 1회당 최대 300건 | 무료 Naver API quota |
+| 기사 수집량 | 실행 1회당 최대 7200건 | 실행 1회당 최대 7200건 | 무료 Naver API quota |
 | Kafka 메시지량 | 낮음 | 단시간 burst 발생 | local Kafka 단일 broker 한계, 문제 없을것같음. |
 | Spark 처리량 | local 처리 가능 수준 | micro-batch 처리로 충분 | CPU/메모리 제약 영향 큼 |
 
