@@ -129,6 +129,32 @@ news-trend-pipeline-v2/
 └─ README_REFACTOR.md
 ```
 
+## runtime/state 파일
+
+`runtime/state`는 수집 체크포인트와 Kafka 발행 실패 재처리 상태를 저장하는 로컬 상태 디렉터리입니다. Docker Compose에서는 Airflow 컨테이너의 `/opt/news-trend-pipeline/runtime/state`로 마운트됩니다.
+
+| 파일 | 생성/갱신 주체 | 설명 |
+| --- | --- | --- |
+| `.gitkeep` | 저장소 | 빈 디렉터리를 Git에 유지하기 위한 파일입니다. |
+| `producer_state.json` | `ingestion.producer` | Naver 키워드별 마지막 수집 기준 시각과 최근 발행 URL 캐시를 저장합니다. 전체 호출 이력이 아니라 증분 수집 체크포인트와 중복 발행 방지용 상태입니다. |
+| `producer_state.lock` | `ingestion.producer` | 수집 producer가 동시에 실행될 때 `producer_state.json` 경합을 막기 위한 lock 파일입니다. |
+| `dead_letter.jsonl` | `ingestion.producer`, `ingestion.replay` | Kafka 발행 실패, validation 실패, Kafka producer 초기화 실패 등 재시도 가능한 메시지를 한 줄 JSON 형식으로 저장합니다. `auto_replay_dag`가 이 파일을 읽어 재발행합니다. |
+| `dead_letter_replayed.jsonl` | `ingestion.replay` | Dead Letter 재전송에 성공한 레코드를 누적 기록합니다. 감사와 운영 확인용 이력이며, 재처리 대상 파일은 아닙니다. |
+| `dead_letter_permanent.jsonl` | `ingestion.replay` | payload 오류나 최대 재시도 횟수 초과 등 자동 재처리가 어려운 영구 실패 메시지를 저장합니다. 수동 확인과 원인 조치가 필요합니다. |
+
+Dead Letter 처리 흐름은 다음과 같습니다.
+
+```text
+Kafka 발행 실패
+-> dead_letter.jsonl append
+-> auto_replay_dag / python -m ingestion.replay
+   ├─ 재전송 성공 -> dead_letter_replayed.jsonl append
+   ├─ 재전송 실패 -> dead_letter.jsonl에 남겨 다음 실행에서 재시도
+   └─ 재시도 초과 또는 payload 오류 -> dead_letter_permanent.jsonl append
+```
+
+`dead_letter.jsonl`은 재처리 실행 후 남은 재시도 대상만 다시 쓰입니다. `dead_letter_replayed.jsonl`과 `dead_letter_permanent.jsonl`은 누적 이력이므로 크기가 커질 수 있습니다.
+
 ## 빠른 시작
 
 ### 1. 환경 변수 준비
