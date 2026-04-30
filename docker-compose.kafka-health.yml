@@ -1,0 +1,36 @@
+services:
+  kafka:
+    container_name: ${KAFKA_CONTAINER_NAME:-kafka}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - cub kafka-ready -b localhost:9092 1 10
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  airflow-apiserver:
+    environment:
+      KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  airflow-scheduler:
+    environment:
+      KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  airflow-dag-processor:
+    environment:
+      KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  airflow-triggerer:
+    environment:
+      KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
