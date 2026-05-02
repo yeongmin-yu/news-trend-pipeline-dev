@@ -1,4 +1,4 @@
-import type { DomainOption, FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
+import type { FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
 import type { AsyncState } from "./hooks";
 import { fmtPct } from "./ui";
 import { getDomainColor } from "./utils";
@@ -20,38 +20,6 @@ interface DashboardSidebarProps {
   system: AsyncState<SystemStatusResponse>;
 }
 
-function domainGroupId(domain: DomainOption): string {
-  return domain.groupId ?? domain.group_id ?? (domain.id === "all" ? "all" : "other");
-}
-
-function domainGroupLabel(domain: DomainOption): string {
-  return domain.groupLabel ?? domain.group_label ?? (domain.id === "all" ? "전체" : "기타");
-}
-
-function domainGroupSortOrder(domain: DomainOption): number {
-  return domain.groupSortOrder ?? domain.group_sort_order ?? (domain.id === "all" ? 0 : 999);
-}
-
-function groupDomains(domains: DomainOption[]): Array<{ id: string; label: string; domains: DomainOption[]; order: number }> {
-  const grouped = new Map<string, { id: string; label: string; domains: DomainOption[]; order: number }>();
-  for (const item of domains) {
-    const id = domainGroupId(item);
-    const existing = grouped.get(id);
-    if (existing) {
-      existing.domains.push(item);
-      existing.order = Math.min(existing.order, domainGroupSortOrder(item));
-      continue;
-    }
-    grouped.set(id, {
-      id,
-      label: domainGroupLabel(item),
-      domains: [item],
-      order: domainGroupSortOrder(item),
-    });
-  }
-  return Array.from(grouped.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
-}
-
 export function DashboardSidebar({
   activeFilters,
   domain,
@@ -68,37 +36,26 @@ export function DashboardSidebar({
   setSpikeMinGrowth,
   system,
 }: DashboardSidebarProps) {
-  const domainGroups = groupDomains(activeFilters.domains);
+  const domains = activeFilters.domains;
 
   return (
     <div className="sidebar">
       <div className="side-section">
         <div className="side-heading">
-          <span>도메인 그룹</span>
-          <span className="count">{domainGroups.length}</span>
+          <span>도메인</span>
+          <span className="count">{domains.length}</span>
         </div>
-        {domainGroups.map((group) => (
-          <div className="domain-group" key={group.id}>
-            <div
-              className={`side-item domain-group-head${domain === group.id ? " is-active" : ""}`}
-              onClick={() => setDomain(group.id)}
-            >
-              <span className="label">{group.label}</span>
-              <span className="n">{group.domains.length}</span>
-            </div>
-            {group.domains.map((d) => (
-              <div
-                key={d.id}
-                className="side-item domain-child"
-                onClick={() => d.available && setDomain(group.id)}
-              >
-                <span className="label">
-                  <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
-                  {d.label}
-                </span>
-                <span className="n">{d.available ? "live" : "plan"}</span>
-              </div>
-            ))}
+        {domains.map((d) => (
+          <div
+            key={d.id}
+            className={`side-item${domain === d.id ? " is-active" : ""}`}
+            onClick={() => d.available && setDomain(d.id)}
+          >
+            <span className="label">
+              <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
+              {d.label}
+            </span>
+            <span className="n">{d.available ? "live" : "plan"}</span>
           </div>
         ))}
       </div>

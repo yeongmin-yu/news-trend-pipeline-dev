@@ -62,6 +62,17 @@ x-airflow-common:
   networks:
     - dev-network
 
+x-spark-runtime: &spark-runtime
+  build:
+    context: .
+    dockerfile: infra/spark/Dockerfile.spark
+  image: news-trend-spark-runtime:latest
+  restart: unless-stopped
+  volumes:
+    - ./src:/opt/news-trend-pipeline/src
+    - ./runtime/spark-events:/tmp/spark-events
+  networks:
+    - dev-network
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -287,6 +298,7 @@ services:
 
   spark-streaming:
     image: news-trend-spark-runtime:latest
+    hostname: spark-streaming
     env_file:
       - ./.env
     environment:
@@ -299,6 +311,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SPARK_MASTER: spark://spark-master:7077
       SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+      SPARK_DRIVER_HOST: ${SPARK_DRIVER_HOST:-spark-streaming}
+      SPARK_DRIVER_BIND_ADDRESS: ${SPARK_DRIVER_BIND_ADDRESS:-0.0.0.0}
+      SPARK_DRIVER_PORT: ${SPARK_DRIVER_PORT:-7078}
+      SPARK_BLOCK_MANAGER_PORT: ${SPARK_BLOCK_MANAGER_PORT:-7079}
+      SPARK_UI_PORT: ${SPARK_UI_PORT:-4040}
+      SPARK_EVENT_LOG_ENABLED: ${SPARK_EVENT_LOG_ENABLED:-true}
+      SPARK_EVENT_LOG_DIR: ${SPARK_EVENT_LOG_DIR:-file:/tmp/spark-events}
       NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
       NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
       NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
@@ -307,6 +326,13 @@ services:
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
       --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.host=$${SPARK_DRIVER_HOST}
+      --conf spark.driver.bindAddress=$${SPARK_DRIVER_BIND_ADDRESS}
+      --conf spark.driver.port=$${SPARK_DRIVER_PORT}
+      --conf spark.blockManager.port=$${SPARK_BLOCK_MANAGER_PORT}
+      --conf spark.ui.port=$${SPARK_UI_PORT}
+      --conf spark.eventLog.enabled=$${SPARK_EVENT_LOG_ENABLED}
+      --conf spark.eventLog.dir=$${SPARK_EVENT_LOG_DIR}
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4
       /opt/news-trend-pipeline/scripts/run_processing.py"
     restart: unless-stopped
@@ -321,6 +347,10 @@ services:
         condition: service_started
       spark-worker-2:
         condition: service_started
+    ports:
+      - "4040:4040"
+      - "7078:7078"
+      - "7079:7079"
     volumes:
       - ./src:/opt/news-trend-pipeline/src
       - ./scripts:/opt/news-trend-pipeline/scripts
@@ -328,7 +358,6 @@ services:
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
-
   airflow-apiserver:
     <<: *airflow-common
     command: api-server

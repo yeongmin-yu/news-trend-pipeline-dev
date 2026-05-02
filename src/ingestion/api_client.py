@@ -375,6 +375,11 @@ class RssNewsClient(BaseNewsClient):
         self.feeds = self._load_feed_catalog(self.feed_catalog_path)
         if not self.feeds:
             raise ValueError(f"Active RSS feeds not found: {self.feed_catalog_path}")
+        logger.info(
+            "RSS feed catalog loaded: path=%s active_feeds=%d",
+            self.feed_catalog_path,
+            len(self.feeds),
+        )
 
     def fetch_news(
         self,
@@ -404,6 +409,13 @@ class RssNewsClient(BaseNewsClient):
     ) -> dict[str, FetchResult]:
         workers = max(1, min(max_workers or settings.rss_max_workers, len(self.feeds)))
         results: dict[str, FetchResult] = {self._feed_key(feed): ([], False) for feed in self.feeds}
+        started_at = time.monotonic()
+        logger.info(
+            "RSS collection started: feeds=%d workers=%d catalog=%s",
+            len(self.feeds),
+            workers,
+            self.feed_catalog_path,
+        )
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_feed = {
                 executor.submit(
@@ -421,6 +433,18 @@ class RssNewsClient(BaseNewsClient):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("RSS feed collection failed: key=%s url=%s error=%s", feed_key, feed["url"], exc)
                     results[feed_key] = ([], False)
+        ok_count = sum(1 for _, ok in results.values() if ok)
+        failed_count = len(results) - ok_count
+        article_count = sum(len(articles) for articles, _ in results.values())
+        elapsed_seconds = time.monotonic() - started_at
+        logger.info(
+            "RSS collection finished: feeds=%d ok=%d failed=%d articles=%d elapsed=%.2fs",
+            len(results),
+            ok_count,
+            failed_count,
+            article_count,
+            elapsed_seconds,
+        )
         return results
 
     @staticmethod
@@ -448,24 +472,55 @@ class RssNewsClient(BaseNewsClient):
         )
 
     def _fetch_feed(self, feed: Mapping[str, str], from_timestamp: str | None = None) -> FetchResult:
+        feed_key = self._feed_key(feed)
         threshold = self._parse_timestamp(from_timestamp) if from_timestamp else None
-        response = requests.get(
+        started_at = time.monotonic()
+        logger.info(
+            "RSS feed fetch started: key=%s url=%s from=%s",
+            feed_key,
             feed["url"],
-            timeout=self.timeout_seconds,
-            headers={"User-Agent": "news-trend-pipeline/0.2 (+rss collector)"},
+            from_timestamp or "none",
         )
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-        entries = self._extract_entries(root)
-        articles = [self._normalize_entry(entry, feed) for entry in entries]
-        if threshold:
-            articles = [
-                article
-                for article in articles
-                if self._parse_timestamp(article.get("published_at"))
-                and self._parse_timestamp(article.get("published_at")) > threshold
-            ]
-        return self._deduplicate_articles(articles), True
+        try:
+            response = requests.get(
+                feed["url"],
+                timeout=self.timeout_seconds,
+                headers={"User-Agent": "news-trend-pipeline/0.2 (+rss collector)"},
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            entries = self._extract_entries(root)
+            articles = [self._normalize_entry(entry, feed) for entry in entries]
+            raw_count = len(articles)
+            if threshold:
+                articles = [
+                    article
+                    for article in articles
+                    if self._parse_timestamp(article.get("published_at"))
+                    and self._parse_timestamp(article.get("published_at")) > threshold
+                ]
+            filtered_count = len(articles)
+            deduplicated = self._deduplicate_articles(articles)
+            elapsed_seconds = time.monotonic() - started_at
+            logger.info(
+                "RSS feed fetch finished: key=%s raw=%d filtered=%d deduplicated=%d elapsed=%.2fs",
+                feed_key,
+                raw_count,
+                filtered_count,
+                len(deduplicated),
+                elapsed_seconds,
+            )
+            return deduplicated, True
+        except Exception as exc:  # noqa: BLE001
+            elapsed_seconds = time.monotonic() - started_at
+            logger.warning(
+                "RSS feed fetch failed: key=%s url=%s elapsed=%.2fs error=%s",
+                feed_key,
+                feed["url"],
+                elapsed_seconds,
+                exc,
+            )
+            raise
 
     @classmethod
     def _extract_entries(cls, root: ET.Element) -> list[ET.Element]:

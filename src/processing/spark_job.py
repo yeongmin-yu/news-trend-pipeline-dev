@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from time import monotonic
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import udf
 from pyspark.sql.functions import (
@@ -46,16 +48,55 @@ def extract_tokens(text: str | None, domain: str | None = None) -> list[str]:
 
 
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
-    df.write.jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
+    # batchsize 는 Spark JDBC writer 옵션, reWriteBatchedInserts 는 PG JDBC URL/property 옵션.
+    # 둘 다 있어야 multi-VALUES INSERT 로 묶여 전송된다.
+    (
+        df.write.option("batchsize", "5000")
+        .option("reWriteBatchedInserts", "true")
+        .jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
+    )
+
+
+def _log_batch_step(batch_id: int, step: str, started_at: float) -> None:
+    logger.info(
+        "Spark batch step finished: batch_id=%s step=%s elapsed=%.2fs",
+        batch_id,
+        step,
+        monotonic() - started_at,
+    )
 
 
 def build_spark_session() -> SparkSession:
-    return (
+    builder = (
         SparkSession.builder.appName(settings.spark_app_name)
         .master(settings.spark_master)
         .config("spark.sql.shuffle.partitions", settings.spark_shuffle_partitions)
-        .getOrCreate()
     )
+
+    # Driver 네트워킹: Docker 컨테이너 안에서 driver 가 워커/마스터에 자기 자신을
+    # 정확히 광고하지 못하면 Spark UI 의 stage/executor 정보가 비어 보이거나
+    # 링크가 깨진다. bindAddress=0.0.0.0 으로 모든 인터페이스에 바인딩하고,
+    # host 는 같은 docker network 에서 해석 가능한 컨테이너 DNS 이름을 쓴다.
+    builder = builder.config("spark.driver.bindAddress", settings.spark_driver_bind_address)
+    if settings.spark_driver_host:
+        builder = builder.config("spark.driver.host", settings.spark_driver_host)
+    if settings.spark_driver_port:
+        builder = builder.config("spark.driver.port", settings.spark_driver_port)
+    if settings.spark_block_manager_port:
+        builder = builder.config("spark.blockManager.port", settings.spark_block_manager_port)
+
+    # Driver UI(기본 4040) 고정 — 컨테이너 외부 노출 포트와 일치시키기 위함
+    builder = builder.config("spark.ui.port", settings.spark_ui_port)
+
+    # Spark History Server(18080) 가 완료된 잡을 보여주려면 driver 가 동일
+    # spark-events 디렉터리에 이벤트 로그를 남겨야 한다.
+    if settings.spark_event_log_enabled:
+        builder = (
+            builder.config("spark.eventLog.enabled", "true")
+            .config("spark.eventLog.dir", settings.spark_event_log_dir)
+        )
+
+    return builder.getOrCreate()
 
 
 def run_streaming_job() -> None:
@@ -68,6 +109,8 @@ def run_streaming_job() -> None:
         "user": settings.postgres_user,
         "password": settings.postgres_password,
         "driver": "org.postgresql.Driver",
+        # PG JDBC: 여러 INSERT 를 multi-VALUES 로 묶어 round-trip 을 줄인다.
+        "reWriteBatchedInserts": "true",
     }
 
     raw_stream = (
@@ -96,24 +139,33 @@ def run_streaming_job() -> None:
 
     def write_to_sinks(batch_df, batch_id: int) -> None:
         if batch_df.isEmpty():
+            logger.info("Spark batch skipped: batch_id=%s reason=empty", batch_id)
             return
 
-        logger.info("Processing batch %s", batch_id)
+        batch_started_at = monotonic()
+        logger.info("Spark batch started: batch_id=%s", batch_id)
 
         # news_raw
+        step_started_at = monotonic()
         _jdbc_write(
             batch_df.select("provider", "domain", "query", "source", "title", "summary", "url", "published_at", "ingested_at"),
             "stg_news_raw", jdbc_url, jdbc_props,
         )
+        _log_batch_step(batch_id, "write_stg_news_raw", step_started_at)
+        step_started_at = monotonic()
         upsert_from_staging_news_raw()
+        _log_batch_step(batch_id, "upsert_news_raw", step_started_at)
 
+        step_started_at = monotonic()
         article_keywords = (
             batch_df.select("provider", "domain", "url", "event_time", explode(col("tokens")).alias("keyword"))
             .groupBy("provider", "domain", "url", "event_time", "keyword")
             .agg(spark_count("*").alias("keyword_count"))
         )
+        _log_batch_step(batch_id, "build_article_keywords", step_started_at)
 
         # keywords (per-article)
+        step_started_at = monotonic()
         _jdbc_write(
             article_keywords.withColumn("processed_at", current_timestamp())
             .selectExpr(
@@ -126,9 +178,13 @@ def run_streaming_job() -> None:
             ),
             "stg_keywords", jdbc_url, jdbc_props,
         )
+        _log_batch_step(batch_id, "write_stg_keywords", step_started_at)
+        step_started_at = monotonic()
         upsert_from_staging_keywords()
+        _log_batch_step(batch_id, "upsert_keywords", step_started_at)
 
         # keyword_trends (windowed aggregation)
+        step_started_at = monotonic()
         keyword_trends = (
             article_keywords.groupBy(
                 col("provider"),
@@ -148,10 +204,16 @@ def run_streaming_job() -> None:
                 "processed_at",
             )
         )
+        _log_batch_step(batch_id, "build_keyword_trends", step_started_at)
+        step_started_at = monotonic()
         _jdbc_write(keyword_trends, "stg_keyword_trends", jdbc_url, jdbc_props)
+        _log_batch_step(batch_id, "write_stg_keyword_trends", step_started_at)
+        step_started_at = monotonic()
         upsert_from_staging_keyword_trends()
+        _log_batch_step(batch_id, "upsert_keyword_trends", step_started_at)
 
         # keyword_relations (co-occurrence pairs)
+        step_started_at = monotonic()
         article_window = Window.partitionBy("provider", "domain", "url", "event_time").orderBy(
             col("keyword_count").desc(),
             col("keyword").asc(),
@@ -200,8 +262,18 @@ def run_streaming_job() -> None:
                 "processed_at",
             )
         )
+        _log_batch_step(batch_id, "build_keyword_relations", step_started_at)
+        step_started_at = monotonic()
         _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
+        _log_batch_step(batch_id, "write_stg_keyword_relations", step_started_at)
+        step_started_at = monotonic()
         upsert_from_staging_keyword_relations()
+        _log_batch_step(batch_id, "upsert_keyword_relations", step_started_at)
+        logger.info(
+            "Spark batch finished: batch_id=%s elapsed=%.2fs",
+            batch_id,
+            monotonic() - batch_started_at,
+        )
 
     query = (
         parsed.writeStream.outputMode("append")

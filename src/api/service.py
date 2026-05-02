@@ -473,7 +473,7 @@ def _derive_overview_from_cache(
 
 
 def get_filters() -> dict[str, Any]:
-    domains = [{"id": "all", "label": "?꾩껜", "available": True}]
+    domains = [{"id": "all", "label": "전체", "available": True}]
     domains.extend(fetch_domain_catalog())
     return {
         "domains": domains,

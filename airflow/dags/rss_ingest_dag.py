@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Naver news ingestion DAG."""
+"""RSS news ingestion DAG."""
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -54,19 +54,19 @@ def task_check_kafka_health() -> None:
             admin.close()
 
 
-def task_produce_naver(**context: object) -> int:
+def task_produce_rss(**context: object) -> int:
     _ensure_src_on_syspath()
 
     from core.logger import get_logger
     from ingestion.producer import NewsKafkaProducer
 
     logger = get_logger(__name__)
-    logger.info("[Naver collection] Starting collection")
-    count = NewsKafkaProducer().run_for_provider("naver")
-    logger.info("[Naver collection] Kafka publish finished: published=%d", count)
+    logger.info("[RSS collection] Starting collection")
+    count = NewsKafkaProducer().run_for_provider("rss")
+    logger.info("[RSS collection] Kafka publish finished: published=%d", count)
 
     ti = context["ti"]
-    ti.xcom_push(key="naver_count", value=count)
+    ti.xcom_push(key="rss_count", value=count)
     return count
 
 
@@ -77,11 +77,11 @@ def task_summarize_results(**context: object) -> None:
 
     logger = get_logger(__name__)
     ti = context["ti"]
-    naver_count: int = ti.xcom_pull(task_ids="produce_naver", key="naver_count") or 0
+    rss_count: int = ti.xcom_pull(task_ids="produce_rss", key="rss_count") or 0
 
-    logger.info("[Naver collection summary] published=%d", naver_count)
-    if naver_count == 0:
-        logger.warning("[Naver collection summary] No articles were published in this run.")
+    logger.info("[RSS collection summary] published=%d", rss_count)
+    if rss_count == 0:
+        logger.warning("[RSS collection summary] No articles were published in this run.")
 
 
 def task_check_dead_letter() -> None:
@@ -103,23 +103,23 @@ def task_check_dead_letter() -> None:
 
 
 with DAG(
-    dag_id="news_ingest_dag",
+    dag_id="rss_ingest_dag",
     default_args=default_args,
-    description="Collect Naver news and publish normalized messages to Kafka",
+    description="Collect RSS feeds and publish normalized messages to Kafka",
     start_date=datetime(2026, 1, 1),
     schedule="*/15 * * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["news", "kafka", "ingestion", "naver"],
+    tags=["news", "kafka", "ingestion", "rss"],
 ) as dag:
     check_kafka_health = PythonOperator(
         task_id="check_kafka_health",
         python_callable=task_check_kafka_health,
     )
 
-    produce_naver = PythonOperator(
-        task_id="produce_naver",
-        python_callable=task_produce_naver,
+    produce_rss = PythonOperator(
+        task_id="produce_rss",
+        python_callable=task_produce_rss,
     )
 
     summarize_results = PythonOperator(
@@ -133,6 +133,6 @@ with DAG(
         trigger_rule="all_done",
     )
 
-    check_kafka_health >> [produce_naver, check_dead_letter]
-    produce_naver >> summarize_results
-    produce_naver >> check_dead_letter
+    check_kafka_health >> [produce_rss, check_dead_letter]
+    produce_rss >> summarize_results
+    produce_rss >> check_dead_letter

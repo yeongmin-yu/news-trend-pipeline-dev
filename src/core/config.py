@@ -103,8 +103,17 @@ class Settings:
     )
     spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "2")
     spark_starting_offsets: str = os.getenv("SPARK_STARTING_OFFSETS", "latest")
+    spark_driver_host: str = os.getenv("SPARK_DRIVER_HOST", "")
+    spark_driver_bind_address: str = os.getenv("SPARK_DRIVER_BIND_ADDRESS", "0.0.0.0")
+    spark_driver_port: str = os.getenv("SPARK_DRIVER_PORT", "")
+    spark_block_manager_port: str = os.getenv("SPARK_BLOCK_MANAGER_PORT", "")
+    spark_ui_port: str = os.getenv("SPARK_UI_PORT", "4040")
+    spark_event_log_enabled: bool = os.getenv("SPARK_EVENT_LOG_ENABLED", "true").lower() in {"1", "true", "yes", "y", "on"}
+    spark_event_log_dir: str = os.getenv("SPARK_EVENT_LOG_DIR", "file:/tmp/spark-events")
     keyword_window_duration: str = os.getenv("KEYWORD_WINDOW_DURATION", "10 minutes")
-    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "8"))
+    # 기사당 상위 N 키워드로 페어를 만든다. C(N,2) 로 폭증하므로 5(=10pair) 가 기본.
+    # 8 로 두면 기사당 28pair 라 keyword_relations upsert 가 분 단위로 늘어남.
+    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "5"))
 
     compound_extraction_window_hours: int = _compound_extraction_window_hours()
     compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))
