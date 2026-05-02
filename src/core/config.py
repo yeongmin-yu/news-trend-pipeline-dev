@@ -24,6 +24,16 @@ def _resolve_path(raw: str | None, default: Path) -> str:
     return str((BASE_DIR / candidate).resolve())
 
 
+def _compound_extraction_window_hours() -> int:
+    raw_hours = os.getenv("COMPOUND_EXTRACTION_WINDOW_HOURS")
+    if raw_hours:
+        return int(raw_hours)
+    raw_days = os.getenv("COMPOUND_EXTRACTION_WINDOW_DAYS")
+    if raw_days:
+        return int(raw_days) * 24
+    return 2
+
+
 DEFAULT_THEME_KEYWORDS = (
     "AI",
     "인공지능",
@@ -83,7 +93,7 @@ class Settings:
     keyword_window_duration: str = os.getenv("KEYWORD_WINDOW_DURATION", "10 minutes")
     relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "8"))
 
-    compound_extraction_window_days: int = int(os.getenv("COMPOUND_EXTRACTION_WINDOW_DAYS", "1"))
+    compound_extraction_window_hours: int = _compound_extraction_window_hours()
     compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))
     compound_extraction_min_char_length: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_CHAR_LENGTH", "4"))
     compound_extraction_max_morpheme_count: int = int(os.getenv("COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT", "4"))

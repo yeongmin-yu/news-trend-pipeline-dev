@@ -40,7 +40,7 @@ with DAG(
     default_args=default_args,
     description="복합명사 후보 자동 검토",
     start_date=datetime(2026, 1, 1),
-    schedule="0 */2 * * *",
+    schedule="*/15 * * * *",
     catchup=False,
     max_active_runs=1,
     tags=["용어사전", "복합명사", "자동검토"],

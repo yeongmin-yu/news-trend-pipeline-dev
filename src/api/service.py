@@ -374,7 +374,7 @@ def _derive_overview_from_cache(
     for keyword, series in keyword_map.items():
         current_mentions = sum(series["mentions"][index] for index in current_indices)
         prev_mentions = sum(series["mentions"][index] for index in prev_indices)
-        if current_mentions <= 0 and prev_mentions <= 0:
+        if current_mentions <= 0:
             continue
         growth = _safe_growth(current_mentions, prev_mentions)
         spike, event_score = _score_keyword(current_mentions, growth)

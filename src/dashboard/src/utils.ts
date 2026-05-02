@@ -180,7 +180,7 @@ export function deriveOverviewFromCache(
     for (const row of prevRows) {
       prevMentions += series.mentions.get(row.bucket) ?? 0;
     }
-    if (currentMentions <= 0 && prevMentions <= 0) continue;
+    if (currentMentions <= 0) continue;
     const growth =
       prevMentions <= 0
         ? currentMentions > 0

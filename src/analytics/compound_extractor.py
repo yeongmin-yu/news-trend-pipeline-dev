@@ -178,6 +178,7 @@ def _extract_candidates(
 
 
 def run_extraction_job(
+    window_hours: int | None = None,
     window_days: int | None = None,
     min_frequency: int | None = None,
     min_char_length: int | None = None,
@@ -187,7 +188,8 @@ def run_extraction_job(
     """복합명사 후보 추출 배치 잡 진입점.
 
     Args:
-        window_days: 분석 대상 기간(일). None이면 설정값 사용.
+        window_hours: 분석 대상 기간(시간). None이면 설정값 사용.
+        window_days: 이전 호출부 호환용 분석 대상 기간(일). window_hours가 우선한다.
         min_frequency: 후보 최소 빈도. None이면 설정값 사용.
         min_char_length: 후보 최소 글자 수. None이면 설정값 사용.
         max_morpheme_count: 합칠 형태소 최대 개수. None이면 설정값 사용.
@@ -197,17 +199,22 @@ def run_extraction_job(
         {"article_count": int, "candidate_count": int,
          "new_count": int, "updated_count": int}
     """
-    _window_days = window_days if window_days is not None else settings.compound_extraction_window_days
+    if window_hours is not None:
+        _window_hours = window_hours
+    elif window_days is not None:
+        _window_hours = window_days * 24
+    else:
+        _window_hours = settings.compound_extraction_window_hours
     _min_freq = min_frequency if min_frequency is not None else settings.compound_extraction_min_frequency
     _min_len = min_char_length if min_char_length is not None else settings.compound_extraction_min_char_length
     _max_morph = max_morpheme_count if max_morpheme_count is not None else settings.compound_extraction_max_morpheme_count
 
     until_dt = until or datetime.now(timezone.utc)
-    since_dt = until_dt - timedelta(days=_window_days)
+    since_dt = until_dt - timedelta(hours=_window_hours)
 
     logger.info(
-        "복합명사 후보 추출 시작 | window=%dd | since=%s | until=%s | min_freq=%d | min_len=%d",
-        _window_days,
+        "복합명사 후보 추출 시작 | window=%dh | since=%s | until=%s | min_freq=%d | min_len=%d",
+        _window_hours,
         since_dt.isoformat(),
         until_dt.isoformat(),
         _min_freq,

@@ -54,19 +54,23 @@ ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS query VARCHAR(100);
 ALTER TABLE news_raw ADD COLUMN IF NOT EXISTS summary TEXT;
 
 DO $$
+DECLARE
+    idx_keywords_unique_oid REGCLASS := to_regclass('idx_keywords_unique');
+    idx_keyword_trends_unique_oid REGCLASS := to_regclass('idx_keyword_trends_unique');
+    idx_keyword_relations_unique_oid REGCLASS := to_regclass('idx_keyword_relations_unique');
 BEGIN
-    IF to_regclass('idx_keywords_unique') IS NOT NULL
-       AND pg_get_indexdef('idx_keywords_unique'::regclass) NOT ILIKE '%article_domain%' THEN
+    IF idx_keywords_unique_oid IS NOT NULL
+       AND pg_get_indexdef(idx_keywords_unique_oid) NOT ILIKE '%article_domain%' THEN
         DROP INDEX idx_keywords_unique;
     END IF;
 
-    IF to_regclass('idx_keyword_trends_unique') IS NOT NULL
-       AND pg_get_indexdef('idx_keyword_trends_unique'::regclass) NOT ILIKE '%domain%' THEN
+    IF idx_keyword_trends_unique_oid IS NOT NULL
+       AND pg_get_indexdef(idx_keyword_trends_unique_oid) NOT ILIKE '%domain%' THEN
         DROP INDEX idx_keyword_trends_unique;
     END IF;
 
-    IF to_regclass('idx_keyword_relations_unique') IS NOT NULL
-       AND pg_get_indexdef('idx_keyword_relations_unique'::regclass) NOT ILIKE '%domain%' THEN
+    IF idx_keyword_relations_unique_oid IS NOT NULL
+       AND pg_get_indexdef(idx_keyword_relations_unique_oid) NOT ILIKE '%domain%' THEN
         DROP INDEX idx_keyword_relations_unique;
     END IF;
 END $$;
