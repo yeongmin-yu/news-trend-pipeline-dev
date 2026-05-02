@@ -131,7 +131,10 @@ services:
       - dev-network
 
   app-postgres:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: infra/postgres/Dockerfile.postgres
+    image: news-trend-postgres:16-partman
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-news_pipeline}
