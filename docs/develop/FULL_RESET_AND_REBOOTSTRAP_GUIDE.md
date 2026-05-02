@@ -11,8 +11,7 @@
 
 - `app-postgres-data`
   - 기사 원문, 키워드, 트렌드, 연관 키워드 저장 DB
-- `airflow-postgres-data`
-  - Airflow 메타데이터 DB
+  - `airflow` database도 같은 PostgreSQL 볼륨 안에 함께 저장된다.
 
 ### 2. 런타임 디렉터리
 
@@ -58,7 +57,6 @@ docker compose down -v --remove-orphans
 이 단계로 아래가 삭제된다.
 
 - `app-postgres-data`
-- `airflow-postgres-data`
 
 ### 2. 런타임 디렉터리 비우기
 

@@ -78,7 +78,7 @@ with DAG(
     default_args=default_args,
     description="news_raw 기반 복합명사 후보 추출 DAG",
     start_date=datetime(2026, 1, 1),
-    schedule="0 * * * *",
+    schedule="*/15 * * * *",
     catchup=False,
     max_active_runs=1,
     tags=["용어사전", "복합명사", "후보추출"],

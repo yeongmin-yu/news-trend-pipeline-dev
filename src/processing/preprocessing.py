@@ -85,6 +85,8 @@ _KOREAN_STOPWORDS_DEFAULT: frozenset[str] = frozenset({
 })
 
 KOREAN_TOKEN_PATTERN = r"[\uAC00-\uD7A3]+"
+ENGLISH_TOKEN_PATTERN = r"[a-z]+"
+KEYWORD_TOKEN_PATTERN = rf"(?:{KOREAN_TOKEN_PATTERN}|{ENGLISH_TOKEN_PATTERN})"
 KOREAN_NOUN_TAGS = {"NNG", "NNP"}
 DEFAULT_DICT_PATH = Path(__file__).resolve().parents[1] / "core" / "korean_user_dict.txt"
 KOREAN_USER_DICT_PATH = Path(os.getenv("KOREAN_USER_DICT_PATH", str(DEFAULT_DICT_PATH)))
@@ -285,7 +287,7 @@ def clean_text(text: str | None) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\[\+\d+\s+chars\]", " ", text)
     text = text.lower()
-    text = re.sub(r"[^\uAC00-\uD7A3\s]", " ", text)
+    text = re.sub(r"[^a-z\uAC00-\uD7A3\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -300,7 +302,10 @@ def tokenize(text: str | None, domain: str = "all") -> list[str]:
         raw_spans: list[tuple[int, int]] = []
         for token in kiwi.tokenize(cleaned):
             normalized = unicodedata.normalize("NFC", token.form)
-            if token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
+            if (
+                (token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized))
+                or re.fullmatch(ENGLISH_TOKEN_PATTERN, normalized)
+            ):
                 raw_nouns.append(normalized)
                 raw_spans.append((token.start, token.start + token.len))
         merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(domain), spans=raw_spans, text=cleaned)
@@ -311,7 +316,7 @@ def tokenize(text: str | None, domain: str = "all") -> list[str]:
     fallback_tokens = [
         token
         for token in cleaned.split()
-        if token and token not in stopwords and len(token) > 1 and re.fullmatch(KOREAN_TOKEN_PATTERN, token)
+        if token and token not in stopwords and len(token) > 1 and re.fullmatch(KEYWORD_TOKEN_PATTERN, token)
     ]
     merged_fallback = merge_compound_nouns(fallback_tokens, get_user_dictionary_set(domain))
     return [token for token in merged_fallback if len(token) > 1 and token not in stopwords]

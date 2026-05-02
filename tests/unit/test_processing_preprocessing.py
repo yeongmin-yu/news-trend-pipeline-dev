@@ -1,9 +1,18 @@
-from processing.preprocessing import clean_text, merge_compound_nouns
+from processing.preprocessing import clean_text, merge_compound_nouns, tokenize
 
 
-def test_clean_text_removes_html_and_non_korean() -> None:
+def test_clean_text_removes_html_and_digits_but_keeps_english() -> None:
     text = "<b>AI</b> 2026 혁신!"
-    assert clean_text(text) == "혁신"
+    assert clean_text(text) == "ai 혁신"
+
+
+def test_tokenize_keeps_english_keywords() -> None:
+    text = "OpenAI GPT 모델과 AI 반도체"
+    tokens = tokenize(text)
+
+    assert "openai" in tokens
+    assert "gpt" in tokens
+    assert "ai" in tokens
 
 
 def test_merge_compound_nouns_prefers_longest_match() -> None:

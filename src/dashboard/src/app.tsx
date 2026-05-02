@@ -372,7 +372,7 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
     const request = api
       .overviewWindow(
         source, domain, rangeParam,
-        overviewFetchStartIso, overviewFetchEndIso,
+        committedStartIso, committedEndIso,
         overviewBucket, search, 30,
         overviewFetchStartIso, overviewFetchEndIso,
         
@@ -417,6 +417,7 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
     return () => { alive = false; };
   }, [
     source, domain, rangeParam, overviewBucket, search,
+    committedStartIso, committedEndIso,
     overviewFetchWindow.startMs, overviewFetchWindow.endMs,
     overviewRequestKey,
   ]);
@@ -1057,7 +1058,7 @@ useEffect(() => {
         overviewPrefetchInFlightRef.current.add(okey);
         const si = new Date(ofw.startMs).toISOString();
         const ei = new Date(ofw.endMs).toISOString();
-        api.overviewWindow(s, d, rp, si, ei, obucket, q, 30, si, ei)
+        api.overviewWindow(s, d, rp, new Date(ns).toISOString(), new Date(ne).toISOString(), obucket, q, 30, si, ei)
           .then((data) =>
             overviewCacheRef.current.set(okey, { data, identity: okey, fetchStartMs: ofw.startMs, fetchEndMs: ofw.endMs }),
           )

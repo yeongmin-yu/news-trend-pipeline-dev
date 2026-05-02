@@ -126,7 +126,7 @@ if not contiguous:
 
 | 설정 | 환경변수 | 기본값 | 의미 |
 |------|----------|--------|------|
-| 분석 기간 | `COMPOUND_EXTRACTION_WINDOW_DAYS` | `1` | 최근 N일치 기사 |
+| 분석 기간 | `COMPOUND_EXTRACTION_WINDOW_HOURS` | `2` | 최근 N시간치 기사 |
 | 최소 빈도 | `COMPOUND_EXTRACTION_MIN_FREQUENCY` | `3` | N회 이상 출현한 조합 |
 | 최소 글자 수 | `COMPOUND_EXTRACTION_MIN_CHAR_LENGTH` | `4` | 형태소 합산 N자 이상 |
 | 최대 형태소 수 | `COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT` | `4` | 최대 N개 형태소 결합 |
@@ -136,7 +136,7 @@ if not contiguous:
 
 추출 기준은 다음 설정을 사용한다.
 
-- `COMPOUND_EXTRACTION_WINDOW_DAYS`
+- `COMPOUND_EXTRACTION_WINDOW_HOURS`
 - `COMPOUND_EXTRACTION_MIN_FREQUENCY`
 - `COMPOUND_EXTRACTION_MIN_CHAR_LENGTH`
 - `COMPOUND_EXTRACTION_MAX_MORPHEME_COUNT`
