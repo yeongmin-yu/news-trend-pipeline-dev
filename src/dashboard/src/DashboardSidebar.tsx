@@ -1,4 +1,4 @@
-import type { FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
+import type { DomainOption, FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
 import type { AsyncState } from "./hooks";
 import { fmtPct } from "./ui";
 import { getDomainColor } from "./utils";
@@ -20,6 +20,38 @@ interface DashboardSidebarProps {
   system: AsyncState<SystemStatusResponse>;
 }
 
+function domainGroupId(domain: DomainOption): string {
+  return domain.groupId ?? domain.group_id ?? (domain.id === "all" ? "all" : "other");
+}
+
+function domainGroupLabel(domain: DomainOption): string {
+  return domain.groupLabel ?? domain.group_label ?? (domain.id === "all" ? "전체" : "기타");
+}
+
+function domainGroupSortOrder(domain: DomainOption): number {
+  return domain.groupSortOrder ?? domain.group_sort_order ?? (domain.id === "all" ? 0 : 999);
+}
+
+function groupDomains(domains: DomainOption[]): Array<{ id: string; label: string; domains: DomainOption[]; order: number }> {
+  const grouped = new Map<string, { id: string; label: string; domains: DomainOption[]; order: number }>();
+  for (const item of domains) {
+    const id = domainGroupId(item);
+    const existing = grouped.get(id);
+    if (existing) {
+      existing.domains.push(item);
+      existing.order = Math.min(existing.order, domainGroupSortOrder(item));
+      continue;
+    }
+    grouped.set(id, {
+      id,
+      label: domainGroupLabel(item),
+      domains: [item],
+      order: domainGroupSortOrder(item),
+    });
+  }
+  return Array.from(grouped.values()).sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+}
+
 export function DashboardSidebar({
   activeFilters,
   domain,
@@ -36,36 +68,49 @@ export function DashboardSidebar({
   setSpikeMinGrowth,
   system,
 }: DashboardSidebarProps) {
+  const domainGroups = groupDomains(activeFilters.domains);
+
   return (
     <div className="sidebar">
       <div className="side-section">
         <div className="side-heading">
-          <span>도메인 요약</span>
-          <span className="count">{activeFilters.domains.length}</span>
+          <span>도메인 그룹</span>
+          <span className="count">{domainGroups.length}</span>
         </div>
-        {activeFilters.domains.map((d) => (
-          <div
-            key={d.id}
-            className={`side-item${domain === d.id ? " is-active" : ""}`}
-            onClick={() => d.available && setDomain(d.id)}
-          >
-            <span className="label">
-              <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
-              {d.label}
-            </span>
-            <span className="n">{d.available ? "live" : "plan"}</span>
+        {domainGroups.map((group) => (
+          <div className="domain-group" key={group.id}>
+            <div
+              className={`side-item domain-group-head${domain === group.id ? " is-active" : ""}`}
+              onClick={() => setDomain(group.id)}
+            >
+              <span className="label">{group.label}</span>
+              <span className="n">{group.domains.length}</span>
+            </div>
+            {group.domains.map((d) => (
+              <div
+                key={d.id}
+                className="side-item domain-child"
+                onClick={() => d.available && setDomain(group.id)}
+              >
+                <span className="label">
+                  <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
+                  {d.label}
+                </span>
+                <span className="n">{d.available ? "live" : "plan"}</span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
 
       <div className="side-section">
         <div className="side-heading">
-          <span>지켜보기항목</span>
+          <span>지켜볼 키워드</span>
           <span className="count">{watchlist.length}</span>
         </div>
         <div className="field" style={{ width: "100%" }}>
           <input
-            placeholder="+ 키워드 추가…"
+            placeholder="+ 키워드 추가"
             onKeyDown={(e) => {
               if (e.key === "Enter" && selectedKeyword && !watchlist.includes(selectedKeyword)) {
                 addToWatchlist(selectedKeyword);
@@ -107,7 +152,7 @@ export function DashboardSidebar({
                   style={{ padding: "1px 3px", borderRadius: 2 }}
                   title="제거"
                 >
-                  ×
+                  x
                 </button>
               </span>
             </div>
@@ -115,7 +160,7 @@ export function DashboardSidebar({
         })}
         {watchlist.length === 0 && (
           <div style={{ fontSize: 11, color: "var(--text-4)", padding: "4px 8px" }}>
-            키워드를 추가하세요
+            키워드를 추가하세요.
           </div>
         )}
       </div>

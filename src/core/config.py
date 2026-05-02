@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR / ".env")
 
 
@@ -35,14 +35,20 @@ def _compound_extraction_window_hours() -> int:
 
 
 DEFAULT_THEME_KEYWORDS = (
+    "대통령",
+    "국회",
+    "경제",
+    "금리",
+    "코스피",
+    "사건사고",
+    "교육",
+    "미국",
+    "중국",
     "AI",
-    "인공지능",
-    "생성형AI",
-    "GPT",
-    "LLM",
-    "챗GPT",
-    "머신러닝",
-    "딥러닝",
+    "반도체",
+    "문화",
+    "연예",
+    "축구",
 )
 
 
@@ -69,6 +75,13 @@ class Settings:
     naver_max_workers: int = int(os.getenv("NAVER_MAX_WORKERS", "4"))
     naver_page_request_delay_seconds: float = float(os.getenv("NAVER_PAGE_REQUEST_DELAY_SECONDS", "0.75"))
     naver_query_stagger_seconds: float = float(os.getenv("NAVER_QUERY_STAGGER_SECONDS", "0.15"))
+
+    rss_feed_catalog_path: str = _resolve_path(
+        os.getenv("RSS_FEED_CATALOG_PATH"),
+        BASE_DIR / "data" / "rss_feeds.csv",
+    )
+    rss_request_timeout_seconds: float = float(os.getenv("RSS_REQUEST_TIMEOUT_SECONDS", "20"))
+    rss_max_workers: int = int(os.getenv("RSS_MAX_WORKERS", "8"))
 
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "news_topic")

@@ -164,7 +164,7 @@ export function deriveOverviewFromCache(
   const derivedKeywords: KeywordSummary[] = [];
   const spikeEvents: DashboardOverviewResponse["spikes"]["events"] = [];
   const spikeKeywordSet = new Set<string>();
-  const defaultEventSource = source === "global" ? "global" : "naver";
+  const defaultEventSource = source === "all" ? "naver" : source;
   const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucketMin * 60_000)));
 
   for (const keyword of cache.candidateKeywords) {

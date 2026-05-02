@@ -1,10 +1,17 @@
 CREATE TABLE IF NOT EXISTS domain_catalog (
-    domain_id   VARCHAR(50) PRIMARY KEY,
-    label       VARCHAR(100) NOT NULL,
-    sort_order  INTEGER NOT NULL,
-    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    domain_id        VARCHAR(50) PRIMARY KEY,
+    label            VARCHAR(100) NOT NULL,
+    group_id         VARCHAR(50) NOT NULL DEFAULT 'news_core',
+    group_label      VARCHAR(100) NOT NULL DEFAULT '주요뉴스',
+    group_sort_order INTEGER NOT NULL DEFAULT 1,
+    sort_order       INTEGER NOT NULL,
+    is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE domain_catalog ADD COLUMN IF NOT EXISTS group_id VARCHAR(50) NOT NULL DEFAULT 'news_core';
+ALTER TABLE domain_catalog ADD COLUMN IF NOT EXISTS group_label VARCHAR(100) NOT NULL DEFAULT '주요뉴스';
+ALTER TABLE domain_catalog ADD COLUMN IF NOT EXISTS group_sort_order INTEGER NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS query_keywords (
     id          SERIAL PRIMARY KEY,
@@ -20,6 +27,173 @@ CREATE TABLE IF NOT EXISTS query_keywords (
 
 CREATE INDEX IF NOT EXISTS idx_query_keywords_active
     ON query_keywords(provider, domain_id, is_active, sort_order);
+
+WITH seed(domain_id, label, group_id, group_label, group_sort_order, sort_order) AS (
+    VALUES
+        ('politics', '정치·정책', 'politics', '정치·정책', 1, 1),
+        ('economy', '경제·금융·부동산', 'economy', '경제·금융·부동산', 2, 1),
+        ('society', '국제·지역·사회', 'society', '국제·지역·사회', 3, 1),
+        ('tech_science', 'IT·과학·테크', 'tech', 'IT·과학·테크', 4, 1),
+        ('culture_life', '엔터·문화·생활', 'culture', '엔터·문화·생활', 5, 1),
+        ('sports', '스포츠', 'sports', '스포츠', 6, 1)
+)
+INSERT INTO domain_catalog (domain_id, label, group_id, group_label, group_sort_order, sort_order, is_active)
+SELECT domain_id, label, group_id, group_label, group_sort_order, sort_order, TRUE
+FROM seed
+ON CONFLICT (domain_id) DO UPDATE SET
+    label = EXCLUDED.label,
+    group_id = EXCLUDED.group_id,
+    group_label = EXCLUDED.group_label,
+    group_sort_order = EXCLUDED.group_sort_order,
+    sort_order = EXCLUDED.sort_order,
+    is_active = TRUE;
+
+UPDATE domain_catalog
+SET is_active = FALSE
+WHERE domain_id NOT IN (
+    'politics',
+    'economy',
+    'society',
+    'tech_science',
+    'culture_life',
+    'sports'
+);
+
+UPDATE query_keywords
+SET is_active = FALSE,
+    updated_at = NOW()
+WHERE provider = 'naver';
+
+WITH seed(provider, domain_id, query, sort_order) AS (
+    VALUES
+        ('naver', 'politics', '대통령', 1),
+        ('naver', 'politics', '국회', 2),
+        ('naver', 'politics', '정부', 3),
+        ('naver', 'politics', '정당', 4),
+        ('naver', 'politics', '선거', 5),
+        ('naver', 'politics', '외교', 6),
+        ('naver', 'politics', '안보', 7),
+        ('naver', 'politics', '검찰', 8),
+        ('naver', 'politics', '사법', 9),
+        ('naver', 'politics', '행정', 10),
+        ('naver', 'politics', '사설', 11),
+        ('naver', 'politics', '칼럼', 12),
+        ('naver', 'politics', '논설', 13),
+        ('naver', 'politics', '여론', 14),
+        ('naver', 'economy', '경제', 1),
+        ('naver', 'economy', '금리', 2),
+        ('naver', 'economy', '물가', 3),
+        ('naver', 'economy', '환율', 4),
+        ('naver', 'economy', '수출', 5),
+        ('naver', 'economy', '무역', 6),
+        ('naver', 'economy', '기업', 7),
+        ('naver', 'economy', '산업', 8),
+        ('naver', 'economy', '고용', 9),
+        ('naver', 'economy', '소비', 10),
+        ('naver', 'economy', '코스피', 11),
+        ('naver', 'economy', '코스닥', 12),
+        ('naver', 'economy', '증시', 13),
+        ('naver', 'economy', '주식', 14),
+        ('naver', 'economy', '채권', 15),
+        ('naver', 'economy', '은행', 16),
+        ('naver', 'economy', '보험', 17),
+        ('naver', 'economy', '부동산', 18),
+        ('naver', 'economy', '아파트', 19),
+        ('naver', 'economy', '분양', 20),
+        ('naver', 'society', '사회', 1),
+        ('naver', 'society', '사건사고', 2),
+        ('naver', 'society', '교육', 3),
+        ('naver', 'society', '노동', 4),
+        ('naver', 'society', '의료', 5),
+        ('naver', 'society', '복지', 6),
+        ('naver', 'society', '환경', 7),
+        ('naver', 'society', '재난', 8),
+        ('naver', 'society', '경찰', 9),
+        ('naver', 'society', '법원', 10),
+        ('naver', 'society', '서울', 11),
+        ('naver', 'society', '수도권', 12),
+        ('naver', 'society', '부산', 13),
+        ('naver', 'society', '대구', 14),
+        ('naver', 'society', '광주', 15),
+        ('naver', 'society', '대전', 16),
+        ('naver', 'society', '울산', 17),
+        ('naver', 'society', '강원', 18),
+        ('naver', 'society', '충청', 19),
+        ('naver', 'society', '전라', 20),
+        ('naver', 'society', '경상', 21),
+        ('naver', 'society', '제주', 22),
+        ('naver', 'society', '미국', 23),
+        ('naver', 'society', '중국', 24),
+        ('naver', 'society', '일본', 25),
+        ('naver', 'society', '유럽', 26),
+        ('naver', 'society', '러시아', 27),
+        ('naver', 'society', '중동', 28),
+        ('naver', 'society', '우크라이나', 29),
+        ('naver', 'society', '북한', 30),
+        ('naver', 'society', '국제유가', 31),
+        ('naver', 'society', '세계경제', 32),
+        ('naver', 'tech_science', 'AI', 1),
+        ('naver', 'tech_science', '인공지능', 2),
+        ('naver', 'tech_science', '생성형 AI', 3),
+        ('naver', 'tech_science', '반도체', 4),
+        ('naver', 'tech_science', '배터리', 5),
+        ('naver', 'tech_science', '로봇', 6),
+        ('naver', 'tech_science', '바이오', 7),
+        ('naver', 'tech_science', '우주', 8),
+        ('naver', 'tech_science', '기후기술', 9),
+        ('naver', 'tech_science', '사이버보안', 10),
+        ('naver', 'culture_life', '문화', 1),
+        ('naver', 'culture_life', '책', 2),
+        ('naver', 'culture_life', '전시', 3),
+        ('naver', 'culture_life', '공연', 4),
+        ('naver', 'culture_life', '여행', 5),
+        ('naver', 'culture_life', '건강', 6),
+        ('naver', 'culture_life', '생활', 7),
+        ('naver', 'culture_life', '음식', 8),
+        ('naver', 'culture_life', '패션', 9),
+        ('naver', 'culture_life', '종교', 10),
+        ('naver', 'culture_life', '연예', 11),
+        ('naver', 'culture_life', 'K팝', 12),
+        ('naver', 'culture_life', '아이돌', 13),
+        ('naver', 'culture_life', '드라마', 14),
+        ('naver', 'culture_life', '영화', 15),
+        ('naver', 'culture_life', 'OTT', 16),
+        ('naver', 'culture_life', '방송', 17),
+        ('naver', 'culture_life', '가요', 18),
+        ('naver', 'culture_life', '배우', 19),
+        ('naver', 'culture_life', '콘서트', 20),
+        ('naver', 'sports', '야구', 1),
+        ('naver', 'sports', '축구', 2),
+        ('naver', 'sports', '농구', 3),
+        ('naver', 'sports', '배구', 4),
+        ('naver', 'sports', '골프', 5),
+        ('naver', 'sports', '올림픽', 6),
+        ('naver', 'sports', '월드컵', 7),
+        ('naver', 'sports', 'K리그', 8),
+        ('naver', 'sports', '프로야구', 9),
+        ('naver', 'sports', 'e스포츠', 10)
+),
+updated AS (
+    UPDATE query_keywords q
+    SET sort_order = seed.sort_order,
+        is_active = TRUE,
+        updated_at = NOW()
+    FROM seed
+    WHERE q.provider = seed.provider
+      AND q.domain_id = seed.domain_id
+      AND q.query = seed.query
+    RETURNING q.provider, q.domain_id, q.query
+)
+INSERT INTO query_keywords (provider, domain_id, query, sort_order, is_active, updated_at)
+SELECT seed.provider, seed.domain_id, seed.query, seed.sort_order, TRUE, NOW()
+FROM seed
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM updated
+    WHERE updated.provider = seed.provider
+      AND updated.domain_id = seed.domain_id
+      AND updated.query = seed.query
+);
 
 CREATE TABLE IF NOT EXISTS query_keyword_audit_logs (
     id               BIGSERIAL PRIMARY KEY,
@@ -266,6 +440,53 @@ CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency
     ON compound_noun_candidates(frequency DESC);
 CREATE INDEX IF NOT EXISTS idx_stopword_dict_domain_language
     ON stopword_dict(domain, language);
+
+WITH seed(word) AS (
+    VALUES
+        ('기자'),
+        ('뉴스'),
+        ('이번'),
+        ('관련'),
+        ('통해'),
+        ('대한'),
+        ('경우'),
+        ('이후'),
+        ('당시'),
+        ('이날'),
+        ('사진'),
+        ('정도'),
+        ('발표'),
+        ('계획'),
+        ('진행'),
+        ('기업'),
+        ('시장'),
+        ('기술'),
+        ('정부'),
+        ('국회'),
+        ('기반'),
+        ('확대'),
+        ('지원'),
+        ('글로벌'),
+        ('지역'),
+        ('공개'),
+        ('강화'),
+        ('전략'),
+        ('운영'),
+        ('활용'),
+        ('최대'),
+        ('규모'),
+        ('핵심'),
+        ('대비'),
+        ('분야'),
+        ('추진'),
+        ('구축'),
+        ('가능'),
+        ('주요')
+)
+INSERT INTO stopword_dict (word, domain, language)
+SELECT word, 'all', 'ko'
+FROM seed
+ON CONFLICT (word, domain, language) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS dictionary_audit_logs (
     id          BIGSERIAL PRIMARY KEY,

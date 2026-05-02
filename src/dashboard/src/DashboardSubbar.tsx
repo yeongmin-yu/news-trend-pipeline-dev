@@ -6,8 +6,6 @@ interface DashboardSubbarProps {
   activeFilters: FiltersResponse;
   source: SourceId;
   setSource: (s: SourceId) => void;
-  domain: string;
-  setDomain: (d: string) => void;
   trendWindow: { startMs: number; endMs: number };
   setTrendWindowBound: (kind: "start" | "end", value: string) => void;
   rangePreset: RangeId | null;
@@ -25,8 +23,6 @@ export function DashboardSubbar({
   activeFilters,
   source,
   setSource,
-  domain,
-  setDomain,
   trendWindow,
   setTrendWindowBound,
   rangePreset,
@@ -42,31 +38,14 @@ export function DashboardSubbar({
   return (
     <div className="subbar">
       <span className="subbar-label">SOURCE</span>
-      <div className="seg">
-        {activeFilters.sources.map((s) => (
-          <button
-            key={s.id}
-            className={source === s.id ? "is-active" : ""}
-            onClick={() => setSource(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-      <span className="divider" />
-      <span className="subbar-label">DOMAIN</span>
-      <div className="seg">
-        {activeFilters.domains.map((d) => (
-          <button
-            key={d.id}
-            className={domain === d.id ? "is-active" : ""}
-            onClick={() => d.available && setDomain(d.id)}
-            disabled={!d.available}
-            title={d.available ? "" : "DB 스키마 확장 후 지원 예정"}
-          >
-            {d.label}
-          </button>
-        ))}
+      <div className="field source-select">
+        <select value={source} onChange={(event) => setSource(event.target.value)}>
+          {activeFilters.sources.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
       </div>
       <span className="divider" />
       <span className="subbar-label">DATE</span>
@@ -88,7 +67,7 @@ export function DashboardSubbar({
         </div>
       </div>
       <span className="divider" />
-      <span className="subbar-label">현 시간 기준</span>
+      <span className="subbar-label">WINDOW</span>
       <div className="range-buttons">
         {activeFilters.ranges.map((r) => (
           <button
@@ -107,7 +86,7 @@ export function DashboardSubbar({
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="키워드 검색…"
+            placeholder="키워드 검색"
             style={{ width: 160 }}
             onFocus={() => setSearchFocus(true)}
             onBlur={() => setTimeout(() => setSearchFocus(false), 150)}

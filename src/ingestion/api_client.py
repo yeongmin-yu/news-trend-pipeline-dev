@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import html
+import csv
 import re
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
+from xml.etree import ElementTree as ET
 
 import requests
 
@@ -311,13 +314,12 @@ class NaverNewsClient(BaseNewsClient):
 
     def _normalize_article(self, item: dict[str, Any], query: str | None = None) -> dict[str, Any]:
         publisher_url = item.get("originallink") or item.get("link") or ""
-        publisher = urlparse(publisher_url).netloc or "Naver News"
         summary = strip_html_tags(item.get("description"))
         title = strip_html_tags(item.get("title"))
         published_at = self._normalize_pub_date(item.get("pubDate"))
         article: dict[str, Any] = {
             "provider": self.provider,
-            "source": publisher,
+            "source": "NaverNews",
             "title": title,
             "summary": summary,
             "url": publisher_url or item.get("link"),
@@ -353,6 +355,199 @@ class NaverNewsClient(BaseNewsClient):
         seen: set[str] = set()
         for article in articles:
             unique_key = f"{article.get('provider')}::{article.get('url')}"
+            if not article.get("url") or unique_key in seen:
+                continue
+            seen.add(unique_key)
+            deduplicated.append(article)
+        return deduplicated
+
+
+class RssNewsClient(BaseNewsClient):
+    provider = "rss"
+
+    def __init__(
+        self,
+        feed_catalog_path: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self.feed_catalog_path = Path(feed_catalog_path or settings.rss_feed_catalog_path)
+        self.timeout_seconds = timeout_seconds or settings.rss_request_timeout_seconds
+        self.feeds = self._load_feed_catalog(self.feed_catalog_path)
+        if not self.feeds:
+            raise ValueError(f"Active RSS feeds not found: {self.feed_catalog_path}")
+
+    def fetch_news(
+        self,
+        query: str | None = None,
+        from_timestamp: str | None = None,
+        page_size: int | None = None,
+    ) -> FetchResult:
+        if query is None:
+            results = self.fetch_news_parallel(from_timestamps={})
+            articles: list[dict[str, Any]] = []
+            ok = True
+            for feed_articles, feed_ok in results.values():
+                articles.extend(feed_articles)
+                ok = ok and feed_ok
+            return self._deduplicate_articles(articles), ok
+
+        feed = next((item for item in self.feeds if self._feed_key(item) == query), None)
+        if feed is None:
+            logger.warning("RSS feed key not found: %s", query)
+            return [], False
+        return self._fetch_feed(feed, from_timestamp=from_timestamp)
+
+    def fetch_news_parallel(
+        self,
+        from_timestamps: Mapping[str, str | None] | None = None,
+        max_workers: int | None = None,
+    ) -> dict[str, FetchResult]:
+        workers = max(1, min(max_workers or settings.rss_max_workers, len(self.feeds)))
+        results: dict[str, FetchResult] = {self._feed_key(feed): ([], False) for feed in self.feeds}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_feed = {
+                executor.submit(
+                    self._fetch_feed,
+                    feed,
+                    from_timestamp=(from_timestamps or {}).get(self._feed_key(feed)),
+                ): feed
+                for feed in self.feeds
+            }
+            for future in as_completed(future_to_feed):
+                feed = future_to_feed[future]
+                feed_key = self._feed_key(feed)
+                try:
+                    results[feed_key] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("RSS feed collection failed: key=%s url=%s error=%s", feed_key, feed["url"], exc)
+                    results[feed_key] = ([], False)
+        return results
+
+    @staticmethod
+    def _load_feed_catalog(path: Path) -> list[dict[str, str]]:
+        if not path.exists():
+            logger.warning("RSS feed catalog does not exist: %s", path)
+            return []
+        with path.open(encoding="utf-8-sig", newline="") as file:
+            rows = [dict(row) for row in csv.DictReader(file)]
+        return [
+            row
+            for row in rows
+            if (row.get("is_active") or "").strip().lower() in {"1", "true", "yes", "y"}
+            and (row.get("url") or "").strip()
+        ]
+
+    @staticmethod
+    def _feed_key(feed: Mapping[str, str]) -> str:
+        return "::".join(
+            [
+                (feed.get("publisher") or "").strip(),
+                (feed.get("domain") or "").strip(),
+                (feed.get("feed_name") or "").strip(),
+            ]
+        )
+
+    def _fetch_feed(self, feed: Mapping[str, str], from_timestamp: str | None = None) -> FetchResult:
+        threshold = self._parse_timestamp(from_timestamp) if from_timestamp else None
+        response = requests.get(
+            feed["url"],
+            timeout=self.timeout_seconds,
+            headers={"User-Agent": "news-trend-pipeline/0.2 (+rss collector)"},
+        )
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        entries = self._extract_entries(root)
+        articles = [self._normalize_entry(entry, feed) for entry in entries]
+        if threshold:
+            articles = [
+                article
+                for article in articles
+                if self._parse_timestamp(article.get("published_at"))
+                and self._parse_timestamp(article.get("published_at")) > threshold
+            ]
+        return self._deduplicate_articles(articles), True
+
+    @classmethod
+    def _extract_entries(cls, root: ET.Element) -> list[ET.Element]:
+        entries = [element for element in root.iter() if cls._local_name(element.tag) == "item"]
+        if entries:
+            return entries
+        return [element for element in root.iter() if cls._local_name(element.tag) == "entry"]
+
+    def _normalize_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        title = strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)"
+        summary = strip_html_tags(self._first_text(entry, ("description", "summary", "content", "encoded")))
+        url = self._first_link(entry)
+        published_at = self._normalize_pub_date(
+            self._first_text(entry, ("pubDate", "published", "updated", "date"))
+        )
+        publisher = (feed.get("publisher") or "").strip() or urlparse(url).netloc
+        return {
+            "provider": publisher,
+            "domain": (feed.get("domain") or "general").strip(),
+            "source": publisher,
+            "title": title,
+            "summary": summary,
+            "url": url,
+            "published_at": published_at,
+            "ingested_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "_query": (feed.get("feed_name") or "").strip(),
+        }
+
+    @classmethod
+    def _first_text(cls, entry: ET.Element, names: Iterable[str]) -> str | None:
+        wanted = set(names)
+        for element in entry.iter():
+            if cls._local_name(element.tag) in wanted and element.text:
+                return element.text.strip()
+        return None
+
+    @classmethod
+    def _first_link(cls, entry: ET.Element) -> str:
+        for element in entry.iter():
+            if cls._local_name(element.tag) != "link":
+                continue
+            href = element.attrib.get("href")
+            if href:
+                return href.strip()
+            if element.text:
+                return element.text.strip()
+        guid = cls._first_text(entry, ("guid", "id"))
+        if guid and guid.startswith("http"):
+            return guid
+        raise ValueError("RSS item link is required")
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    @staticmethod
+    def _normalize_pub_date(value: str | None) -> str | None:
+        if not value:
+            return None
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+    @staticmethod
+    def _parse_timestamp(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _deduplicate_articles(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduplicated: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for article in articles:
+            unique_key = f"{article.get('source')}::{article.get('domain')}::{article.get('url')}"
             if not article.get("url") or unique_key in seen:
                 continue
             seen.add(unique_key)

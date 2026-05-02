@@ -76,7 +76,7 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
   const [rangePreset, setRangePreset] = useState<RangeId | null>("1h");
-  const [domain, setDomain] = useState("ai_tech");
+  const [domain, setDomain] = useState("tech_science");
   const [search, setSearch] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
@@ -1166,8 +1166,6 @@ console.debug("[overview] prefetch overview decision", {
         activeFilters={activeFilters}
         source={source}
         setSource={setSource}
-        domain={domain}
-        setDomain={setDomain}
         trendWindow={trendWindow}
         setTrendWindowBound={setTrendWindowBound}
         rangePreset={rangePreset}

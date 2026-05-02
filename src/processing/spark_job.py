@@ -22,7 +22,6 @@ from core.logger import get_logger
 from core.schemas import NormalizedNewsArticle
 from processing.preprocessing import tokenize
 from storage.db import (
-    safe_initialize_database,
     upsert_from_staging_keyword_relations,
     upsert_from_staging_keyword_trends,
     upsert_from_staging_keywords,
@@ -62,7 +61,6 @@ def build_spark_session() -> SparkSession:
 def run_streaming_job() -> None:
     spark = build_spark_session()
     spark.sparkContext.setLogLevel("WARN")
-    safe_initialize_database()
     tokenize_udf = udf(extract_tokens, ArrayType(StringType())).asNondeterministic()
 
     jdbc_url = settings.spark_jdbc_url

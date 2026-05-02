@@ -6,7 +6,7 @@ type TabId = "keywords" | "metrics" | "logs";
 
 const EMPTY_FORM = {
   id: null as number | null,
-  domainId: "ai_tech",
+  domainId: "tech_science",
   query: "",
   sortOrder: 1,
   isActive: true,

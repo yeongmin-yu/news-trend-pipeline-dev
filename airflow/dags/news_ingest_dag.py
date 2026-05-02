@@ -1,26 +1,10 @@
 from __future__ import annotations
 
-"""news_ingest_dag — 뉴스 수집 파이프라인 DAG (15분 주기)
+"""뉴스 수집 DAG.
 
-Task 흐름:
-    check_kafka_health
-        ├── produce_naver
-        │   └── summarize_results
-        └── check_dead_letter   (all_done: 실패해도 항상 실행)
-
-설계 원칙:
-  - max_active_runs=1 : 동시 실행 방지 (중복 수집 방지)
-  - catchup=False     : 과거 누락 실행 스킵
-  - Kafka 헬스체크는 경고성으로만 수행하고, 실패해도 Naver 수집은 계속 실행
-  - Naver 내부에서 테마 키워드(AI, 인공지능, 생성형AI 등) 8개를 병렬 호출
-  - XCom으로 발행 건수를 집계해 요약 로그 기록
-  - check_dead_letter는 all_done trigger_rule로 Dead Letter 누적 감시
-
-NewsAPI는 무료 플랜 호출 한도가 너무 낮아 충분한 데이터를 확보할 수 없어
-STEP1_KAFKA_2에서 소스에서 제외되었습니다.
-
-src layout: DAG → airflow/dags/ → 프로젝트 루트의 `src/` 를 sys.path에 추가하여
-평탄화된 패키지 구조를 import합니다.
+Naver News API와 언론사 RSS를 각각 수집한 뒤 동일한 Kafka topic에
+정규화된 기사 메시지로 발행한다. downstream Spark는 기존처럼
+news_raw에 upsert한다.
 """
 
 from datetime import datetime, timedelta
@@ -29,39 +13,26 @@ from pathlib import Path
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
 
-# ── 공통 설정 ─────────────────────────────────────────────────────────────────
 
 default_args = {
     "owner": "ymyu",
     "depends_on_past": False,
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
-    "retry_exponential_backoff": True,   # 지수 백오프: 5m → 10m → 20m
+    "retry_exponential_backoff": True,
     "max_retry_delay": timedelta(minutes=30),
 }
 
 
 def _ensure_src_on_syspath() -> None:
-    """프로젝트의 `src/` 디렉토리를 sys.path에 추가한다.
-
-    airflow/dags/<this>.py → parents[2] = 프로젝트 루트 → `/src`
-    Docker 환경에서는 PYTHONPATH=/opt/news-trend-pipeline/src 가 이미 설정되어 있다.
-    """
     import sys
+
     src_dir = Path(__file__).resolve().parents[2] / "src"
     if src_dir.exists() and str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
 
-# ── Task 함수 ─────────────────────────────────────────────────────────────────
-
-
 def task_check_kafka_health() -> None:
-    """KafkaAdminClient로 브로커 연결 상태를 확인하고 경고 로그만 남깁니다.
-
-    Kafka 장애 때문에 뉴스 수집 자체가 끊기지 않도록 연결 실패 시 예외를 다시 던지지 않습니다.
-    발행 실패 데이터는 producer가 Dead Letter에 저장하고 auto_replay_dag가 후속 처리합니다.
-    """
     _ensure_src_on_syspath()
 
     from kafka import KafkaAdminClient
@@ -71,113 +42,90 @@ def task_check_kafka_health() -> None:
     from core.logger import get_logger
 
     logger = get_logger(__name__)
-
     admin = None
     try:
-        logger.info("[Kafka 확인] Kafka 브로커 연결 상태 확인을 시작합니다. 부트스트랩서버=%s", settings.kafka_bootstrap_servers)
+        logger.info("[Kafka 확인] 브로커 연결 상태를 확인합니다. bootstrap_servers=%s", settings.kafka_bootstrap_servers)
         admin = KafkaAdminClient(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             request_timeout_ms=10_000,
         )
-        topics = admin.list_topics()
-        logger.info("[Kafka 확인] Kafka 헬스체크 통과: 브로커=%s, 토픽목록=%s", settings.kafka_bootstrap_servers, topics)
+        logger.info("[Kafka 확인] 연결 확인 완료. topics=%s", admin.list_topics())
     except NoBrokersAvailable as exc:
-        logger.warning(
-            "[Kafka 확인][경고] Kafka 브로커에 연결할 수 없습니다. 수집은 계속 진행하고 발행 실패분은 Dead Letter로 적재합니다. 브로커=%s, 오류=%s",
-            settings.kafka_bootstrap_servers,
-            exc,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[Kafka 확인][경고] Kafka 헬스체크 중 오류가 발생했습니다. 수집은 계속 진행합니다. 오류=%s",
-            exc,
-        )
+        logger.warning("[Kafka 확인] 브로커에 연결할 수 없습니다. 발행 실패분은 Dead Letter로 저장됩니다. error=%s", exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[Kafka 확인] 상태 확인 중 예기치 못한 오류가 발생했습니다. 수집은 계속 진행합니다. error=%s", exc)
     finally:
         if admin is not None:
             admin.close()
 
 
-def task_produce_naver(**context: object) -> int:
-    """네이버 뉴스를 테마 키워드 병렬 호출로 수집해 Kafka에 발행합니다.
-
-    테마 키워드 집합(NAVER_THEME_KEYWORDS)을 대상으로 ThreadPoolExecutor 기반
-    병렬 호출이 수행되며, 결과는 URL 기준 dedup 후 Kafka로 전송됩니다.
-    발행 건수를 XCom에 push합니다.
-    """
+def _produce_provider(provider: str, xcom_key: str, **context: object) -> int:
     _ensure_src_on_syspath()
 
     from core.logger import get_logger
     from ingestion.producer import NewsKafkaProducer
 
     logger = get_logger(__name__)
-    logger.info("[뉴스 수집] Naver 뉴스 수집 및 Kafka 발행을 시작합니다. 제공자=naver")
-    count = NewsKafkaProducer().run_for_provider("naver")
-    logger.info("[뉴스 수집] Naver 뉴스 Kafka 발행 완료: %d건", count)
+    logger.info("[뉴스 수집] provider=%s 수집을 시작합니다.", provider)
+    count = NewsKafkaProducer().run_for_provider(provider)
+    logger.info("[뉴스 수집] provider=%s Kafka 발행 완료: %d건", provider, count)
 
     ti = context["ti"]
-    ti.xcom_push(key="naver_count", value=count)
-    logger.info("[뉴스 수집] 요약 task에서 사용할 발행 건수를 XCom에 저장했습니다. key=naver_count")
+    ti.xcom_push(key=xcom_key, value=count)
     return count
 
 
+def task_produce_naver(**context: object) -> int:
+    return _produce_provider("naver", "naver_count", **context)
+
+
+def task_produce_rss(**context: object) -> int:
+    return _produce_provider("rss", "rss_count", **context)
+
+
 def task_summarize_results(**context: object) -> None:
-    """Naver 발행 건수를 XCom으로 집계하여 요약 로그를 남깁니다."""
     _ensure_src_on_syspath()
 
     from core.logger import get_logger
 
     logger = get_logger(__name__)
     ti = context["ti"]
-
     naver_count: int = ti.xcom_pull(task_ids="produce_naver", key="naver_count") or 0
+    rss_count: int = ti.xcom_pull(task_ids="produce_rss", key="rss_count") or 0
 
-    logger.info("[수집 요약] Naver 뉴스 발행 결과: naver=%d건", naver_count)
-    if naver_count == 0:
-        logger.warning("[수집 요약] 이번 실행에서 발행된 기사가 없습니다. API 상태 및 키워드 설정을 확인하세요.")
+    logger.info("[수집 요약] Naver=%d건 RSS=%d건 전체=%d건", naver_count, rss_count, naver_count + rss_count)
+    if naver_count == 0 and rss_count == 0:
+        logger.warning("[수집 요약] 이번 실행에서 발행된 기사가 없습니다. API/RSS 상태와 수집 설정을 확인하세요.")
 
 
 def task_check_dead_letter() -> None:
-    """dead_letter.jsonl 누적 건수를 확인하고 임계치 초과 시 경고를 남깁니다.
-
-    trigger_rule=all_done이므로 produce_naver 실패 여부와 무관하게 항상 실행됩니다.
-    """
     _ensure_src_on_syspath()
 
     from core.config import settings
     from core.logger import get_logger
 
     logger = get_logger(__name__)
-
     dl_file = Path(settings.state_dir) / "dead_letter.jsonl"
-    logger.info("[Dead Letter 확인] 실패 메시지 파일을 확인합니다. path=%s", dl_file)
     if not dl_file.exists():
         logger.info("[Dead Letter 확인] Dead Letter 파일이 없습니다. 실패 메시지가 없습니다.")
         return
 
     line_count = sum(1 for _ in dl_file.open(encoding="utf-8"))
-    logger.info("[Dead Letter 확인] Dead Letter 누적 건수: %d건 (%s)", line_count, dl_file)
-
-    # 임계치: 100건 이상이면 경고 (운영 환경에서는 알림 연동 권장)
+    logger.info("[Dead Letter 확인] 누적 실패 메시지: %d건 path=%s", line_count, dl_file)
     if line_count >= 100:
-        logger.warning(
-            "[Dead Letter 확인][경고] Dead Letter가 %d건 쌓였습니다. `python -m ingestion.replay` 로 재처리하세요.",
-            line_count,
-        )
+        logger.warning("[Dead Letter 확인] 누적 실패 메시지가 임계치를 초과했습니다. count=%d", line_count)
 
-
-# ── DAG 정의 ─────────────────────────────────────────────────────────────────
 
 with DAG(
     dag_id="news_ingest_dag",
     default_args=default_args,
-    description="뉴스 수집 → Kafka 발행 파이프라인 (15분 주기, Naver 테마 키워드 병렬 호출)",
+    description="Naver News API와 언론사 RSS를 수집해 정규화된 뉴스 메시지를 Kafka로 발행",
     start_date=datetime(2026, 1, 1),
     schedule="*/15 * * * *",
     catchup=False,
     max_active_runs=1,
     tags=["뉴스", "카프카", "수집"],
 ) as dag:
-
     check_kafka_health = PythonOperator(
         task_id="check_kafka_health",
         python_callable=task_check_kafka_health,
@@ -188,6 +136,11 @@ with DAG(
         python_callable=task_produce_naver,
     )
 
+    produce_rss = PythonOperator(
+        task_id="produce_rss",
+        python_callable=task_produce_rss,
+    )
+
     summarize_results = PythonOperator(
         task_id="summarize_results",
         python_callable=task_summarize_results,
@@ -196,10 +149,9 @@ with DAG(
     check_dead_letter = PythonOperator(
         task_id="check_dead_letter",
         python_callable=task_check_dead_letter,
-        trigger_rule="all_done",  # produce_naver 실패해도 항상 실행
+        trigger_rule="all_done",
     )
 
-    # Task 의존성 정의
-    check_kafka_health >> [produce_naver, check_dead_letter]
-    produce_naver >> summarize_results
-    produce_naver >> check_dead_letter
+    check_kafka_health >> [produce_naver, produce_rss, check_dead_letter]
+    [produce_naver, produce_rss] >> summarize_results
+    [produce_naver, produce_rss] >> check_dead_letter

@@ -19,8 +19,8 @@ from core.config import settings
 from core.logger import get_logger
 from core.schemas import NormalizedNewsArticle
 from core.utils import ensure_dir, read_json, utc_now_iso
-from ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient
-from storage.db import fetch_active_query_keywords, insert_collection_metric, safe_initialize_database
+from ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient, RssNewsClient
+from storage.db import fetch_active_query_keywords, insert_collection_metric
 
 
 logger = get_logger(__name__)
@@ -54,7 +54,6 @@ def build_message(article: Mapping[str, Any] | NormalizedNewsArticle) -> dict[st
 
 class NewsKafkaProducer:
     def __init__(self) -> None:
-        safe_initialize_database()
         self.clients: list[BaseNewsClient] = self._build_clients()
         self.producer: KafkaProducer | None = None
         self._send_errors: list[tuple[dict[str, Any], Exception]] = []
@@ -101,6 +100,8 @@ class NewsKafkaProducer:
             try:
                 if provider == "naver":
                     clients.append(NaverNewsClient())
+                elif provider == "rss":
+                    clients.append(RssNewsClient())
                 else:
                     logger.warning("Unsupported provider skipped: %s", provider)
             except ValueError as exc:
@@ -245,6 +246,11 @@ class NewsKafkaProducer:
                 )
             return enriched_results, state_keys
 
+        if isinstance(client, RssNewsClient):
+            state_keys = {client._feed_key(feed): client._feed_key(feed) for feed in client.feeds}
+            raw_results = client.fetch_news_parallel(from_timestamps=keyword_timestamps)
+            return raw_results, state_keys
+
         single_ts = keyword_timestamps.get(client.provider) or None
         articles, ok = client.fetch_news(from_timestamp=single_ts)
         return {client.provider: (articles, ok)}, {client.provider: client.provider}
@@ -304,9 +310,10 @@ class NewsKafkaProducer:
                 else:
                     failed_keywords += 1
 
+                metric_provider = articles[0].get("provider", client.provider) if articles else client.provider
                 insert_collection_metric(
                     {
-                        "provider": client.provider,
+                        "provider": metric_provider,
                         "domain": query_domain,
                         "query": query,
                         "window_start": run_started_dt,
@@ -321,7 +328,7 @@ class NewsKafkaProducer:
                 )
 
             active_state_keys = set(state_keys.values())
-            stale_keys = [key for key in list(keyword_timestamps.keys()) if key not in active_state_keys and client.provider == "naver"]
+            stale_keys = [key for key in list(keyword_timestamps.keys()) if key not in active_state_keys]
             for stale_key in stale_keys:
                 keyword_timestamps.pop(stale_key, None)
 

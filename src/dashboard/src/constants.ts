@@ -4,11 +4,19 @@ export const OVERVIEW_FETCH_EDGE_RATIO = 0.1;
 export const OVERVIEW_FETCH_EDGE_MIN_MS = 2 * 60 * 1000;
 
 export const DEFAULT_FILTERS: FiltersResponse = {
-  domains: [{ id: "ai_tech", label: "AI · 테크", available: true }],
+  domains: [
+    {
+      id: "tech_science",
+      label: "IT·과학·테크",
+      groupId: "tech",
+      groupLabel: "IT·과학·테크",
+      groupSortOrder: 4,
+      available: true,
+    },
+  ],
   sources: [
     { id: "all", label: "전체", color: "#7dd3fc" },
-    { id: "naver", label: "네이버 뉴스", color: "#34d399" },
-    { id: "global", label: "글로벌 뉴스", color: "#f59e0b" },
+    { id: "naver", label: "NaverNews", color: "#34d399" },
   ],
   ranges: [
     { id: "10m", label: "10분", bucketMin: 1, buckets: 10 },
@@ -30,10 +38,17 @@ export const EMPTY_KEYWORD_LIST: DashboardOverviewResponse["keywords"] = [];
 
 export const DOMAIN_COLORS: Record<string, string> = {
   all: "#a78bfa",
-  ai_tech: "#5eead4",
-  economy_finance: "#f472b6",
-  politics_policy: "#fbbf24",
-  entertainment_culture: "#60a5fa",
+  politics: "#fbbf24",
+  society: "#fb7185",
+  local: "#a78bfa",
+  economy: "#22c55e",
+  finance_realestate: "#f472b6",
+  international: "#60a5fa",
+  tech_science: "#5eead4",
+  culture_life: "#c084fc",
+  entertainment: "#f97316",
+  sports: "#38bdf8",
+  opinion: "#94a3b8",
 };
 
 export const TREND_BUCKET_OPTIONS: Array<{ id: TrendBucketId; label: string; minutes: number }> = [

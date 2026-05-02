@@ -19,6 +19,7 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/news-trend-pipeline/src
+    NEWS_PROVIDERS: ${NEWS_PROVIDERS:-naver,rss}
     KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     STATE_DIR: /opt/news-trend-pipeline/runtime/state
@@ -33,8 +34,12 @@ x-airflow-common:
     NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
     NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
     NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
+    RSS_FEED_CATALOG_PATH: ${RSS_FEED_CATALOG_PATH:-/opt/news-trend-pipeline/data/rss_feeds.csv}
+    RSS_REQUEST_TIMEOUT_SECONDS: ${RSS_REQUEST_TIMEOUT_SECONDS:-20}
+    RSS_MAX_WORKERS: ${RSS_MAX_WORKERS:-8}
   volumes:
     - ./src:/opt/news-trend-pipeline/src
+    - ./data:/opt/news-trend-pipeline/data:ro
     - ./runtime/state:/opt/news-trend-pipeline/runtime/state
     - ./airflow/dags:/opt/airflow/dags
     - ./runtime/logs:/opt/airflow/logs
@@ -155,6 +160,9 @@ services:
           createdb -h app-postgres -U "$${POSTGRES_USER}" -O "$${AIRFLOW_USER}" "$${AIRFLOW_DB}"
         fi
         psql -h app-postgres -U "$${POSTGRES_USER}" -d "$${AIRFLOW_DB}" -v ON_ERROR_STOP=1 -c "ALTER DATABASE $${AIRFLOW_DB} OWNER TO $${AIRFLOW_USER};"
+        psql -h app-postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -v ON_ERROR_STOP=1 -f /opt/news-trend-pipeline/src/storage/models.sql
+    volumes:
+      - ./src/storage/models.sql:/opt/news-trend-pipeline/src/storage/models.sql:ro
     networks:
       - dev-network
 
@@ -172,6 +180,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PYTHONPATH: /app/src
+      RSS_FEED_CATALOG_PATH: ${RSS_FEED_CATALOG_PATH:-/app/data/rss_feeds.csv}
       NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
       NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
       NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
@@ -186,6 +195,7 @@ services:
       - "8000:8000"
     volumes:
       - ./src:/app/src
+      - ./data:/app/data:ro
     networks:
       - dev-network
 
