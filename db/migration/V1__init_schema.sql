@@ -1,0 +1,549 @@
+-- ============================================================================
+-- V1__init_schema.sql
+-- 최초 스키마 + 초기 seed. Flyway 가 1회 적용 후 flyway_schema_history 에 기록.
+-- 이후 변경은 V2, V3, ... 로 추가하고 이 파일은 수정하지 않는다.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 도메인 / 검색어 카탈로그
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS domain_catalog (
+    domain_id        VARCHAR(50) PRIMARY KEY,
+    label            VARCHAR(100) NOT NULL,
+    group_id         VARCHAR(50)  NOT NULL DEFAULT 'news_core',
+    group_label      VARCHAR(100) NOT NULL DEFAULT '주요뉴스',
+    group_sort_order INTEGER      NOT NULL DEFAULT 1,
+    sort_order       INTEGER      NOT NULL,
+    is_active        BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS query_keywords (
+    id          SERIAL PRIMARY KEY,
+    provider    VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    domain_id   VARCHAR(50)  NOT NULL REFERENCES domain_catalog(domain_id),
+    query       VARCHAR(100) NOT NULL,
+    sort_order  INTEGER      NOT NULL,
+    is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_query_keywords_provider_domain_query UNIQUE (provider, domain_id, query)
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_keywords_active
+    ON query_keywords(provider, domain_id, is_active, sort_order);
+
+CREATE TABLE IF NOT EXISTS query_keyword_audit_logs (
+    id               BIGSERIAL PRIMARY KEY,
+    query_keyword_id INTEGER,
+    action           VARCHAR(50)  NOT NULL,
+    before_json      JSONB,
+    after_json       JSONB,
+    actor            VARCHAR(100) NOT NULL DEFAULT 'system',
+    acted_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_keyword_audit_logs_query_keyword
+    ON query_keyword_audit_logs(query_keyword_id, acted_at DESC);
+
+-- ----------------------------------------------------------------------------
+-- 원시 뉴스
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS news_raw (
+    id           BIGSERIAL PRIMARY KEY,
+    provider     VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    domain       VARCHAR(50)  NOT NULL DEFAULT 'ai_tech',
+    query        VARCHAR(100),
+    source       VARCHAR(255),
+    title        TEXT         NOT NULL,
+    summary      TEXT,
+    url          TEXT         NOT NULL,
+    published_at TIMESTAMPTZ,
+    ingested_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_raw_provider_domain_published_at
+    ON news_raw(provider, domain, published_at);
+CREATE INDEX IF NOT EXISTS idx_news_raw_article_time
+    ON news_raw((COALESCE(published_at, ingested_at)));
+CREATE INDEX IF NOT EXISTS idx_news_raw_domain_article_time
+    ON news_raw(domain, (COALESCE(published_at, ingested_at)));
+CREATE INDEX IF NOT EXISTS idx_news_raw_provider_domain_article_time
+    ON news_raw(provider, domain, (COALESCE(published_at, ingested_at)));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_news_raw_provider_domain_url
+    ON news_raw(provider, domain, url);
+
+-- ----------------------------------------------------------------------------
+-- 키워드 / 트렌드
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS keywords (
+    id                BIGSERIAL PRIMARY KEY,
+    article_provider  VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    article_domain    VARCHAR(50)  NOT NULL DEFAULT 'ai_tech',
+    article_url       TEXT         NOT NULL,
+    keyword           VARCHAR(255) NOT NULL,
+    keyword_count     INTEGER      NOT NULL DEFAULT 1,
+    processed_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_keywords_keyword
+    ON keywords(keyword);
+CREATE INDEX IF NOT EXISTS idx_keywords_keyword_article
+    ON keywords(keyword, article_provider, article_domain, article_url);
+CREATE INDEX IF NOT EXISTS idx_keywords_domain_keyword
+    ON keywords(article_domain, keyword);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_unique
+    ON keywords(article_provider, article_domain, article_url, keyword);
+
+CREATE TABLE IF NOT EXISTS keyword_trends (
+    id            BIGSERIAL PRIMARY KEY,
+    provider      VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    domain        VARCHAR(50)  NOT NULL DEFAULT 'ai_tech',
+    window_start  TIMESTAMPTZ  NOT NULL,
+    window_end    TIMESTAMPTZ  NOT NULL,
+    keyword       VARCHAR(255) NOT NULL,
+    keyword_count INTEGER      NOT NULL,
+    processed_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_keyword_trends_window
+    ON keyword_trends(window_start, window_end);
+CREATE INDEX IF NOT EXISTS idx_keyword_trends_provider_domain_window
+    ON keyword_trends(provider, domain, window_start, window_end);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_trends_unique
+    ON keyword_trends(provider, domain, window_start, window_end, keyword);
+
+-- ----------------------------------------------------------------------------
+-- keyword_relations: window_start RANGE 월별 파티셔닝
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS keyword_relations (
+    id                  BIGINT GENERATED BY DEFAULT AS IDENTITY,
+    provider            VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    domain              VARCHAR(50)  NOT NULL DEFAULT 'ai_tech',
+    window_start        TIMESTAMPTZ  NOT NULL,
+    window_end          TIMESTAMPTZ  NOT NULL,
+    keyword_a           VARCHAR(255) NOT NULL,
+    keyword_b           VARCHAR(255) NOT NULL,
+    cooccurrence_count  INTEGER      NOT NULL,
+    processed_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, window_start)
+) PARTITION BY RANGE (window_start);
+
+DO $$
+DECLARE
+    cur date := DATE '2024-01-01';
+    end_date date := DATE '2028-01-01';
+    next_date date;
+    partition_name text;
+BEGIN
+    WHILE cur < end_date LOOP
+        next_date := (cur + INTERVAL '1 month')::date;
+        partition_name := 'keyword_relations_' || to_char(cur, 'YYYY_MM');
+        EXECUTE format(
+            'CREATE TABLE IF NOT EXISTS %I PARTITION OF keyword_relations '
+            'FOR VALUES FROM (%L) TO (%L)',
+            partition_name, cur, next_date
+        );
+        cur := next_date;
+    END LOOP;
+END $$;
+
+CREATE TABLE IF NOT EXISTS keyword_relations_default
+    PARTITION OF keyword_relations DEFAULT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_relations_unique
+    ON keyword_relations(provider, domain, window_start, window_end, keyword_a, keyword_b);
+CREATE INDEX IF NOT EXISTS idx_keyword_relations_keyword_a_window
+    ON keyword_relations(keyword_a, window_start);
+CREATE INDEX IF NOT EXISTS idx_keyword_relations_keyword_b_window
+    ON keyword_relations(keyword_b, window_start);
+
+-- ----------------------------------------------------------------------------
+-- 사전 (compound noun, stopword)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS compound_noun_dict (
+    id         SERIAL PRIMARY KEY,
+    word       VARCHAR(50)  NOT NULL,
+    domain     VARCHAR(50)  NOT NULL DEFAULT 'all',
+    source     VARCHAR(20)  NOT NULL DEFAULT 'manual',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_compound_noun_dict_word_domain UNIQUE (word, domain)
+);
+
+CREATE TABLE IF NOT EXISTS compound_noun_candidates (
+    id              SERIAL PRIMARY KEY,
+    word            VARCHAR(50)  NOT NULL,
+    domain          VARCHAR(50)  NOT NULL DEFAULT 'all',
+    frequency       INTEGER      NOT NULL DEFAULT 1,
+    doc_count       INTEGER      NOT NULL DEFAULT 1,
+    first_seen_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    status          VARCHAR(20)  NOT NULL DEFAULT 'needs_review',
+    reviewed_at     TIMESTAMPTZ,
+    reviewed_by     VARCHAR(100),
+    auto_score      NUMERIC,
+    auto_evidence   JSONB,
+    auto_checked_at TIMESTAMPTZ,
+    auto_decision   TEXT,
+    CONSTRAINT uq_compound_noun_candidates_word_domain UNIQUE (word, domain),
+    CONSTRAINT ck_compound_noun_candidates_status CHECK (status IN ('needs_review', 'approved', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_compound_candidates_auto_review
+    ON compound_noun_candidates (
+        status,
+        auto_checked_at,
+        frequency DESC,
+        doc_count DESC,
+        last_seen_at DESC
+    );
+CREATE INDEX IF NOT EXISTS idx_compound_noun_dict_domain
+    ON compound_noun_dict(domain);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_status
+    ON compound_noun_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_domain
+    ON compound_noun_candidates(domain);
+CREATE INDEX IF NOT EXISTS idx_compound_noun_candidates_frequency
+    ON compound_noun_candidates(frequency DESC);
+
+CREATE TABLE IF NOT EXISTS stopword_dict (
+    id         SERIAL PRIMARY KEY,
+    word       VARCHAR(50)  NOT NULL,
+    domain     VARCHAR(50)  NOT NULL DEFAULT 'all',
+    language   VARCHAR(10)  NOT NULL DEFAULT 'ko',
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_stopword_dict_word_domain_lang UNIQUE (word, domain, language)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stopword_dict_domain_language
+    ON stopword_dict(domain, language);
+
+CREATE TABLE IF NOT EXISTS stopword_candidates (
+    id                   SERIAL PRIMARY KEY,
+    word                 VARCHAR(50)  NOT NULL,
+    domain               VARCHAR(50)  NOT NULL DEFAULT 'all',
+    language             VARCHAR(10)  NOT NULL DEFAULT 'ko',
+    score                FLOAT        NOT NULL DEFAULT 0,
+    domain_breadth       FLOAT        NOT NULL DEFAULT 0,
+    repetition_rate      FLOAT        NOT NULL DEFAULT 0,
+    trend_stability      FLOAT        NOT NULL DEFAULT 0,
+    cooccurrence_breadth FLOAT        NOT NULL DEFAULT 0,
+    short_word           BOOLEAN      NOT NULL DEFAULT FALSE,
+    frequency            INTEGER      NOT NULL DEFAULT 0,
+    status               VARCHAR(20)  NOT NULL DEFAULT 'needs_review',
+    first_seen_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_seen_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    reviewed_at          TIMESTAMPTZ,
+    reviewed_by          VARCHAR(100),
+    CONSTRAINT uq_stopword_candidates_word_domain_lang UNIQUE (word, domain, language),
+    CONSTRAINT ck_stopword_candidates_status CHECK (status IN ('needs_review', 'approved', 'rejected'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_status
+    ON stopword_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_score
+    ON stopword_candidates(score DESC);
+CREATE INDEX IF NOT EXISTS idx_stopword_candidates_domain
+    ON stopword_candidates(domain);
+
+-- ----------------------------------------------------------------------------
+-- 감사 로그 / 메트릭 / 이벤트 / 사전 버전
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dictionary_audit_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    entity_type VARCHAR(50)  NOT NULL,
+    entity_id   INTEGER,
+    action      VARCHAR(50)  NOT NULL,
+    before_json JSONB,
+    after_json  JSONB,
+    actor       VARCHAR(100) NOT NULL DEFAULT 'system',
+    acted_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dictionary_audit_logs_entity
+    ON dictionary_audit_logs(entity_type, entity_id, acted_at DESC);
+
+CREATE TABLE IF NOT EXISTS collection_metrics (
+    id              BIGSERIAL PRIMARY KEY,
+    provider        VARCHAR(50)  NOT NULL DEFAULT 'naver',
+    domain          VARCHAR(50)  NOT NULL,
+    query           VARCHAR(100) NOT NULL,
+    window_start    TIMESTAMPTZ  NOT NULL,
+    window_end      TIMESTAMPTZ  NOT NULL,
+    request_count   INTEGER      NOT NULL DEFAULT 0,
+    success_count   INTEGER      NOT NULL DEFAULT 0,
+    article_count   INTEGER      NOT NULL DEFAULT 0,
+    duplicate_count INTEGER      NOT NULL DEFAULT 0,
+    publish_count   INTEGER      NOT NULL DEFAULT 0,
+    error_count     INTEGER      NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_metrics_window
+    ON collection_metrics(provider, domain, window_start DESC, query);
+
+CREATE TABLE IF NOT EXISTS keyword_events (
+    id               BIGSERIAL PRIMARY KEY,
+    provider         VARCHAR(50)      NOT NULL DEFAULT 'naver',
+    domain           VARCHAR(50)      NOT NULL,
+    keyword          VARCHAR(255)     NOT NULL,
+    event_time       TIMESTAMPTZ      NOT NULL,
+    window_start     TIMESTAMPTZ      NOT NULL,
+    window_end       TIMESTAMPTZ      NOT NULL,
+    current_mentions INTEGER          NOT NULL DEFAULT 0,
+    prev_mentions    INTEGER          NOT NULL DEFAULT 0,
+    growth           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    event_score      INTEGER          NOT NULL DEFAULT 0,
+    is_spike         BOOLEAN          NOT NULL DEFAULT FALSE,
+    detected_at      TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_keyword_events_unique
+    ON keyword_events(provider, domain, keyword, window_start);
+CREATE INDEX IF NOT EXISTS idx_keyword_events_lookup
+    ON keyword_events(provider, domain, event_time DESC, event_score DESC);
+
+CREATE TABLE IF NOT EXISTS dictionary_versions (
+    dict_name   VARCHAR(50) PRIMARY KEY,
+    version     BIGINT      NOT NULL DEFAULT 1,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE OR REPLACE FUNCTION bump_dictionary_version() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO dictionary_versions (dict_name, version, updated_at)
+    VALUES (TG_TABLE_NAME, 2, NOW())
+    ON CONFLICT (dict_name)
+    DO UPDATE SET
+        version = dictionary_versions.version + 1,
+        updated_at = NOW();
+
+    RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_bump_compound_noun_dict_version ON compound_noun_dict;
+CREATE TRIGGER trg_bump_compound_noun_dict_version
+AFTER INSERT OR UPDATE OR DELETE ON compound_noun_dict
+FOR EACH ROW
+EXECUTE FUNCTION bump_dictionary_version();
+
+DROP TRIGGER IF EXISTS trg_bump_stopword_dict_version ON stopword_dict;
+CREATE TRIGGER trg_bump_stopword_dict_version
+AFTER INSERT OR UPDATE OR DELETE ON stopword_dict
+FOR EACH ROW
+EXECUTE FUNCTION bump_dictionary_version();
+
+-- ----------------------------------------------------------------------------
+-- Staging tables (Spark JDBC writer 가 append 후 upsert SQL 로 머지)
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stg_news_raw (
+    provider     VARCHAR(50),
+    domain       VARCHAR(50),
+    query        VARCHAR(100),
+    source       VARCHAR(255),
+    title        TEXT,
+    summary      TEXT,
+    url          TEXT,
+    published_at TIMESTAMPTZ,
+    ingested_at  TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS stg_keywords (
+    article_provider  VARCHAR(50),
+    article_domain    VARCHAR(50),
+    article_url       TEXT,
+    keyword           VARCHAR(255),
+    keyword_count     INTEGER,
+    processed_at      TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS stg_keyword_trends (
+    provider      VARCHAR(50),
+    domain        VARCHAR(50),
+    window_start  TIMESTAMPTZ,
+    window_end    TIMESTAMPTZ,
+    keyword       VARCHAR(255),
+    keyword_count INTEGER,
+    processed_at  TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS stg_keyword_relations (
+    provider            VARCHAR(50),
+    domain              VARCHAR(50),
+    window_start        TIMESTAMPTZ,
+    window_end          TIMESTAMPTZ,
+    keyword_a           VARCHAR(255),
+    keyword_b           VARCHAR(255),
+    cooccurrence_count  INTEGER,
+    processed_at        TIMESTAMPTZ
+);
+
+-- ============================================================================
+-- 초기 seed 데이터
+-- ============================================================================
+INSERT INTO domain_catalog (domain_id, label, group_id, group_label, group_sort_order, sort_order, is_active)
+VALUES
+    ('politics',     '정치·정책',         'politics', '정치·정책',         1, 1, TRUE),
+    ('economy',      '경제·금융·부동산',  'economy',  '경제·금융·부동산',  2, 1, TRUE),
+    ('society',      '국제·지역·사회',    'society',  '국제·지역·사회',    3, 1, TRUE),
+    ('tech_science', 'IT·과학·테크',      'tech',     'IT·과학·테크',      4, 1, TRUE),
+    ('culture_life', '엔터·문화·생활',    'culture',  '엔터·문화·생활',    5, 1, TRUE),
+    ('sports',       '스포츠',            'sports',   '스포츠',            6, 1, TRUE)
+ON CONFLICT (domain_id) DO NOTHING;
+
+INSERT INTO query_keywords (provider, domain_id, query, sort_order, is_active) VALUES
+    ('naver', 'politics', '대통령', 1, TRUE),
+    ('naver', 'politics', '국회', 2, TRUE),
+    ('naver', 'politics', '정부', 3, TRUE),
+    ('naver', 'politics', '정당', 4, TRUE),
+    ('naver', 'politics', '선거', 5, TRUE),
+    ('naver', 'politics', '외교', 6, TRUE),
+    ('naver', 'politics', '안보', 7, TRUE),
+    ('naver', 'politics', '검찰', 8, TRUE),
+    ('naver', 'politics', '사법', 9, TRUE),
+    ('naver', 'politics', '행정', 10, TRUE),
+    ('naver', 'politics', '사설', 11, TRUE),
+    ('naver', 'politics', '칼럼', 12, TRUE),
+    ('naver', 'politics', '논설', 13, TRUE),
+    ('naver', 'politics', '여론', 14, TRUE),
+    ('naver', 'economy', '경제', 1, TRUE),
+    ('naver', 'economy', '금리', 2, TRUE),
+    ('naver', 'economy', '물가', 3, TRUE),
+    ('naver', 'economy', '환율', 4, TRUE),
+    ('naver', 'economy', '수출', 5, TRUE),
+    ('naver', 'economy', '무역', 6, TRUE),
+    ('naver', 'economy', '기업', 7, TRUE),
+    ('naver', 'economy', '산업', 8, TRUE),
+    ('naver', 'economy', '고용', 9, TRUE),
+    ('naver', 'economy', '소비', 10, TRUE),
+    ('naver', 'economy', '코스피', 11, TRUE),
+    ('naver', 'economy', '코스닥', 12, TRUE),
+    ('naver', 'economy', '증시', 13, TRUE),
+    ('naver', 'economy', '주식', 14, TRUE),
+    ('naver', 'economy', '채권', 15, TRUE),
+    ('naver', 'economy', '은행', 16, TRUE),
+    ('naver', 'economy', '보험', 17, TRUE),
+    ('naver', 'economy', '부동산', 18, TRUE),
+    ('naver', 'economy', '아파트', 19, TRUE),
+    ('naver', 'economy', '분양', 20, TRUE),
+    ('naver', 'society', '사회', 1, TRUE),
+    ('naver', 'society', '사건사고', 2, TRUE),
+    ('naver', 'society', '교육', 3, TRUE),
+    ('naver', 'society', '노동', 4, TRUE),
+    ('naver', 'society', '의료', 5, TRUE),
+    ('naver', 'society', '복지', 6, TRUE),
+    ('naver', 'society', '환경', 7, TRUE),
+    ('naver', 'society', '재난', 8, TRUE),
+    ('naver', 'society', '경찰', 9, TRUE),
+    ('naver', 'society', '법원', 10, TRUE),
+    ('naver', 'society', '서울', 11, TRUE),
+    ('naver', 'society', '수도권', 12, TRUE),
+    ('naver', 'society', '부산', 13, TRUE),
+    ('naver', 'society', '대구', 14, TRUE),
+    ('naver', 'society', '광주', 15, TRUE),
+    ('naver', 'society', '대전', 16, TRUE),
+    ('naver', 'society', '울산', 17, TRUE),
+    ('naver', 'society', '강원', 18, TRUE),
+    ('naver', 'society', '충청', 19, TRUE),
+    ('naver', 'society', '전라', 20, TRUE),
+    ('naver', 'society', '경상', 21, TRUE),
+    ('naver', 'society', '제주', 22, TRUE),
+    ('naver', 'society', '미국', 23, TRUE),
+    ('naver', 'society', '중국', 24, TRUE),
+    ('naver', 'society', '일본', 25, TRUE),
+    ('naver', 'society', '유럽', 26, TRUE),
+    ('naver', 'society', '러시아', 27, TRUE),
+    ('naver', 'society', '중동', 28, TRUE),
+    ('naver', 'society', '우크라이나', 29, TRUE),
+    ('naver', 'society', '북한', 30, TRUE),
+    ('naver', 'society', '국제유가', 31, TRUE),
+    ('naver', 'society', '세계경제', 32, TRUE),
+    ('naver', 'tech_science', 'AI', 1, TRUE),
+    ('naver', 'tech_science', '인공지능', 2, TRUE),
+    ('naver', 'tech_science', '생성형 AI', 3, TRUE),
+    ('naver', 'tech_science', '반도체', 4, TRUE),
+    ('naver', 'tech_science', '배터리', 5, TRUE),
+    ('naver', 'tech_science', '로봇', 6, TRUE),
+    ('naver', 'tech_science', '바이오', 7, TRUE),
+    ('naver', 'tech_science', '우주', 8, TRUE),
+    ('naver', 'tech_science', '기후기술', 9, TRUE),
+    ('naver', 'tech_science', '사이버보안', 10, TRUE),
+    ('naver', 'culture_life', '문화', 1, TRUE),
+    ('naver', 'culture_life', '책', 2, TRUE),
+    ('naver', 'culture_life', '전시', 3, TRUE),
+    ('naver', 'culture_life', '공연', 4, TRUE),
+    ('naver', 'culture_life', '여행', 5, TRUE),
+    ('naver', 'culture_life', '건강', 6, TRUE),
+    ('naver', 'culture_life', '생활', 7, TRUE),
+    ('naver', 'culture_life', '음식', 8, TRUE),
+    ('naver', 'culture_life', '패션', 9, TRUE),
+    ('naver', 'culture_life', '종교', 10, TRUE),
+    ('naver', 'culture_life', '연예', 11, TRUE),
+    ('naver', 'culture_life', 'K팝', 12, TRUE),
+    ('naver', 'culture_life', '아이돌', 13, TRUE),
+    ('naver', 'culture_life', '드라마', 14, TRUE),
+    ('naver', 'culture_life', '영화', 15, TRUE),
+    ('naver', 'culture_life', 'OTT', 16, TRUE),
+    ('naver', 'culture_life', '방송', 17, TRUE),
+    ('naver', 'culture_life', '가요', 18, TRUE),
+    ('naver', 'culture_life', '배우', 19, TRUE),
+    ('naver', 'culture_life', '콘서트', 20, TRUE),
+    ('naver', 'sports', '야구', 1, TRUE),
+    ('naver', 'sports', '축구', 2, TRUE),
+    ('naver', 'sports', '농구', 3, TRUE),
+    ('naver', 'sports', '배구', 4, TRUE),
+    ('naver', 'sports', '골프', 5, TRUE),
+    ('naver', 'sports', '올림픽', 6, TRUE),
+    ('naver', 'sports', '월드컵', 7, TRUE),
+    ('naver', 'sports', 'K리그', 8, TRUE),
+    ('naver', 'sports', '프로야구', 9, TRUE),
+    ('naver', 'sports', 'e스포츠', 10, TRUE)
+ON CONFLICT (provider, domain_id, query) DO NOTHING;
+
+INSERT INTO stopword_dict (word, domain, language) VALUES
+    ('기자', 'all', 'ko'),
+    ('뉴스', 'all', 'ko'),
+    ('이번', 'all', 'ko'),
+    ('관련', 'all', 'ko'),
+    ('통해', 'all', 'ko'),
+    ('대한', 'all', 'ko'),
+    ('경우', 'all', 'ko'),
+    ('이후', 'all', 'ko'),
+    ('당시', 'all', 'ko'),
+    ('이날', 'all', 'ko'),
+    ('사진', 'all', 'ko'),
+    ('정도', 'all', 'ko'),
+    ('발표', 'all', 'ko'),
+    ('계획', 'all', 'ko'),
+    ('진행', 'all', 'ko'),
+    ('기업', 'all', 'ko'),
+    ('시장', 'all', 'ko'),
+    ('기술', 'all', 'ko'),
+    ('정부', 'all', 'ko'),
+    ('국회', 'all', 'ko'),
+    ('기반', 'all', 'ko'),
+    ('확대', 'all', 'ko'),
+    ('지원', 'all', 'ko'),
+    ('글로벌', 'all', 'ko'),
+    ('지역', 'all', 'ko'),
+    ('공개', 'all', 'ko'),
+    ('강화', 'all', 'ko'),
+    ('전략', 'all', 'ko'),
+    ('운영', 'all', 'ko'),
+    ('활용', 'all', 'ko'),
+    ('최대', 'all', 'ko'),
+    ('규모', 'all', 'ko'),
+    ('핵심', 'all', 'ko'),
+    ('대비', 'all', 'ko'),
+    ('분야', 'all', 'ko'),
+    ('추진', 'all', 'ko'),
+    ('구축', 'all', 'ko'),
+    ('가능', 'all', 'ko'),
+    ('주요', 'all', 'ko')
+ON CONFLICT (word, domain, language) DO NOTHING;
+
+INSERT INTO dictionary_versions (dict_name, version) VALUES
+    ('compound_noun_dict', 1),
+    ('stopword_dict', 1)
+ON CONFLICT (dict_name) DO NOTHING;

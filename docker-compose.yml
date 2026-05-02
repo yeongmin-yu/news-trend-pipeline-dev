@@ -57,6 +57,8 @@ x-airflow-common:
       condition: service_healthy
     app-postgres-init:
       condition: service_completed_successfully
+    flyway:
+      condition: service_completed_successfully
     spark-master:
       condition: service_started
   networks:
@@ -148,6 +150,7 @@ services:
     networks:
       - dev-network
 
+  # Airflow 용 role/db 만 준비. 애플리케이션 schema 는 flyway 가 처리.
   app-postgres-init:
     image: postgres:16
     restart: "no"
@@ -171,9 +174,28 @@ services:
           createdb -h app-postgres -U "$${POSTGRES_USER}" -O "$${AIRFLOW_USER}" "$${AIRFLOW_DB}"
         fi
         psql -h app-postgres -U "$${POSTGRES_USER}" -d "$${AIRFLOW_DB}" -v ON_ERROR_STOP=1 -c "ALTER DATABASE $${AIRFLOW_DB} OWNER TO $${AIRFLOW_USER};"
-        psql -h app-postgres -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -v ON_ERROR_STOP=1 -f /opt/news-trend-pipeline/src/storage/models.sql
+    networks:
+      - dev-network
+
+  # 애플리케이션 schema 마이그레이션. db/migration/V*.sql 을 순차 적용 후 종료.
+  flyway:
+    image: flyway/flyway:10
+    restart: "no"
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+      app-postgres-init:
+        condition: service_completed_successfully
+    environment:
+      FLYWAY_URL: jdbc:postgresql://app-postgres:5432/${POSTGRES_DB:-news_pipeline}
+      FLYWAY_USER: ${POSTGRES_USER:-postgres}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+      FLYWAY_CONNECT_RETRIES: "10"
+      FLYWAY_BASELINE_ON_MIGRATE: "true"
+    command: ["migrate"]
     volumes:
-      - ./src/storage/models.sql:/opt/news-trend-pipeline/src/storage/models.sql:ro
+      - ./db/migration:/flyway/sql:ro
     networks:
       - dev-network
 
@@ -198,6 +220,8 @@ services:
     depends_on:
       app-postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       kafka:
         condition: service_started
       spark-master:
@@ -341,6 +365,8 @@ services:
         condition: service_started
       app-postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       spark-master:
         condition: service_started
       spark-worker-1:
