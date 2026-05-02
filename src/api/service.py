@@ -165,6 +165,12 @@ def _window_bounds(
         if end_utc <= start_utc:
             raise ValueError("endAt must be later than startAt")
         duration = end_utc - start_utc
+        max_window = timedelta(days=settings.api_max_query_window_days)
+        if duration > max_window:
+            raise ValueError(
+                f"Query window must be {settings.api_max_query_window_days} days or less "
+                f"(got {duration.days}d {duration.seconds // 3600}h)."
+            )
         prev_start_at = start_utc - duration
         return None, start_utc, end_utc, prev_start_at
     if not range_id:

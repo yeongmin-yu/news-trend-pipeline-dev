@@ -1,4 +1,5 @@
 import type { KeywordSummary, FiltersResponse, RangeId, SourceId } from "./data";
+import { MAX_TREND_WINDOW_MS } from "./constants";
 import { Icon, fmtNum } from "./ui";
 import { fmtKST, toDateTimeLocalInput } from "./utils";
 
@@ -48,12 +49,14 @@ export function DashboardSubbar({
         </select>
       </div>
       <span className="divider" />
-      <span className="subbar-label">DATE</span>
+      <span className="subbar-label" title="조회 범위는 최대 30일로 제한됩니다.">DATE</span>
       <div className="subbar-date">
         <div className="field">
           <input
             type="datetime-local"
             value={toDateTimeLocalInput(trendWindow.startMs)}
+            min={toDateTimeLocalInput(trendWindow.endMs - MAX_TREND_WINDOW_MS)}
+            max={toDateTimeLocalInput(trendWindow.endMs)}
             onChange={(e) => setTrendWindowBound("start", e.target.value)}
           />
         </div>
@@ -62,6 +65,8 @@ export function DashboardSubbar({
           <input
             type="datetime-local"
             value={toDateTimeLocalInput(trendWindow.endMs)}
+            min={toDateTimeLocalInput(trendWindow.startMs)}
+            max={toDateTimeLocalInput(Date.now())}
             onChange={(e) => setTrendWindowBound("end", e.target.value)}
           />
         </div>

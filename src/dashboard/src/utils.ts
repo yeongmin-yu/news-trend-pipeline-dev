@@ -60,15 +60,16 @@ export function getTrendbucketMinutes(bucketId: TrendBucketId): number {
 }
 
 export function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [number, number] {
-  let start = startMs;
-  let end = endMs;
-  const duration = Math.min(MAX_TREND_WINDOW_MS, Math.max(MIN_TREND_WINDOW_MS, end - start));
-  if (end > nowMs) {
-    end = nowMs;
-    start = end - duration;
-  }
-  if (end - start < duration) {
-    start = end - duration;
+  // end 는 미래일 수 없다.
+  let end = Math.min(endMs, nowMs);
+  let start = Math.min(startMs, end);
+
+  // span 을 [MIN, MAX] 로 양방향 제한. (이전 구현은 MAX 초과 시 줄이지 못했음)
+  const span = end - start;
+  if (span > MAX_TREND_WINDOW_MS) {
+    start = end - MAX_TREND_WINDOW_MS;
+  } else if (span < MIN_TREND_WINDOW_MS) {
+    start = end - MIN_TREND_WINDOW_MS;
   }
   return [start, end];
 }

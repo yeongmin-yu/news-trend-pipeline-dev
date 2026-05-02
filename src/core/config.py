@@ -115,6 +115,11 @@ class Settings:
     # 8 로 두면 기사당 28pair 라 keyword_relations upsert 가 분 단위로 늘어남.
     relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "5"))
 
+    # API 단에서 허용하는 시간 범위 상한 (일수). 프론트와 동일하게 1개월(31일) 기본.
+    # keyword_relations / keyword_trends 가 월별 파티션이라 그 이상은 다중 파티션
+    # 스캔이 되어 응답이 느려진다. 분석/익스포트 등 예외 케이스는 별도 엔드포인트로.
+    api_max_query_window_days: int = int(os.getenv("API_MAX_QUERY_WINDOW_DAYS", "31"))
+
     compound_extraction_window_hours: int = _compound_extraction_window_hours()
     compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))
     compound_extraction_min_char_length: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_CHAR_LENGTH", "4"))
