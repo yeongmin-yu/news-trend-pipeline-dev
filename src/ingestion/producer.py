@@ -249,7 +249,25 @@ class NewsKafkaProducer:
         if isinstance(client, RssNewsClient):
             state_keys = {client._feed_key(feed): client._feed_key(feed) for feed in client.feeds}
             raw_results = client.fetch_news_parallel(from_timestamps=keyword_timestamps)
-            return raw_results, state_keys
+            enriched_results: dict[str, FetchResult] = {}
+            for feed in client.feeds:
+                feed_key = client._feed_key(feed)
+                feed_domain = (feed.get("domain") or "").strip() or "general"
+                feed_query = (feed.get("feed_name") or feed_key).strip() or feed_key
+                articles, ok = raw_results.get(feed_key, ([], False))
+                enriched_results[feed_query] = (
+                    [
+                        {
+                            **article,
+                            "domain": article.get("domain") or feed_domain,
+                            "query": article.get("_query") or feed_query,
+                        }
+                        for article in articles
+                    ],
+                    ok,
+                )
+                state_keys[feed_query] = feed_key
+            return enriched_results, state_keys
 
         single_ts = keyword_timestamps.get(client.provider) or None
         articles, ok = client.fetch_news(from_timestamp=single_ts)
