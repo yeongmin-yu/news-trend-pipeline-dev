@@ -1,18 +1,22 @@
 import type {
   DashboardOverviewResponse,
+  DomainOption,
   KeywordSummary,
   OverviewCachePayload,
   SourceId,
   TrendBucketId,
 } from "./data";
 import {
-  DOMAIN_COLORS,
+  DOMAIN_ALL_COLOR,
+  DOMAIN_COLOR_PALETTE,
   MIN_TREND_WINDOW_MS,
   MAX_TREND_WINDOW_MS,
   TREND_BUCKET_OPTIONS,
   TREND_FETCH_OVERSCAN_BUCKETS,
 } from "./constants";
 import { fmtAgo } from "./ui";
+
+export type DomainColorMap = Record<string, string>;
 
 export function fmtKST(ms: number, withSeconds = false): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -24,13 +28,24 @@ export function fmtKST(ms: number, withSeconds = false): string {
   return `${date} ${time} KST`;
 }
 
-export function getDomainColor(domainId: string, available: boolean): string {
-  if (!available) return "var(--text-4)";
-  return DOMAIN_COLORS[domainId] ?? "var(--accent)";
+export function buildDomainColorMap(domains: Pick<DomainOption, "id">[]): DomainColorMap {
+  const map: DomainColorMap = { all: DOMAIN_ALL_COLOR };
+  let idx = 0;
+  for (const d of domains) {
+    if (!d?.id || d.id === "all" || map[d.id]) continue;
+    map[d.id] = DOMAIN_COLOR_PALETTE[idx % DOMAIN_COLOR_PALETTE.length];
+    idx += 1;
+  }
+  return map;
 }
 
-export function getTopKeywordBarColor(domainId: string): string {
-  return DOMAIN_COLORS[domainId] ?? DOMAIN_COLORS.all;
+export function getDomainColor(domainId: string, available: boolean, colorMap: DomainColorMap): string {
+  if (!available) return "var(--text-4)";
+  return colorMap[domainId] ?? "var(--accent)";
+}
+
+export function getTopKeywordBarColor(domainId: string, colorMap: DomainColorMap): string {
+  return colorMap[domainId] ?? colorMap.all ?? DOMAIN_ALL_COLOR;
 }
 
 export function rankKeywords(items: KeywordSummary[], sortBy: "mentions" | "growth"): KeywordSummary[] {

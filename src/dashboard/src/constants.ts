@@ -36,20 +36,27 @@ export const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
 
 export const EMPTY_KEYWORD_LIST: DashboardOverviewResponse["keywords"] = [];
 
-export const DOMAIN_COLORS: Record<string, string> = {
-  all: "#a78bfa",
-  politics: "#fbbf24",
-  society: "#fb7185",
-  local: "#a78bfa",
-  economy: "#22c55e",
-  finance_realestate: "#f472b6",
-  international: "#60a5fa",
-  tech_science: "#5eead4",
-  culture_life: "#c084fc",
-  entertainment: "#f97316",
-  sports: "#38bdf8",
-  opinion: "#94a3b8",
-};
+// `all` 가상 도메인 전용 예약 색상 (보라/액센트 톤).
+export const DOMAIN_ALL_COLOR = "#a78bfa";
+
+// 도메인 id를 모르는 상태에서도 충분히 구분되는 색상 팔레트.
+// 서버가 내려준 도메인 순서대로 buildDomainColorMap()이 이 리스트를 순환 할당한다.
+// red 계열은 --spike(급상승 키워드) 색상과 충돌하므로 의도적으로 제외한다.
+export const DOMAIN_COLOR_PALETTE: string[] = [
+  "#fbbf24", // amber
+  "#f97316", // orange
+  "#ec4899", // pink
+  "#d946ef", // fuchsia
+  "#a855f7", // purple
+  "#6366f1", // indigo
+  "#3b82f6", // blue
+  "#0ea5e9", // sky
+  "#06b6d4", // cyan
+  "#5eead4", // teal
+  "#10b981", // emerald
+  "#22c55e", // green
+  "#84cc16", // lime
+];
 
 export const TREND_BUCKET_OPTIONS: Array<{ id: TrendBucketId; label: string; minutes: number }> = [
   { id: "5m", label: "5분", minutes: 5 },

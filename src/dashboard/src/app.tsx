@@ -30,6 +30,7 @@ import {
   TREND_BUCKET_OPTIONS,
 } from "./constants";
 import {
+  buildDomainColorMap,
   clampTrendWindow,
   deriveOverviewFromCache,
   expandOverviewFetchWindow,
@@ -139,6 +140,10 @@ export default function App() {
   const activeRange = useMemo(
     () => activeFilters.ranges.find((r) => r.id === (rangePreset ?? "1h")) ?? DEFAULT_FILTERS.ranges[2],
     [activeFilters.ranges, rangePreset],
+  );
+  const domainColorMap = useMemo(
+    () => buildDomainColorMap(activeFilters.domains),
+    [activeFilters.domains],
   );
 
   const [committedWindow, setCommittedWindow] = useState(trendWindow);
@@ -915,16 +920,21 @@ useEffect(() => {
     const reservedShare = Math.min(zeroCount * minShare, 0.24);
     const positiveItems = items.filter((item) => item.share > 0);
     const positiveTotal = positiveItems.reduce((sum, item) => sum + item.share, 0);
+    const withColor = (item: typeof items[number]) => ({
+      ...item,
+      // 서버가 보낸 색상 대신 사이드바와 동일한 도메인 색상 매핑을 사용한다.
+      color: domainColorMap[item.id] ?? item.color,
+    });
     if (positiveTotal <= 0) {
       const equalShare = 1 / items.length;
-      return items.map((item) => ({ ...item, displayShare: equalShare }));
+      return items.map((item) => ({ ...withColor(item), displayShare: equalShare }));
     }
     const scale = (1 - reservedShare) / positiveTotal;
     return items.map((item) => ({
-      ...item,
+      ...withColor(item),
       displayShare: item.share > 0 ? item.share * scale : minShare,
     }));
-  }, [themeDistribution.data]);
+  }, [themeDistribution.data, domainColorMap]);
 
   const typeaheadMatches = useMemo(() => {
     if (!search.trim()) return [];
@@ -1181,6 +1191,7 @@ console.debug("[overview] prefetch overview decision", {
 
       <DashboardSidebar
         activeFilters={activeFilters}
+        domainColorMap={domainColorMap}
         domain={domain}
         setDomain={setDomain}
         watchlist={watchlist}
@@ -1254,7 +1265,7 @@ console.debug("[overview] prefetch overview decision", {
               onSelect={setSelectedKeyword}
               checkedKeywords={checkedTrendKeywords}
               onToggleCheck={toggleTrendKeyword}
-              barColor={getTopKeywordBarColor(domain)}
+              barColor={getTopKeywordBarColor(domain, domainColorMap)}
               limit={topLimit}
               sortBy={topSort}
               onLimitChange={setTopLimit}

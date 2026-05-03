@@ -103,7 +103,7 @@ class Settings:
     )
     spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "8")
     spark_starting_offsets: str = os.getenv("SPARK_STARTING_OFFSETS", "latest")
-    spark_max_offsets_per_trigger: int = int(os.getenv("SPARK_MAX_OFFSETS_PER_TRIGGER", "300"))
+    spark_max_offsets_per_trigger: int = int(os.getenv("SPARK_MAX_OFFSETS_PER_TRIGGER", "500"))
     spark_driver_host: str = os.getenv("SPARK_DRIVER_HOST", "")
     spark_driver_bind_address: str = os.getenv("SPARK_DRIVER_BIND_ADDRESS", "0.0.0.0")
     spark_driver_port: str = os.getenv("SPARK_DRIVER_PORT", "")

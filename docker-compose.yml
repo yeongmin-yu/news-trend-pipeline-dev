@@ -278,7 +278,7 @@ services:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores 2 --memory 2G --webui-port 8081 spark://spark-master:7077"
+      --cores 1 --memory 2G --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8081:8081"
     volumes:
@@ -294,7 +294,7 @@ services:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores 2 --memory 2G --webui-port 8081 spark://spark-master:7077"
+      --cores 1 --memory 2G --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8082:8081"
     volumes:

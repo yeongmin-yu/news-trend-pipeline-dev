@@ -18,7 +18,6 @@ from psycopg2 import errors
 from psycopg2.extras import RealDictCursor
 
 from core.config import settings
-from core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
 from storage.db import (
     create_query_keyword as db_create_query_keyword,
     delete_keyword_data_for_stopword,
@@ -1004,7 +1003,7 @@ def get_theme_distribution(
 ) -> dict[str, Any]:
     _, start_at, end_at, _ = _window_bounds(range_id=range_id, start_at=start_at, end_at=end_at)
     provider = _provider_filter(source)
-    domain_definitions = list(DOMAIN_DEFINITIONS)
+    domain_catalog = fetch_domain_catalog()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -1029,12 +1028,13 @@ def get_theme_distribution(
     mentions_by_domain = {str(row["domain"]): int(row["mentions"] or 0) for row in rows if row.get("domain")}
     total_mentions = sum(mentions_by_domain.values())
     items: list[dict[str, Any]] = []
-    for index, domain in enumerate(domain_definitions):
-        mentions = mentions_by_domain.get(domain.id, 0)
+    for index, domain in enumerate(domain_catalog):
+        domain_id = str(domain["id"])
+        mentions = mentions_by_domain.get(domain_id, 0)
         items.append(
             {
-                "id": domain.id,
-                "label": DOMAIN_LABELS.get(domain.id, domain.id),
+                "id": domain_id,
+                "label": str(domain.get("label") or domain_id),
                 "mentions": mentions,
                 "share": (mentions / total_mentions) if total_mentions else 0.0,
                 "color": THEME_COLORS[index % len(THEME_COLORS)],

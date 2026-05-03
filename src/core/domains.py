@@ -59,7 +59,7 @@ DOMAIN_DEFINITIONS: tuple[DomainDefinition, ...] = (
     ),
     DomainDefinition(
         id="society",
-        label="국제·지역·사회",
+        label="지역·사회",
         query_keywords=(
             "사회",
             "사건사고",

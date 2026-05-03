@@ -1,10 +1,11 @@
 import type { FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
 import type { AsyncState } from "./hooks";
 import { fmtPct } from "./ui";
-import { getDomainColor } from "./utils";
+import { getDomainColor, type DomainColorMap } from "./utils";
 
 interface DashboardSidebarProps {
   activeFilters: FiltersResponse;
+  domainColorMap: DomainColorMap;
   domain: string;
   setDomain: (d: string) => void;
   watchlist: string[];
@@ -22,6 +23,7 @@ interface DashboardSidebarProps {
 
 export function DashboardSidebar({
   activeFilters,
+  domainColorMap,
   domain,
   setDomain,
   watchlist,
@@ -52,7 +54,7 @@ export function DashboardSidebar({
             onClick={() => d.available && setDomain(d.id)}
           >
             <span className="label">
-              <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
+              <span className="dot" style={{ background: getDomainColor(d.id, d.available, domainColorMap) }} />
               {d.label}
             </span>
             <span className="n">{d.available ? "live" : "plan"}</span>
