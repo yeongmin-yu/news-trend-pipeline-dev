@@ -36,6 +36,20 @@ def strip_html_tags(text: str | None) -> str | None:
     return re.sub(r"<[^>]+>", "", html.unescape(text)).strip()
 
 
+def normalize_summary_text(text: str | None) -> str | None:
+    cleaned = strip_html_tags(text)
+    if not cleaned:
+        return None
+    compact = re.sub(r"\s+", " ", cleaned).strip()
+    if not compact:
+        return None
+    if compact in {"(", ")", "()", "-", "–", "—", ".", "...", "…"}:
+        return None
+    if not re.search(r"[0-9A-Za-z가-힣]", compact):
+        return None
+    return compact
+
+
 class BaseNewsClient(ABC):
     provider: str
 
@@ -556,16 +570,18 @@ class RssNewsClient(BaseNewsClient):
         )
 
     def _normalize_yonhap_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        title = strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)"
+        summary = normalize_summary_text(
+            self._first_text(entry, ("description", "content", "encoded", "summary"))
+        ) or title
         url = self._first_link(entry)
         publisher = (feed.get("publisher") or "연합뉴스").strip() or "연합뉴스"
         return self._to_normalized_article(
             provider=publisher,
             domain=(feed.get("domain") or "politics").strip(),
             source=publisher,
-            title=strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)",
-            summary=strip_html_tags(
-                self._first_text(entry, ("description", "content", "encoded", "summary"))
-            ),
+            title=title,
+            summary=summary,
             url=url,
             published_at=self._normalize_pub_date(
                 self._first_text(entry, ("pubDate", "date", "published", "updated"))
