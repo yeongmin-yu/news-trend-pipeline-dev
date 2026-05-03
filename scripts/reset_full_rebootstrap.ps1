@@ -47,8 +47,11 @@ function Restore-GitKeep {
 
 function Invoke-Docker {
     param([string[]]$DockerArgs)
+
     $cmdLine = "docker " + ($DockerArgs -join ' ')
-    cmd /c "$cmdLine 2>nul"
+    Write-Host ">> $cmdLine"
+
+    cmd /c "$cmdLine"
     if ($LASTEXITCODE -ne 0) {
         throw "$cmdLine failed with exit code $LASTEXITCODE"
     }

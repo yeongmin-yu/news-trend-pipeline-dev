@@ -419,7 +419,7 @@ VALUES
     ('tech_science', 'IT·과학·테크',      'tech',     'IT·과학·테크',      4, 1, TRUE),
     ('culture_life', '엔터·문화·생활',    'culture',  '엔터·문화·생활',    5, 1, TRUE),
     ('sports',       '스포츠',            'sports',   '스포츠',            6, 1, TRUE),
-    ('global', '국제·세계', 'news', '뉴스', 7, 1, TRUE),
+    ('global', '국제·세계', 'news', '뉴스', 7, 1, TRUE)
 ON CONFLICT (domain_id) DO NOTHING;
 
 INSERT INTO query_keywords (provider, domain_id, query, sort_order, is_active) VALUES
