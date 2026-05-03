@@ -51,7 +51,6 @@ from api.service import (
     update_stopword_domain,
     update_query_keyword,
 )
-from storage.db import safe_initialize_database
 
 
 app = FastAPI(title="News Trend Pipeline API", version="0.1.0")
@@ -62,11 +61,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup() -> None:
-    safe_initialize_database()
 
 
 @app.get("/health")

@@ -6,13 +6,16 @@ from typing import Literal
 from pydantic import BaseModel
 
 
-SourceId = Literal["all", "naver", "global"]
+SourceId = str
 RangeId = Literal["10m", "30m", "1h", "6h", "12h", "1d"]
 
 
 class DomainOption(BaseModel):
     id: str
     label: str
+    group_id: str | None = None
+    group_label: str | None = None
+    group_sort_order: int | None = None
     available: bool = True
 
 
@@ -45,7 +48,7 @@ class KeywordSummary(BaseModel):
     event_score: int
     article_count: int
     source_share_naver: float
-    source_share_global: float
+    source_share_rss: float
 
 
 class KpiSummary(BaseModel):
@@ -74,7 +77,7 @@ class SpikeEvent(BaseModel):
     bucket: int
     keyword: str
     intensity: float
-    source: Literal["naver", "global"]
+    source: str
     growth: float
     score: int
 

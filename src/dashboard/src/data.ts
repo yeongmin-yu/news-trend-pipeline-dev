@@ -1,4 +1,4 @@
-export type SourceId = "all" | "naver" | "global";
+export type SourceId = string;
 export type RangeId = "10m" | "30m" | "1h" | "6h" | "12h" | "1d";
 export type TrendBucketId = "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
@@ -16,6 +16,12 @@ export  type TrendRawPayload = {
 export interface DomainOption {
   id: string;
   label: string;
+  group_id?: string;
+  group_label?: string;
+  group_sort_order?: number;
+  groupId?: string;
+  groupLabel?: string;
+  groupSortOrder?: number;
   available: boolean;
 }
 
@@ -48,7 +54,7 @@ export interface KeywordSummary {
   eventScore: number;
   articleCount: number;
   sourceShareNaver?: number;
-  sourceShareGlobal?: number;
+  sourceShareRss?: number;
 }
 
 export interface KpiSummary {
@@ -82,7 +88,7 @@ export interface SpikeEvent {
   bucket: number;
   keyword: string;
   intensity: number;
-  source: "naver" | "global";
+  source: string;
   currentMentions: number;
   prevMentions: number;
   growth: number;
@@ -350,7 +356,11 @@ function normalizeKeyword(row: RawRecord): KeywordSummary {
     eventScore: Number(row.eventScore ?? row.event_score ?? 0),
     articleCount: Number(row.articleCount ?? row.article_count ?? 0),
     sourceShareNaver: row.sourceShareNaver != null || row.source_share_naver != null ? Number(row.sourceShareNaver ?? row.source_share_naver) : undefined,
-    sourceShareGlobal: row.sourceShareGlobal != null || row.source_share_global != null ? Number(row.sourceShareGlobal ?? row.source_share_global) : undefined,
+    sourceShareRss: row.sourceShareRss != null || row.source_share_rss != null
+      ? Number(row.sourceShareRss ?? row.source_share_rss)
+      : row.sourceShareGlobal != null || row.source_share_global != null
+        ? Number(row.sourceShareGlobal ?? row.source_share_global)
+        : undefined,
   };
 }
 
@@ -370,7 +380,7 @@ function normalizeSpikeEvent(row: RawRecord): SpikeEvent {
     bucket: Number(row.bucket ?? 0),
     keyword: String(row.keyword ?? ""),
     intensity: Number(row.intensity ?? 0),
-    source: (row.source === "global" ? "global" : "naver"),
+    source: String(row.source ?? "naver"),
     currentMentions: Number(row.currentMentions ?? row.current_mentions ?? 0),
     prevMentions: Number(row.prevMentions ?? row.prev_mentions ?? 0),
     growth: Number(row.growth ?? 0),

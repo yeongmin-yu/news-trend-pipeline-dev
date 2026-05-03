@@ -7,7 +7,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+BASE_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(BASE_DIR / ".env")
 
 
@@ -35,14 +35,20 @@ def _compound_extraction_window_hours() -> int:
 
 
 DEFAULT_THEME_KEYWORDS = (
+    "대통령",
+    "국회",
+    "경제",
+    "금리",
+    "코스피",
+    "사건사고",
+    "교육",
+    "미국",
+    "중국",
     "AI",
-    "인공지능",
-    "생성형AI",
-    "GPT",
-    "LLM",
-    "챗GPT",
-    "머신러닝",
-    "딥러닝",
+    "반도체",
+    "문화",
+    "연예",
+    "축구",
 )
 
 
@@ -70,6 +76,13 @@ class Settings:
     naver_page_request_delay_seconds: float = float(os.getenv("NAVER_PAGE_REQUEST_DELAY_SECONDS", "0.75"))
     naver_query_stagger_seconds: float = float(os.getenv("NAVER_QUERY_STAGGER_SECONDS", "0.15"))
 
+    rss_feed_catalog_path: str = _resolve_path(
+        os.getenv("RSS_FEED_CATALOG_PATH"),
+        BASE_DIR / "data" / "rss_feeds.csv",
+    )
+    rss_request_timeout_seconds: float = float(os.getenv("RSS_REQUEST_TIMEOUT_SECONDS", "20"))
+    rss_max_workers: int = int(os.getenv("RSS_MAX_WORKERS", "8"))
+
     kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "news_topic")
     kafka_acks: str = os.getenv("KAFKA_ACKS", "all")
@@ -88,10 +101,25 @@ class Settings:
         os.getenv("SPARK_CHECKPOINT_DIR"),
         BASE_DIR / "runtime" / "checkpoints",
     )
-    spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "2")
+    spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "8")
     spark_starting_offsets: str = os.getenv("SPARK_STARTING_OFFSETS", "latest")
+    spark_max_offsets_per_trigger: int = int(os.getenv("SPARK_MAX_OFFSETS_PER_TRIGGER", "500"))
+    spark_driver_host: str = os.getenv("SPARK_DRIVER_HOST", "")
+    spark_driver_bind_address: str = os.getenv("SPARK_DRIVER_BIND_ADDRESS", "0.0.0.0")
+    spark_driver_port: str = os.getenv("SPARK_DRIVER_PORT", "")
+    spark_block_manager_port: str = os.getenv("SPARK_BLOCK_MANAGER_PORT", "")
+    spark_ui_port: str = os.getenv("SPARK_UI_PORT", "4040")
+    spark_event_log_enabled: bool = os.getenv("SPARK_EVENT_LOG_ENABLED", "true").lower() in {"1", "true", "yes", "y", "on"}
+    spark_event_log_dir: str = os.getenv("SPARK_EVENT_LOG_DIR", "file:/tmp/spark-events")
     keyword_window_duration: str = os.getenv("KEYWORD_WINDOW_DURATION", "10 minutes")
-    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "8"))
+    # 기사당 상위 N 키워드로 페어를 만든다. C(N,2) 로 폭증하므로 5(=10pair) 가 기본.
+    # 8 로 두면 기사당 28pair 라 keyword_relations upsert 가 분 단위로 늘어남.
+    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "4"))
+
+    # API 단에서 허용하는 시간 범위 상한 (일수). 프론트와 동일하게 1개월(31일) 기본.
+    # keyword_relations / keyword_trends 가 월별 파티션이라 그 이상은 다중 파티션
+    # 스캔이 되어 응답이 느려진다. 분석/익스포트 등 예외 케이스는 별도 엔드포인트로.
+    api_max_query_window_days: int = int(os.getenv("API_MAX_QUERY_WINDOW_DAYS", "31"))
 
     compound_extraction_window_hours: int = _compound_extraction_window_hours()
     compound_extraction_min_frequency: int = int(os.getenv("COMPOUND_EXTRACTION_MIN_FREQUENCY", "3"))

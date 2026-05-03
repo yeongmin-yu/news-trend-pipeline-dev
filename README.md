@@ -1,5 +1,12 @@
 # News Trend Pipeline
 
+## RSS 수집 변경 메모
+
+- `NEWS_PROVIDERS=naver,rss` 설정으로 Naver API와 언론사 RSS를 함께 수집합니다.
+- RSS 주소는 `data/rss_feeds.csv`에서 관리하고, 활성 행(`is_active=true`)만 수집합니다.
+- RSS 수집 결과는 기존 Kafka `news_topic` 메시지 포맷으로 일반화되어 `news_raw`에 적재됩니다.
+- 작업계획과 결과는 `docs/develop/RSS_INGESTION_PLAN_RESULT.md`에 정리했습니다.
+
 도메인별 뉴스 키워드를 수집하고, Kafka-Spark-PostgreSQL 파이프라인으로 처리한 뒤 FastAPI와 Dashboard로 조회하는 뉴스 트렌드 분석 프로젝트입니다.
 
 현재 구현은 다음 범위를 포함합니다.

@@ -1,10 +1,11 @@
 import type { FiltersResponse, KeywordSummary, SystemStatusResponse } from "./data";
 import type { AsyncState } from "./hooks";
 import { fmtPct } from "./ui";
-import { getDomainColor } from "./utils";
+import { getDomainColor, type DomainColorMap } from "./utils";
 
 interface DashboardSidebarProps {
   activeFilters: FiltersResponse;
+  domainColorMap: DomainColorMap;
   domain: string;
   setDomain: (d: string) => void;
   watchlist: string[];
@@ -22,6 +23,7 @@ interface DashboardSidebarProps {
 
 export function DashboardSidebar({
   activeFilters,
+  domainColorMap,
   domain,
   setDomain,
   watchlist,
@@ -36,21 +38,23 @@ export function DashboardSidebar({
   setSpikeMinGrowth,
   system,
 }: DashboardSidebarProps) {
+  const domains = activeFilters.domains;
+
   return (
     <div className="sidebar">
       <div className="side-section">
         <div className="side-heading">
-          <span>도메인 요약</span>
-          <span className="count">{activeFilters.domains.length}</span>
+          <span>도메인</span>
+          <span className="count">{domains.length}</span>
         </div>
-        {activeFilters.domains.map((d) => (
+        {domains.map((d) => (
           <div
             key={d.id}
             className={`side-item${domain === d.id ? " is-active" : ""}`}
             onClick={() => d.available && setDomain(d.id)}
           >
             <span className="label">
-              <span className="dot" style={{ background: getDomainColor(d.id, d.available) }} />
+              <span className="dot" style={{ background: getDomainColor(d.id, d.available, domainColorMap) }} />
               {d.label}
             </span>
             <span className="n">{d.available ? "live" : "plan"}</span>
@@ -60,12 +64,12 @@ export function DashboardSidebar({
 
       <div className="side-section">
         <div className="side-heading">
-          <span>지켜보기항목</span>
+          <span>지켜볼 키워드</span>
           <span className="count">{watchlist.length}</span>
         </div>
         <div className="field" style={{ width: "100%" }}>
           <input
-            placeholder="+ 키워드 추가…"
+            placeholder="+ 키워드 추가"
             onKeyDown={(e) => {
               if (e.key === "Enter" && selectedKeyword && !watchlist.includes(selectedKeyword)) {
                 addToWatchlist(selectedKeyword);
@@ -107,7 +111,7 @@ export function DashboardSidebar({
                   style={{ padding: "1px 3px", borderRadius: 2 }}
                   title="제거"
                 >
-                  ×
+                  x
                 </button>
               </span>
             </div>
@@ -115,7 +119,7 @@ export function DashboardSidebar({
         })}
         {watchlist.length === 0 && (
           <div style={{ fontSize: 11, color: "var(--text-4)", padding: "4px 8px" }}>
-            키워드를 추가하세요
+            키워드를 추가하세요.
           </div>
         )}
       </div>

@@ -8,10 +8,17 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $composeFile = Join-Path $projectRoot "docker-compose.yml"
 $runtimeRoot = Join-Path $projectRoot "runtime"
-$composeProjectName = "news-trend-develop"
-$airflowVolumeName = "${composeProjectName}_airflow-postgres-data"
 $appPostgresService = "app-postgres"
-$airflowPostgresService = "airflow-postgres"
+
+# This script resets only collected/processed data so ingestion can be replayed from scratch.
+# It intentionally preserves configuration and dictionary tables, including:
+# - domain_catalog
+# - query_keywords and query_keyword_audit_logs
+# - compound_noun_dict and compound_noun_candidates
+# - stopword_dict and stopword_candidates
+# - dictionary_versions and dictionary_audit_logs
+# - RSS catalog files and application source/configuration files
+# - Airflow metadata DB/volume
 
 function Assert-ProjectRoot {
     if (-not (Test-Path -LiteralPath $composeFile)) {
@@ -49,18 +56,6 @@ function Restore-GitKeep {
     New-Item -ItemType File -Path $gitkeep -Force | Out-Null
 }
 
-function Remove-DockerVolumeIfExists {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$VolumeName
-    )
-
-    $existing = docker volume ls --format "{{.Name}}" | Where-Object { $_ -eq $VolumeName }
-    if ($existing) {
-        docker volume rm $VolumeName | Out-Null
-    }
-}
-
 function Wait-ForContainerHealthy {
     param(
         [Parameter(Mandatory = $true)]
@@ -83,13 +78,6 @@ function Wait-ForContainerHealthy {
     throw "Timed out waiting for service '$ServiceName' to become healthy."
 }
 
-Assert-ProjectRoot
-
-$composeUpArgs = @("compose", "up", "-d")
-if ($BuildImages) {
-    $composeUpArgs += "--build"
-}
-
 function Invoke-Docker {
     param([string[]]$DockerArgs)
     $cmdLine = "docker " + ($DockerArgs -join ' ')
@@ -99,15 +87,19 @@ function Invoke-Docker {
     }
 }
 
-Write-Host "[1/6] docker compose down --remove-orphans"
+Assert-ProjectRoot
+
+$composeUpArgs = @("compose", "up", "-d")
+if ($BuildImages) {
+    $composeUpArgs += "--build"
+}
+
+Write-Host "[1/5] docker compose down --remove-orphans"
 Push-Location $projectRoot
 try {
     Invoke-Docker @("compose", "down", "--remove-orphans")
 
-    Write-Host "[2/6] remove Airflow metadata volume only"
-    Remove-DockerVolumeIfExists -VolumeName $airflowVolumeName
-
-    Write-Host "[3/6] runtime directory cleanup"
+    Write-Host "[2/5] runtime collection state cleanup"
     $runtimeDirs = @(
         (Join-Path $runtimeRoot "checkpoints"),
         (Join-Path $runtimeRoot "state"),
@@ -124,13 +116,13 @@ try {
     if ($BuildImages) {
         $dbUpArgs += "--build"
     }
-    $dbUpArgs += @($appPostgresService, $airflowPostgresService)
+    $dbUpArgs += @($appPostgresService)
 
-    Write-Host "[4/6] start PostgreSQL services$(if ($BuildImages) { ' --build' })"
+    Write-Host "[3/5] start application PostgreSQL$(if ($BuildImages) { ' --build' })"
     Invoke-Docker $dbUpArgs
     Wait-ForContainerHealthy -ServiceName $appPostgresService
 
-    Write-Host "[5/6] truncate article and aggregate tables, preserve dictionaries"
+    Write-Host "[4/5] truncate collected article and derived data only"
     $truncateSql = @"
 TRUNCATE TABLE
     stg_keyword_relations,
@@ -148,7 +140,7 @@ RESTART IDENTITY;
     $truncateSql | cmd /c "docker compose exec -T $appPostgresService psql -U postgres -d news_pipeline 2>nul"
     if ($LASTEXITCODE -ne 0) { throw "TRUNCATE failed" }
 
-    Write-Host "[6/6] docker compose up -d$(if ($BuildImages) { ' --build' })"
+    Write-Host "[5/5] docker compose up -d$(if ($BuildImages) { ' --build' })"
     Invoke-Docker $composeUpArgs
 
     Write-Host "[done] docker compose ps"
@@ -159,8 +151,9 @@ finally {
 }
 
 Write-Host ""
-Write-Host "Reset complete."
-Write-Host "Note: dictionary tables were preserved, but article/aggregate tables and Airflow metadata were reset."
+Write-Host "Collection-data reset complete."
+Write-Host "Preserved: domain/query settings, dictionaries, dictionary candidates/audits, RSS catalog, Airflow metadata."
+Write-Host "Reset: news_raw, keywords, keyword_trends, keyword_relations, keyword_events, collection_metrics, staging tables, producer state, Spark checkpoints/events/logs."
 if (-not $BuildImages) {
     Write-Host "Tip: use -BuildImages when Dockerfile or requirements changed."
 }

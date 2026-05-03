@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import html
+import csv
 import re
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterable, Mapping
+from pathlib import Path
+from typing import Any, Iterable, Iterator, Mapping
 from urllib.parse import urlparse
+from xml.etree import ElementTree as ET
 
 import requests
 
 from core.config import settings
 from core.logger import get_logger
+from core.schemas import NormalizedNewsArticle
 
 
 logger = get_logger(__name__)
@@ -30,6 +34,20 @@ def strip_html_tags(text: str | None) -> str | None:
     if not text:
         return text
     return re.sub(r"<[^>]+>", "", html.unescape(text)).strip()
+
+
+def normalize_summary_text(text: str | None) -> str | None:
+    cleaned = strip_html_tags(text)
+    if not cleaned:
+        return None
+    compact = re.sub(r"\s+", " ", cleaned).strip()
+    if not compact:
+        return None
+    if compact in {"(", ")", "()", "-", "–", "—", ".", "...", "…"}:
+        return None
+    if not re.search(r"[0-9A-Za-z가-힣]", compact):
+        return None
+    return compact
 
 
 class BaseNewsClient(ABC):
@@ -187,77 +205,42 @@ class NaverNewsClient(BaseNewsClient):
         return unique_articles, ok
 
     # ── 다중 키워드 병렬 수집 ─────────────────────────────────────────────────
-    def fetch_news_parallel(
+    def fetch_news_parallel_iter(
         self,
         queries: Iterable[str] | None = None,
         from_timestamps: Mapping[str, str | None] | None = None,
         page_size: int | None = None,
         max_workers: int | None = None,
-    ) -> dict[str, FetchResult]:
-        """테마 키워드 집합에 대해 ThreadPoolExecutor로 병렬 API 호출.
+    ) -> Iterator[tuple[str, list[dict[str, Any]], bool]]:
+        """키워드 fetch 완료 순서대로 (query, articles, ok) 를 즉시 yield 하는 generator.
 
-        키워드별로 독립된 체크포인트(`from_timestamps[keyword]`)를 받아
-        각 키워드의 (articles, ok) 결과를 {keyword: (articles, ok)} dict로 반환합니다.
-
-        설계 포인트:
-          - 한 키워드의 부분 실패가 다른 키워드의 체크포인트 전진에 영향을 주지 않도록,
-            키워드 단위로 ok 플래그를 그대로 노출합니다.
-          - 스레드 내부 예외(fetch_news 본체가 완전히 터진 경우)는 ok=False + 빈 articles
-            로 정규화하여 호출자 쪽 분기를 단순하게 유지합니다.
-          - Naver 검색 API는 키워드별 독립 호출이라 I/O 대기가 커 GIL 영향이 적고,
-            스레드 기반 병렬화로 선형에 가까운 속도 향상을 얻습니다.
-
-        Parameters
-        ----------
-        queries:
-            대상 키워드 목록. None 이면 settings.naver_theme_keywords 사용.
-        from_timestamps:
-            키워드별 증분 기준 시각 매핑. 누락된 키워드는 None(=증분 필터 없음)으로 취급.
-        page_size, max_workers:
-            기존 시그니처와 동일.
+        각 키워드의 fetch 가 끝나는 즉시 호출자에게 결과를 넘기므로,
+        가장 느린 키워드가 끝날 때까지 전체가 블로킹되는 문제를 해소합니다.
         """
         keyword_list = [q for q in (queries or settings.naver_theme_keywords) if q]
         if not keyword_list:
             logger.warning("Naver 병렬 호출 대상 키워드가 비어 있습니다. NAVER_THEME_KEYWORDS 확인.")
-            return {}
+            return
 
-        # 키워드별 from_timestamp 매핑. 입력이 None 이면 전 키워드에 대해 None 적용.
         timestamp_map: dict[str, str | None] = {
             keyword: (from_timestamps.get(keyword) if from_timestamps else None)
             for keyword in keyword_list
         }
-
-        effective_workers = max(
-            1,
-            min(max_workers or settings.naver_max_workers, len(keyword_list)),
-        )
+        effective_workers = max(1, min(max_workers or settings.naver_max_workers, len(keyword_list)))
         logger.info(
-            "Naver 병렬 호출 시작 — keywords=%d workers=%d per_keyword_from=%s",
+            "Naver 병렬 호출 시작 — keywords=%d workers=%d",
             len(keyword_list),
             effective_workers,
-            {k: (v or "없음") for k, v in timestamp_map.items()},
         )
-
-        # 결과 컨테이너는 dict: 키워드 -> (articles, ok).
-        # 각 키워드의 체크포인트를 호출자가 독립적으로 갱신할 수 있도록 분리 보관.
-        results: dict[str, FetchResult] = {keyword: ([], False) for keyword in keyword_list}
 
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             def _fetch_with_stagger(keyword: str, start_delay: float) -> FetchResult:
                 if start_delay > 0:
                     time.sleep(start_delay)
-                return self.fetch_news(
-                    keyword,
-                    timestamp_map[keyword],
-                    page_size,
-                )
+                return self.fetch_news(keyword, timestamp_map[keyword], page_size)
 
             future_to_query = {
-                executor.submit(
-                    _fetch_with_stagger,
-                    keyword,
-                    index * settings.naver_query_stagger_seconds,
-                ): keyword
+                executor.submit(_fetch_with_stagger, keyword, index * settings.naver_query_stagger_seconds): keyword
                 for index, keyword in enumerate(keyword_list)
             }
             for future in as_completed(future_to_query):
@@ -265,25 +248,30 @@ class NaverNewsClient(BaseNewsClient):
                 try:
                     articles, ok = future.result()
                 except Exception as exc:  # noqa: BLE001
-                    # fetch_news 본체에서 예상치 못한 예외가 올라온 경우 — 체크포인트 보존용으로 ok=False.
                     logger.error("Naver 병렬 호출 실패 query=%r: %s", keyword, exc)
-                    results[keyword] = ([], False)
+                    yield keyword, [], False
                     continue
-                logger.info(
-                    "Naver 병렬 수집 완료 — query=%r articles=%d ok=%s",
-                    keyword,
-                    len(articles),
-                    ok,
-                )
-                results[keyword] = (articles, ok)
+                logger.info("Naver 병렬 수집 완료 — query=%r articles=%d ok=%s", keyword, len(articles), ok)
+                yield keyword, articles, ok
 
-        total_articles = sum(len(a) for a, _ in results.values())
+    def fetch_news_parallel(
+        self,
+        queries: Iterable[str] | None = None,
+        from_timestamps: Mapping[str, str | None] | None = None,
+        page_size: int | None = None,
+        max_workers: int | None = None,
+    ) -> dict[str, FetchResult]:
+        """fetch_news_parallel_iter 를 소비해 {keyword: (articles, ok)} dict 로 반환."""
+        results: dict[str, FetchResult] = {}
+        for keyword, articles, ok in self.fetch_news_parallel_iter(queries, from_timestamps, page_size, max_workers):
+            results[keyword] = (articles, ok)
         ok_count = sum(1 for _, ok in results.values() if ok)
+        total_articles = sum(len(a) for a, _ in results.values())
         logger.info(
             "Naver 병렬 호출 종합 — keywords=%d ok=%d partial_or_fail=%d raw=%d",
-            len(keyword_list),
+            len(results),
             ok_count,
-            len(keyword_list) - ok_count,
+            len(results) - ok_count,
             total_articles,
         )
         return results
@@ -311,13 +299,12 @@ class NaverNewsClient(BaseNewsClient):
 
     def _normalize_article(self, item: dict[str, Any], query: str | None = None) -> dict[str, Any]:
         publisher_url = item.get("originallink") or item.get("link") or ""
-        publisher = urlparse(publisher_url).netloc or "Naver News"
         summary = strip_html_tags(item.get("description"))
         title = strip_html_tags(item.get("title"))
         published_at = self._normalize_pub_date(item.get("pubDate"))
         article: dict[str, Any] = {
             "provider": self.provider,
-            "source": publisher,
+            "source": "NaverNews",
             "title": title,
             "summary": summary,
             "url": publisher_url or item.get("link"),
@@ -353,6 +340,305 @@ class NaverNewsClient(BaseNewsClient):
         seen: set[str] = set()
         for article in articles:
             unique_key = f"{article.get('provider')}::{article.get('url')}"
+            if not article.get("url") or unique_key in seen:
+                continue
+            seen.add(unique_key)
+            deduplicated.append(article)
+        return deduplicated
+
+
+class RssNewsClient(BaseNewsClient):
+    provider = "rss"
+
+    def __init__(
+        self,
+        feed_catalog_path: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
+        self.feed_catalog_path = Path(feed_catalog_path or settings.rss_feed_catalog_path)
+        self.timeout_seconds = timeout_seconds or settings.rss_request_timeout_seconds
+        self.feeds = self._load_feed_catalog(self.feed_catalog_path)
+        if not self.feeds:
+            raise ValueError(f"Active RSS feeds not found: {self.feed_catalog_path}")
+        logger.info(
+            "RSS feed catalog loaded: path=%s active_feeds=%d",
+            self.feed_catalog_path,
+            len(self.feeds),
+        )
+
+    def fetch_news(
+        self,
+        query: str | None = None,
+        from_timestamp: str | None = None,
+        page_size: int | None = None,
+    ) -> FetchResult:
+        if query is None:
+            results = self.fetch_news_parallel(from_timestamps={})
+            articles: list[dict[str, Any]] = []
+            ok = True
+            for feed_articles, feed_ok in results.values():
+                articles.extend(feed_articles)
+                ok = ok and feed_ok
+            return self._deduplicate_articles(articles), ok
+
+        feed = next((item for item in self.feeds if self._feed_key(item) == query), None)
+        if feed is None:
+            logger.warning("RSS feed key not found: %s", query)
+            return [], False
+        return self._fetch_feed(feed, from_timestamp=from_timestamp)
+
+    def fetch_news_parallel_iter(
+        self,
+        from_timestamps: Mapping[str, str | None] | None = None,
+        max_workers: int | None = None,
+    ) -> Iterator[tuple[str, list[dict[str, Any]], bool]]:
+        """feed fetch 완료 순서대로 (feed_key, articles, ok) 를 즉시 yield 하는 generator."""
+        workers = max(1, min(max_workers or settings.rss_max_workers, len(self.feeds)))
+        logger.info("RSS collection started: feeds=%d workers=%d catalog=%s", len(self.feeds), workers, self.feed_catalog_path)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_feed = {
+                executor.submit(self._fetch_feed, feed, (from_timestamps or {}).get(self._feed_key(feed))): feed
+                for feed in self.feeds
+            }
+            for future in as_completed(future_to_feed):
+                feed = future_to_feed[future]
+                feed_key = self._feed_key(feed)
+                try:
+                    articles, ok = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("RSS feed collection failed: key=%s url=%s error=%s", feed_key, feed["url"], exc)
+                    yield feed_key, [], False
+                    continue
+                yield feed_key, articles, ok
+
+    def fetch_news_parallel(
+        self,
+        from_timestamps: Mapping[str, str | None] | None = None,
+        max_workers: int | None = None,
+    ) -> dict[str, FetchResult]:
+        """fetch_news_parallel_iter 를 소비해 {feed_key: (articles, ok)} dict 로 반환."""
+        started_at = time.monotonic()
+        results: dict[str, FetchResult] = {}
+        for feed_key, articles, ok in self.fetch_news_parallel_iter(from_timestamps, max_workers):
+            results[feed_key] = (articles, ok)
+        ok_count = sum(1 for _, ok in results.values() if ok)
+        article_count = sum(len(a) for a, _ in results.values())
+        logger.info(
+            "RSS collection finished: feeds=%d ok=%d failed=%d articles=%d elapsed=%.2fs",
+            len(results),
+            ok_count,
+            len(results) - ok_count,
+            article_count,
+            time.monotonic() - started_at,
+        )
+        return results
+
+    @staticmethod
+    def _load_feed_catalog(path: Path) -> list[dict[str, str]]:
+        if not path.exists():
+            logger.warning("RSS feed catalog does not exist: %s", path)
+            return []
+        with path.open(encoding="utf-8-sig", newline="") as file:
+            rows = [dict(row) for row in csv.DictReader(file)]
+        return [
+            row
+            for row in rows
+            if (row.get("is_active") or "").strip().lower() in {"1", "true", "yes", "y"}
+            and (row.get("url") or "").strip()
+        ]
+
+    @staticmethod
+    def _feed_key(feed: Mapping[str, str]) -> str:
+        return "::".join(
+            [
+                (feed.get("publisher") or "").strip(),
+                (feed.get("domain") or "").strip(),
+                (feed.get("feed_name") or "").strip(),
+            ]
+        )
+
+    def _fetch_feed(self, feed: Mapping[str, str], from_timestamp: str | None = None) -> FetchResult:
+        feed_key = self._feed_key(feed)
+        threshold = self._parse_timestamp(from_timestamp) if from_timestamp else None
+        started_at = time.monotonic()
+        logger.info(
+            "RSS feed fetch started: key=%s url=%s from=%s",
+            feed_key,
+            feed["url"],
+            from_timestamp or "none",
+        )
+        try:
+            response = requests.get(
+                feed["url"],
+                timeout=self.timeout_seconds,
+                headers={"User-Agent": "news-trend-pipeline/0.2 (+rss collector)"},
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            entries = self._extract_entries(root)
+            articles = [self._normalize_entry(entry, feed) for entry in entries]
+            raw_count = len(articles)
+            if threshold:
+                articles = [
+                    article
+                    for article in articles
+                    if self._parse_timestamp(article.get("published_at"))
+                    and self._parse_timestamp(article.get("published_at")) > threshold
+                ]
+            filtered_count = len(articles)
+            deduplicated = self._deduplicate_articles(articles)
+            elapsed_seconds = time.monotonic() - started_at
+            logger.info(
+                "RSS feed fetch finished: key=%s raw=%d filtered=%d deduplicated=%d elapsed=%.2fs",
+                feed_key,
+                raw_count,
+                filtered_count,
+                len(deduplicated),
+                elapsed_seconds,
+            )
+            return deduplicated, True
+        except Exception as exc:  # noqa: BLE001
+            elapsed_seconds = time.monotonic() - started_at
+            logger.warning(
+                "RSS feed fetch failed: key=%s url=%s elapsed=%.2fs error=%s",
+                feed_key,
+                feed["url"],
+                elapsed_seconds,
+                exc,
+            )
+            raise
+
+    @classmethod
+    def _extract_entries(cls, root: ET.Element) -> list[ET.Element]:
+        entries = [element for element in root.iter() if cls._local_name(element.tag) == "item"]
+        if entries:
+            return entries
+        return [element for element in root.iter() if cls._local_name(element.tag) == "entry"]
+
+    def _normalize_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        publisher = (feed.get("publisher") or "").strip().lower()
+        if publisher in {"연합뉴스", "yna", "yonhap", "yonhapnews"} or "yna.co.kr" in (feed.get("url") or ""):
+            return self._normalize_yonhap_entry(entry, feed)
+        return self._normalize_generic_entry(entry, feed)
+
+    def _normalize_generic_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        title = strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)"
+        summary = strip_html_tags(self._first_text(entry, ("description", "summary", "content", "encoded")))
+        url = self._first_link(entry)
+        published_at = self._normalize_pub_date(
+            self._first_text(entry, ("pubDate", "published", "updated", "date"))
+        )
+        publisher = (feed.get("publisher") or "").strip() or urlparse(url).netloc
+        return self._to_normalized_article(
+            provider=publisher,
+            domain=(feed.get("domain") or "general").strip(),
+            source=publisher,
+            title=title,
+            summary=summary,
+            url=url,
+            published_at=published_at,
+            query=(feed.get("feed_name") or "").strip(),
+        )
+
+    def _normalize_yonhap_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        title = strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)"
+        summary = normalize_summary_text(
+            self._first_text(entry, ("description", "content", "encoded", "summary"))
+        ) or title
+        url = self._first_link(entry)
+        publisher = (feed.get("publisher") or "연합뉴스").strip() or "연합뉴스"
+        return self._to_normalized_article(
+            provider=publisher,
+            domain=(feed.get("domain") or "politics").strip(),
+            source=publisher,
+            title=title,
+            summary=summary,
+            url=url,
+            published_at=self._normalize_pub_date(
+                self._first_text(entry, ("pubDate", "date", "published", "updated"))
+            ),
+            query=(feed.get("feed_name") or "yonhap_rss").strip(),
+        )
+
+    @staticmethod
+    def _to_normalized_article(
+        *,
+        provider: str,
+        domain: str,
+        source: str,
+        title: str,
+        summary: str | None,
+        url: str,
+        published_at: str | None,
+        query: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "provider": provider,
+            "domain": domain,
+            "source": source,
+            "title": title,
+            "summary": summary,
+            "url": url,
+            "published_at": published_at,
+            "ingested_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "_query": query,
+        }
+        return NormalizedNewsArticle.from_dict(payload).to_dict(include_internal=True)
+
+    @classmethod
+    def _first_text(cls, entry: ET.Element, names: Iterable[str]) -> str | None:
+        wanted = set(names)
+        for element in entry.iter():
+            if cls._local_name(element.tag) in wanted and element.text:
+                return element.text.strip()
+        return None
+
+    @classmethod
+    def _first_link(cls, entry: ET.Element) -> str:
+        for element in entry.iter():
+            if cls._local_name(element.tag) != "link":
+                continue
+            href = element.attrib.get("href")
+            if href:
+                return href.strip()
+            if element.text:
+                return element.text.strip()
+        guid = cls._first_text(entry, ("guid", "id"))
+        if guid and guid.startswith("http"):
+            return guid
+        raise ValueError("RSS item link is required")
+
+    @staticmethod
+    def _local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    @staticmethod
+    def _normalize_pub_date(value: str | None) -> str | None:
+        if not value:
+            return None
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+    @staticmethod
+    def _parse_timestamp(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _deduplicate_articles(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduplicated: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for article in articles:
+            unique_key = f"{article.get('source')}::{article.get('domain')}::{article.get('url')}"
             if not article.get("url") or unique_key in seen:
                 continue
             seen.add(unique_key)

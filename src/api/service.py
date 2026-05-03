@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import os
 import re
@@ -17,7 +18,6 @@ from psycopg2 import errors
 from psycopg2.extras import RealDictCursor
 
 from core.config import settings
-from core.domains import DOMAIN_DEFINITIONS, DOMAIN_LABELS
 from storage.db import (
     create_query_keyword as db_create_query_keyword,
     delete_keyword_data_for_stopword,
@@ -75,8 +75,7 @@ RANGES: dict[str, RangeSpec] = {
 
 SOURCES = [
     {"id": "all", "label": "전체", "color": "#7dd3fc"},
-    {"id": "naver", "label": "네이버 뉴스", "color": "#34d399"},
-    {"id": "global", "label": "글로벌 뉴스", "color": "#f59e0b"},
+    {"id": "naver", "label": "NaverNews", "color": "#34d399"},
 ]
 
 PALETTE = ["#8b5cf6", "#0ea5e9", "#22c55e", "#f59e0b", "#64748b"]
@@ -92,11 +91,63 @@ TREND_BUCKETS = {
 
 
 def _provider_filter(source: str) -> str | None:
+    if source == "global":
+        return None
     return None if source == "all" else source
 
 
-def _domain_filter(domain: str) -> str | None:
-    return None if domain == "all" else domain
+def _publisher_source_options() -> list[dict[str, str]]:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT DISTINCT provider
+                    FROM news_raw
+                    WHERE provider IS NOT NULL
+                      AND provider <> 'naver'
+                    ORDER BY provider
+                """)
+                rows = cursor.fetchall()
+    except Exception:
+        return []
+
+    existing_ids = {item["id"] for item in SOURCES}
+
+    palette = [
+        "#f59e0b", "#60a5fa", "#f472b6", "#22c55e",
+        "#c084fc", "#38bdf8", "#fb7185", "#94a3b8"
+    ]
+
+    options = []
+    for i, row in enumerate(rows):
+        provider = str(row[0]).strip()
+        if not provider or provider in existing_ids:
+            continue
+
+        options.append({
+            "id": provider,
+            "label": provider,
+            "color": palette[i % len(palette)]
+        })
+
+    return options
+
+def _domain_filter(domain: str) -> list[str]:
+    normalized = (domain or "all").strip() or "all"
+    if normalized == "all":
+        return []
+
+    catalog = fetch_domain_catalog()
+    domain_ids = {str(item["id"]) for item in catalog}
+    if normalized in domain_ids:
+        return [normalized]
+
+    group_domains = [
+        str(item["id"])
+        for item in catalog
+        if str(item.get("group_id") or item.get("groupId") or "") == normalized
+    ]
+    return group_domains or [normalized]
 
 
 def _now_utc() -> datetime:
@@ -127,6 +178,12 @@ def _window_bounds(
         if end_utc <= start_utc:
             raise ValueError("endAt must be later than startAt")
         duration = end_utc - start_utc
+        max_window = timedelta(days=settings.api_max_query_window_days)
+        if duration > max_window:
+            raise ValueError(
+                f"Query window must be {settings.api_max_query_window_days} days or less "
+                f"(got {duration.days}d {duration.seconds // 3600}h)."
+            )
         prev_start_at = start_utc - duration
         return None, start_utc, end_utc, prev_start_at
     if not range_id:
@@ -235,7 +292,7 @@ def _fetch_overview_cache_rows(
                 WHERE COALESCE(published_at, ingested_at) >= %(start_at)s
                   AND COALESCE(published_at, ingested_at) < %(end_at)s
                   AND (%(provider)s IS NULL OR provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                 GROUP BY bucket_start
                 ORDER BY bucket_start ASC
                 """,
@@ -276,7 +333,7 @@ def _fetch_overview_cache_rows(
                       AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
                       AND k.keyword = ANY(%(keywords)s)
                       AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
                     GROUP BY k.keyword, bucket_start
                     ORDER BY k.keyword ASC, bucket_start ASC
                     """,
@@ -368,7 +425,7 @@ def _derive_overview_from_cache(
     keywords: list[dict[str, Any]] = []
     spike_events: list[dict[str, Any]] = []
     spike_keywords: set[str] = set()
-    default_event_source = "global" if source == "global" else "naver"
+    default_event_source = "rss" if source == "rss" else "naver"
     current_index_set = set(current_indices)
 
     for keyword, series in keyword_map.items():
@@ -423,7 +480,7 @@ def _derive_overview_from_cache(
             "spikeCount": len(spike_keywords),
             "growth": article_growth,
             "lastUpdateRelative": _format_relative(last_update),
-            "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "데이터 없음",
+            "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "?곗씠???놁쓬",
         },
         "keywords": keywords[:limit],
         "spikes": {
@@ -439,7 +496,7 @@ def get_filters() -> dict[str, Any]:
     domains.extend(fetch_domain_catalog())
     return {
         "domains": domains,
-        "sources": SOURCES,
+        "sources": [*SOURCES, *_publisher_source_options()],
         "ranges": [
             {
                 "id": spec.id,
@@ -479,7 +536,7 @@ def get_kpis(
                     MAX(COALESCE(published_at, ingested_at)) AS last_update
                 FROM news_raw
                 WHERE (%(provider)s IS NULL OR provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                 """,
                 {
                     "start_at": start_at,
@@ -497,7 +554,7 @@ def get_kpis(
                 WHERE window_start >= %(start_at)s
                   AND window_start < %(end_at)s
                   AND (%(provider)s IS NULL OR provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                 """,
                 {
                     "start_at": start_at,
@@ -515,7 +572,7 @@ def get_kpis(
                   AND window_start < %(end_at)s
                   AND is_spike = TRUE
                   AND (%(provider)s IS NULL OR provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                 """,
                 {
                     "start_at": start_at,
@@ -533,7 +590,7 @@ def get_kpis(
         "spikeCount": int(spike_row.get("spike_count") or 0),
         "growth": growth,
         "lastUpdateRelative": _format_relative(last_update),
-        "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "데이터 없음",
+        "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "?곗씠???놁쓬",
     }
 
 
@@ -569,7 +626,7 @@ def get_top_keywords(
                     WHERE window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                     GROUP BY keyword
                 ),
                 prev_counts AS (
@@ -578,7 +635,7 @@ def get_top_keywords(
                     WHERE window_start >= %(prev_start_at)s
                       AND window_start < %(start_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                     GROUP BY keyword
                 ),
                 article_counts AS (
@@ -591,7 +648,7 @@ def get_top_keywords(
                     WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
                       AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
                       AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
                     GROUP BY k.keyword
                 )
                 SELECT
@@ -617,11 +674,11 @@ def get_top_keywords(
         growth = _safe_growth(mentions, prev_mentions)
         spike, event_score = _score_keyword(mentions, growth)
         if source == "naver":
-            source_share_naver, source_share_global = 1.0, 0.0
-        elif source == "global":
-            source_share_naver, source_share_global = 0.0, 1.0
+            source_share_naver, source_share_rss = 1.0, 0.0
+        elif source != "all":
+            source_share_naver, source_share_rss = 0.0, 1.0
         else:
-            source_share_naver, source_share_global = 0.5, 0.5
+            source_share_naver, source_share_rss = 0.5, 0.5
         result.append(
             {
                 "keyword": row["keyword"],
@@ -633,7 +690,7 @@ def get_top_keywords(
                 "eventScore": event_score,
                 "articleCount": int(row["article_count"] or 0),
                 "sourceShareNaver": source_share_naver,
-                "sourceShareGlobal": source_share_global,
+                "sourceShareRss": source_share_rss,
             }
         )
     return result
@@ -679,7 +736,7 @@ def get_trend_series(
                       AND window_start < %(end_at)s
                       AND keyword = ANY(%(keywords)s)
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                     GROUP BY keyword, window_start
                     ORDER BY window_start ASC
                     """,
@@ -763,7 +820,7 @@ def get_spike_events(
                   AND n.published_at < %(end_at)s
                   AND k.keyword = ANY(%(keywords)s)
                   AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
                 GROUP BY k.keyword, bucket_start
                 ORDER BY k.keyword ASC, bucket_start ASC
                 """,
@@ -797,7 +854,7 @@ def get_spike_events(
                         "bucket": bucket_index,
                         "keyword": keyword_name,
                         "intensity": min(1.0, max(0.12, growth)),
-                        "source": "naver" if naver_share >= 0.5 else "global",
+                        "source": "naver" if naver_share >= 0.5 else "rss",
                         "currentMentions": count,
                         "prevMentions": previous,
                         "growth": growth,
@@ -902,7 +959,7 @@ def get_related_keywords(
                       AND window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                     GROUP BY keyword_b
                     UNION ALL
                     SELECT keyword_a AS related_keyword, SUM(cooccurrence_count) AS weight
@@ -911,7 +968,7 @@ def get_related_keywords(
                       AND window_start >= %(start_at)s
                       AND window_start < %(end_at)s
                       AND (%(provider)s IS NULL OR provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR domain = ANY(%(domain)s::text[]))
                     GROUP BY keyword_a
                 )
                 SELECT related_keyword, SUM(weight) AS weight
@@ -946,7 +1003,7 @@ def get_theme_distribution(
 ) -> dict[str, Any]:
     _, start_at, end_at, _ = _window_bounds(range_id=range_id, start_at=start_at, end_at=end_at)
     provider = _provider_filter(source)
-    domain_definitions = list(DOMAIN_DEFINITIONS)
+    domain_catalog = fetch_domain_catalog()
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
@@ -971,12 +1028,13 @@ def get_theme_distribution(
     mentions_by_domain = {str(row["domain"]): int(row["mentions"] or 0) for row in rows if row.get("domain")}
     total_mentions = sum(mentions_by_domain.values())
     items: list[dict[str, Any]] = []
-    for index, domain in enumerate(domain_definitions):
-        mentions = mentions_by_domain.get(domain.id, 0)
+    for index, domain in enumerate(domain_catalog):
+        domain_id = str(domain["id"])
+        mentions = mentions_by_domain.get(domain_id, 0)
         items.append(
             {
-                "id": domain.id,
-                "label": DOMAIN_LABELS.get(domain.id, domain.id),
+                "id": domain_id,
+                "label": str(domain.get("label") or domain_id),
                 "mentions": mentions,
                 "share": (mentions / total_mentions) if total_mentions else 0.0,
                 "color": THEME_COLORS[index % len(THEME_COLORS)],
@@ -1022,7 +1080,7 @@ def get_articles(
                     WHERE COALESCE(n.published_at, n.ingested_at) >= %(start_at)s
                       AND COALESCE(n.published_at, n.ingested_at) < %(end_at)s
                       AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                      AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                      AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
                       AND (
                         %(keyword)s IS NULL
                         OR EXISTS (
@@ -1180,7 +1238,7 @@ def get_trend_window_series(
                   AND n.published_at >= %(start_at)s
                   AND n.published_at < %(end_at)s
                   AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                  AND (%(domain)s IS NULL OR n.domain = %(domain)s)
+                  AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
                 GROUP BY k.keyword, bucket_start
                 ORDER BY bucket_start ASC
                 """,
@@ -1726,7 +1784,7 @@ def trigger_compound_keyword_backfill_dag(
     airflow_base_url = os.getenv("AIRFLOW_API_BASE_URL", "http://airflow-apiserver:8080").rstrip("/")
     username = os.getenv("AIRFLOW_API_USERNAME", os.getenv("_AIRFLOW_WWW_USER_USERNAME", "airflow"))
     password = os.getenv("AIRFLOW_API_PASSWORD", os.getenv("_AIRFLOW_WWW_USER_PASSWORD", "airflow"))
-    # Airflow run_id must match ^[A-Za-z0-9_.~:+-]+$ — strip everything else
+    # Airflow run_id must match ^[A-Za-z0-9_.~:+-]+$ ??strip everything else
     # and fall back to a short hash so non-ASCII words (e.g. Korean) still work.
     safe_word = re.sub(r"[^A-Za-z0-9_.~:+-]", "", normalized_word)
     word_hash = hashlib.sha1(normalized_word.encode("utf-8")).hexdigest()[:8]

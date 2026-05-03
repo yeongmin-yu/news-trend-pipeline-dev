@@ -4,11 +4,19 @@ export const OVERVIEW_FETCH_EDGE_RATIO = 0.1;
 export const OVERVIEW_FETCH_EDGE_MIN_MS = 2 * 60 * 1000;
 
 export const DEFAULT_FILTERS: FiltersResponse = {
-  domains: [{ id: "ai_tech", label: "AI · 테크", available: true }],
+  domains: [
+    {
+      id: "tech_science",
+      label: "IT·과학·테크",
+      groupId: "tech",
+      groupLabel: "IT·과학·테크",
+      groupSortOrder: 4,
+      available: true,
+    },
+  ],
   sources: [
     { id: "all", label: "전체", color: "#7dd3fc" },
-    { id: "naver", label: "네이버 뉴스", color: "#34d399" },
-    { id: "global", label: "글로벌 뉴스", color: "#f59e0b" },
+    { id: "naver", label: "NaverNews", color: "#34d399" },
   ],
   ranges: [
     { id: "10m", label: "10분", bucketMin: 1, buckets: 10 },
@@ -28,13 +36,27 @@ export const EMPTY_THEME_DISTRIBUTION: ThemeDistributionResponse = {
 
 export const EMPTY_KEYWORD_LIST: DashboardOverviewResponse["keywords"] = [];
 
-export const DOMAIN_COLORS: Record<string, string> = {
-  all: "#a78bfa",
-  ai_tech: "#5eead4",
-  economy_finance: "#f472b6",
-  politics_policy: "#fbbf24",
-  entertainment_culture: "#60a5fa",
-};
+// `all` 가상 도메인 전용 예약 색상 (보라/액센트 톤).
+export const DOMAIN_ALL_COLOR = "#a78bfa";
+
+// 도메인 id를 모르는 상태에서도 충분히 구분되는 색상 팔레트.
+// 서버가 내려준 도메인 순서대로 buildDomainColorMap()이 이 리스트를 순환 할당한다.
+// red 계열은 --spike(급상승 키워드) 색상과 충돌하므로 의도적으로 제외한다.
+export const DOMAIN_COLOR_PALETTE: string[] = [
+  "#fbbf24", // amber
+  "#f97316", // orange
+  "#ec4899", // pink
+  "#d946ef", // fuchsia
+  "#a855f7", // purple
+  "#6366f1", // indigo
+  "#3b82f6", // blue
+  "#0ea5e9", // sky
+  "#06b6d4", // cyan
+  "#5eead4", // teal
+  "#10b981", // emerald
+  "#22c55e", // green
+  "#84cc16", // lime
+];
 
 export const TREND_BUCKET_OPTIONS: Array<{ id: TrendBucketId; label: string; minutes: number }> = [
   { id: "5m", label: "5분", minutes: 5 },

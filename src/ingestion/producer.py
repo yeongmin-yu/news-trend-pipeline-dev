@@ -6,7 +6,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Generator, Mapping
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,15 +19,14 @@ from core.config import settings
 from core.logger import get_logger
 from core.schemas import NormalizedNewsArticle
 from core.utils import ensure_dir, read_json, utc_now_iso
-from ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient
-from storage.db import fetch_active_query_keywords, insert_collection_metric, safe_initialize_database
+from ingestion.api_client import BaseNewsClient, FetchResult, NaverNewsClient, RssNewsClient
+from storage.db import fetch_active_query_keywords, insert_collection_metric
 
 
 logger = get_logger(__name__)
 
-STATE_FILE = Path(settings.state_dir) / "producer_state.json"
-DEAD_LETTER_FILE = Path(settings.state_dir) / "dead_letter.jsonl"
-LOCK_FILE = STATE_FILE.with_suffix(".lock")
+STATE_DIR = Path(settings.state_dir)
+DEAD_LETTER_FILE = STATE_DIR / "dead_letter.jsonl"
 
 
 def _make_dead_letter_record(
@@ -54,13 +53,12 @@ def build_message(article: Mapping[str, Any] | NormalizedNewsArticle) -> dict[st
 
 class NewsKafkaProducer:
     def __init__(self) -> None:
-        safe_initialize_database()
         self.clients: list[BaseNewsClient] = self._build_clients()
         self.producer: KafkaProducer | None = None
         self._send_errors: list[tuple[dict[str, Any], Exception]] = []
         self._kafka_unavailable = False
         self._lock = threading.Lock()
-        ensure_dir(STATE_FILE.parent)
+        ensure_dir(STATE_DIR)
         try:
             self.producer = self._create_producer()
         except NoBrokersAvailable as exc:
@@ -77,6 +75,14 @@ class NewsKafkaProducer:
                 settings.kafka_bootstrap_servers,
                 exc,
             )
+
+    @staticmethod
+    def _state_file_for(provider: str) -> Path:
+        return STATE_DIR / f"producer_state_{provider}.json"
+
+    @staticmethod
+    def _lock_file_for(provider: str) -> Path:
+        return STATE_DIR / f"producer_state_{provider}.lock"
 
     @staticmethod
     def _create_producer() -> KafkaProducer:
@@ -101,16 +107,18 @@ class NewsKafkaProducer:
             try:
                 if provider == "naver":
                     clients.append(NaverNewsClient())
+                elif provider == "rss":
+                    clients.append(RssNewsClient())
                 else:
                     logger.warning("Unsupported provider skipped: %s", provider)
             except ValueError as exc:
                 logger.warning("Provider configuration invalid, skipping %s: %s", provider, exc)
         return clients
 
-    def load_state(self) -> dict[str, Any]:
-        raw = read_json(STATE_FILE, {"providers": {}})
+    def load_state(self, state_file: Path) -> dict[str, Any]:
+        raw = read_json(state_file, {"providers": {}})
         if "providers" not in raw:
-            raw = {"providers": {"naver": {"keyword_timestamps": {}, "published_urls": []}}}
+            raw = {"providers": {}}
         providers: dict[str, Any] = raw.setdefault("providers", {})
         for provider_name, provider_state in providers.items():
             if not isinstance(provider_state, dict):
@@ -126,13 +134,13 @@ class NewsKafkaProducer:
                 provider_state["keyword_timestamps"].setdefault(provider_name, previous_ts)
         return raw
 
-    def save_state(self, state: dict[str, Any]) -> None:
-        ensure_dir(STATE_FILE.parent)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=STATE_FILE.parent, suffix=".tmp")
+    def save_state(self, state: dict[str, Any], state_file: Path) -> None:
+        ensure_dir(state_file.parent)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=state_file.parent, suffix=".tmp")
         try:
             with open(tmp_fd, "w", encoding="utf-8") as file:
                 json.dump(state, file, ensure_ascii=False, indent=2)
-            Path(tmp_path).replace(STATE_FILE)
+            Path(tmp_path).replace(state_file)
         except OSError:
             Path(tmp_path).unlink(missing_ok=True)
             raise
@@ -216,72 +224,73 @@ class NewsKafkaProducer:
         }
 
     @classmethod
-    def _collect_articles(
+    def _iter_articles(
         cls,
         client: BaseNewsClient,
         provider_state: dict[str, Any],
-    ) -> tuple[dict[str, FetchResult], dict[str, str]]:
+    ) -> Generator[tuple[str, list[dict[str, Any]], bool, str], None, None]:
+        """(query, articles, ok, state_key) 를 fetch 완료 즉시 yield 하는 generator.
+
+        fetch 가 끝난 query 부터 publish 가 시작되어 Kafka 에 데이터가 즉시 흐른다.
+        """
         keyword_timestamps: dict[str, str] = provider_state.get("keyword_timestamps", {})
+
         if isinstance(client, NaverNewsClient):
             query_rows = fetch_active_query_keywords(provider=client.provider)
             query_list = [row["query"] for row in query_rows]
             state_keys = {row["query"]: cls._state_key(row["domain"], row["query"]) for row in query_rows}
+            row_by_query = {row["query"]: row for row in query_rows}
             from_timestamps = cls._derive_from_timestamps(query_rows, keyword_timestamps)
-            raw_results = client.fetch_news_parallel(queries=query_list, from_timestamps=from_timestamps)
-            enriched_results: dict[str, FetchResult] = {}
-            for row in query_rows:
-                query = row["query"]
-                articles, ok = raw_results.get(query, ([], False))
-                enriched_results[query] = (
-                    [
-                        {
-                            **article,
-                            "domain": row["domain"],
-                            "query": query,
-                        }
-                        for article in articles
-                    ],
-                    ok,
-                )
-            return enriched_results, state_keys
+            for query, articles, ok in client.fetch_news_parallel_iter(queries=query_list, from_timestamps=from_timestamps):
+                row = row_by_query.get(query, {})
+                enriched = [{**article, "domain": row.get("domain", ""), "query": query} for article in articles]
+                yield query, enriched, ok, state_keys.get(query, query)
+            return
+
+        if isinstance(client, RssNewsClient):
+            state_keys = {client._feed_key(feed): client._feed_key(feed) for feed in client.feeds}
+            for feed_key, articles, ok in client.fetch_news_parallel_iter(from_timestamps=keyword_timestamps):
+                yield feed_key, articles, ok, state_keys.get(feed_key, feed_key)
+            return
 
         single_ts = keyword_timestamps.get(client.provider) or None
         articles, ok = client.fetch_news(from_timestamp=single_ts)
-        return {client.provider: (articles, ok)}, {client.provider: client.provider}
+        yield client.provider, articles, ok, client.provider
 
     def run_once(self) -> int:
         run_started_at = utc_now_iso()
         run_started_dt = datetime.fromisoformat(run_started_at.replace("Z", "+00:00")).astimezone(timezone.utc)
-        state = self.load_state()
-        provider_states: dict[str, Any] = state.setdefault("providers", {})
         published_count = 0
         self._send_errors.clear()
 
         for client in self.clients:
-            provider_state: dict[str, Any] = provider_states.setdefault(
+            state_file = self._state_file_for(client.provider)
+            state = self.load_state(state_file)
+            provider_state: dict[str, Any] = state.setdefault("providers", {}).setdefault(
                 client.provider,
                 {"keyword_timestamps": {}, "published_urls": []},
             )
             keyword_timestamps: dict[str, str] = provider_state.setdefault("keyword_timestamps", {})
             seen_urls: set[str] = set(provider_state.get("published_urls", []))
 
-            try:
-                results, state_keys = self._collect_articles(client, provider_state)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("[%s] collection failed: %s", client.provider, exc)
-                continue
-
             fetch_count = 0
             skip_count = 0
             client_published_count = 0
             advanced_keywords = 0
             failed_keywords = 0
+            seen_state_keys: set[str] = set()
 
-            for query, (articles, ok) in results.items():
+            try:
+                article_iter = self._iter_articles(client, provider_state)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[%s] collection setup failed: %s", client.provider, exc)
+                continue
+
+            for query, articles, ok, state_key in article_iter:
+                seen_state_keys.add(state_key)
                 fetch_count += len(articles)
                 query_duplicate_count = 0
                 query_publish_count = 0
-                state_key = state_keys.get(query, query)
                 query_domain = articles[0].get("domain", "ai_tech") if articles else (
                     state_key.split("::", 1)[0] if "::" in state_key else "ai_tech"
                 )
@@ -304,9 +313,10 @@ class NewsKafkaProducer:
                 else:
                     failed_keywords += 1
 
+                metric_provider = articles[0].get("provider", client.provider) if articles else client.provider
                 insert_collection_metric(
                     {
-                        "provider": client.provider,
+                        "provider": metric_provider,
                         "domain": query_domain,
                         "query": query,
                         "window_start": run_started_dt,
@@ -320,13 +330,13 @@ class NewsKafkaProducer:
                     }
                 )
 
-            active_state_keys = set(state_keys.values())
-            stale_keys = [key for key in list(keyword_timestamps.keys()) if key not in active_state_keys and client.provider == "naver"]
+            stale_keys = [key for key in list(keyword_timestamps.keys()) if key not in seen_state_keys]
             for stale_key in stale_keys:
                 keyword_timestamps.pop(stale_key, None)
 
             provider_state["keyword_timestamps"] = keyword_timestamps
             provider_state["published_urls"] = list(seen_urls)[-5000:]
+            self.save_state(state, state_file)
 
             logger.info(
                 "[%s] fetch=%d skipped=%d published=%d ok_queries=%d failed_queries=%d",
@@ -352,7 +362,6 @@ class NewsKafkaProducer:
             for failed_article, exc in self._send_errors:
                 self._append_dead_letter(failed_article, f"delivery_error: {exc}")
 
-        self.save_state(state)
         logger.info("Producer cycle finished: published=%d", published_count)
         return published_count
 
@@ -360,7 +369,7 @@ class NewsKafkaProducer:
         try:
             from filelock import FileLock  # type: ignore[import]
 
-            lock: Any = FileLock(str(LOCK_FILE), timeout=120)
+            lock: Any = FileLock(str(self._lock_file_for(provider_name)), timeout=120)
         except ModuleNotFoundError:
             lock = _NullLock()
 

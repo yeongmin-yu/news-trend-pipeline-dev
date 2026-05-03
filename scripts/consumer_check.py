@@ -30,7 +30,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--bootstrap-servers",
-        default=settings.kafka_bootstrap_servers,
+        default='localhost:9092',
         help="Kafka 부트스트랩 서버.",
     )
     parser.add_argument(

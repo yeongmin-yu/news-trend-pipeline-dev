@@ -19,6 +19,7 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/news-trend-pipeline/src
+    NEWS_PROVIDERS: ${NEWS_PROVIDERS:-naver,rss}
     KAFKA_CONTAINER_NAME: ${KAFKA_CONTAINER_NAME:-kafka}
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     STATE_DIR: /opt/news-trend-pipeline/runtime/state
@@ -33,8 +34,12 @@ x-airflow-common:
     NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
     NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
     NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
+    RSS_FEED_CATALOG_PATH: ${RSS_FEED_CATALOG_PATH:-/opt/news-trend-pipeline/data/rss_feeds.csv}
+    RSS_REQUEST_TIMEOUT_SECONDS: ${RSS_REQUEST_TIMEOUT_SECONDS:-20}
+    RSS_MAX_WORKERS: ${RSS_MAX_WORKERS:-8}
   volumes:
     - ./src:/opt/news-trend-pipeline/src
+    - ./data:/opt/news-trend-pipeline/data:ro
     - ./runtime/state:/opt/news-trend-pipeline/runtime/state
     - ./airflow/dags:/opt/airflow/dags
     - ./runtime/logs:/opt/airflow/logs
@@ -52,11 +57,24 @@ x-airflow-common:
       condition: service_healthy
     app-postgres-init:
       condition: service_completed_successfully
+    flyway:
+      condition: service_completed_successfully
     spark-master:
       condition: service_started
   networks:
     - dev-network
 
+x-spark-runtime: &spark-runtime
+  build:
+    context: .
+    dockerfile: infra/spark/Dockerfile.spark
+  image: news-trend-spark-runtime:latest
+  restart: unless-stopped
+  volumes:
+    - ./src:/opt/news-trend-pipeline/src
+    - ./runtime/spark-events:/tmp/spark-events
+  networks:
+    - dev-network
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
@@ -113,7 +131,10 @@ services:
       - dev-network
 
   app-postgres:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: infra/postgres/Dockerfile.postgres
+    image: news-trend-postgres:16-partman
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-news_pipeline}
@@ -132,6 +153,7 @@ services:
     networks:
       - dev-network
 
+  # Airflow 용 role/db 만 준비. 애플리케이션 schema 는 flyway 가 처리.
   app-postgres-init:
     image: postgres:16
     restart: "no"
@@ -158,6 +180,28 @@ services:
     networks:
       - dev-network
 
+  # 애플리케이션 schema 마이그레이션. db/migration/V*.sql 을 순차 적용 후 종료.
+  flyway:
+    image: flyway/flyway:10
+    restart: "no"
+    depends_on:
+      app-postgres:
+        condition: service_healthy
+      app-postgres-init:
+        condition: service_completed_successfully
+    environment:
+      FLYWAY_URL: jdbc:postgresql://app-postgres:5432/${POSTGRES_DB:-news_pipeline}
+      FLYWAY_USER: ${POSTGRES_USER:-postgres}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql
+      FLYWAY_CONNECT_RETRIES: "10"
+      FLYWAY_BASELINE_ON_MIGRATE: "true"
+    command: ["migrate"]
+    volumes:
+      - ./db/migration:/flyway/sql:ro
+    networks:
+      - dev-network
+
   api-server:
     build:
       context: .
@@ -172,12 +216,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PYTHONPATH: /app/src
+      RSS_FEED_CATALOG_PATH: ${RSS_FEED_CATALOG_PATH:-/app/data/rss_feeds.csv}
       NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
       NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
       NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
     depends_on:
       app-postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       kafka:
         condition: service_started
       spark-master:
@@ -186,6 +233,7 @@ services:
       - "8000:8000"
     volumes:
       - ./src:/app/src
+      - ./data:/app/data:ro
     networks:
       - dev-network
 
@@ -277,6 +325,7 @@ services:
 
   spark-streaming:
     image: news-trend-spark-runtime:latest
+    hostname: spark-streaming
     env_file:
       - ./.env
     environment:
@@ -289,6 +338,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SPARK_MASTER: spark://spark-master:7077
       SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
+      SPARK_DRIVER_HOST: ${SPARK_DRIVER_HOST:-spark-streaming}
+      SPARK_DRIVER_BIND_ADDRESS: ${SPARK_DRIVER_BIND_ADDRESS:-0.0.0.0}
+      SPARK_DRIVER_PORT: ${SPARK_DRIVER_PORT:-7078}
+      SPARK_BLOCK_MANAGER_PORT: ${SPARK_BLOCK_MANAGER_PORT:-7079}
+      SPARK_UI_PORT: ${SPARK_UI_PORT:-4040}
+      SPARK_EVENT_LOG_ENABLED: ${SPARK_EVENT_LOG_ENABLED:-true}
+      SPARK_EVENT_LOG_DIR: ${SPARK_EVENT_LOG_DIR:-file:/tmp/spark-events}
       NAVER_MAX_WORKERS: ${NAVER_MAX_WORKERS:-4}
       NAVER_PAGE_REQUEST_DELAY_SECONDS: ${NAVER_PAGE_REQUEST_DELAY_SECONDS:-0.75}
       NAVER_QUERY_STAGGER_SECONDS: ${NAVER_QUERY_STAGGER_SECONDS:-0.15}
@@ -297,6 +354,13 @@ services:
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
       --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.host=$${SPARK_DRIVER_HOST}
+      --conf spark.driver.bindAddress=$${SPARK_DRIVER_BIND_ADDRESS}
+      --conf spark.driver.port=$${SPARK_DRIVER_PORT}
+      --conf spark.blockManager.port=$${SPARK_BLOCK_MANAGER_PORT}
+      --conf spark.ui.port=$${SPARK_UI_PORT}
+      --conf spark.eventLog.enabled=$${SPARK_EVENT_LOG_ENABLED}
+      --conf spark.eventLog.dir=$${SPARK_EVENT_LOG_DIR}
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.7,org.postgresql:postgresql:42.7.4
       /opt/news-trend-pipeline/scripts/run_processing.py"
     restart: unless-stopped
@@ -305,12 +369,18 @@ services:
         condition: service_started
       app-postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       spark-master:
         condition: service_started
       spark-worker-1:
         condition: service_started
       spark-worker-2:
         condition: service_started
+    ports:
+      - "4040:4040"
+      - "7078:7078"
+      - "7079:7079"
     volumes:
       - ./src:/opt/news-trend-pipeline/src
       - ./scripts:/opt/news-trend-pipeline/scripts
@@ -318,7 +388,6 @@ services:
       - ./runtime/spark-events:/tmp/spark-events
     networks:
       - dev-network
-
   airflow-apiserver:
     <<: *airflow-common
     command: api-server

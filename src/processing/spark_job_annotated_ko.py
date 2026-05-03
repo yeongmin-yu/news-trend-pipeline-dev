@@ -33,7 +33,6 @@ from core.logger import get_logger
 from core.schemas import NormalizedNewsArticle
 from processing.preprocessing import tokenize
 from storage.db import (
-    safe_initialize_database,
     upsert_from_staging_keyword_relations,
     upsert_from_staging_keyword_trends,
     upsert_from_staging_keywords,
@@ -114,8 +113,6 @@ def run_streaming_job() -> None:
     spark.sparkContext.setLogLevel("WARN")
 
     # DB 테이블/인덱스가 없으면 초기화 시도 (실패해도 워닝만 남기고 계속 진행)
-    safe_initialize_database()
-
     # tokenize 함수(파이썬)를 Spark UDF로 등록
     tokenize_udf = udf(extract_tokens, ArrayType(StringType()))
 

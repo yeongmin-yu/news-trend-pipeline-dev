@@ -3,63 +3,16 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
 from typing import Any, Iterator
 
 import psycopg2
-from psycopg2 import Error
 from psycopg2.extras import Json, RealDictCursor
 
 from core.config import settings
-from core.domains import DOMAIN_DEFINITIONS
 from core.logger import get_logger
 from processing.preprocessing import tokenize
 
-_STOPWORD_SEED: tuple[str, ...] = (
-    "기자",
-    "뉴스",
-    "이번",
-    "관련",
-    "통해",
-    "대한",
-    "경우",
-    "이후",
-    "당시",
-    "이날",
-    "사진",
-    "정도",
-    "발표",
-    "계획",
-    "진행",
-    "기업",
-    "시장",
-    "기술",
-    "정부",
-    "국회",
-    "기반",
-    "확대",
-    "지원",
-    "글로벌",
-    "지역",
-    "공개",
-    "강화",
-    "전략",
-    "운영",
-    "활용",
-    "최대",
-    "규모",
-    "핵심",
-    "대비",
-    "분야",
-    "추진",
-    "구축",
-    "가능",
-    "주요",
-)
-
 logger = get_logger(__name__)
-_SCHEMA_INIT_LOCK_ID = 94721531
-_SCHEMA_INIT_DONE = False
 
 
 def _jsonable(value: Any) -> Any:
@@ -82,94 +35,21 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
         conn.close()
 
 
-def initialize_database() -> None:
-    schema_path = Path(__file__).with_name("models.sql")
-    schema_sql = schema_path.read_text(encoding="utf-8")
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(schema_sql)
-    logger.info("Database schema initialized")
-    seed_initial_data()
-
-
-def safe_initialize_database() -> None:
-    global _SCHEMA_INIT_DONE
-    if _SCHEMA_INIT_DONE:
-        return
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT pg_try_advisory_lock(%s)", (_SCHEMA_INIT_LOCK_ID,))
-                acquired = bool(cursor.fetchone()[0])
-                if not acquired:
-                    logger.info("Database initialization skipped: schema lock busy")
-                    return
-                try:
-                    cursor.execute("SET lock_timeout TO '2s'")
-                    cursor.execute("SET statement_timeout TO '60s'")
-                    schema_path = Path(__file__).with_name("models.sql")
-                    schema_sql = schema_path.read_text(encoding="utf-8")
-                    cursor.execute(schema_sql)
-                finally:
-                    cursor.execute("SELECT pg_advisory_unlock(%s)", (_SCHEMA_INIT_LOCK_ID,))
-        logger.info("Database schema initialized")
-        seed_initial_data()
-        _SCHEMA_INIT_DONE = True
-    except Error as exc:
-        logger.warning("Database initialization skipped: %s", exc)
-
-
-def seed_initial_data() -> None:
-    _seed_domain_catalog_and_queries()
-    _seed_compound_nouns_from_file()
-    _seed_stopwords()
-
-
-def _seed_domain_catalog_and_queries() -> None:
-    domain_rows = [
-        (domain.id, domain.label, index + 1)
-        for index, domain in enumerate(DOMAIN_DEFINITIONS)
-    ]
-    query_rows = [
-        ("naver", domain.id, query, index + 1)
-        for domain in DOMAIN_DEFINITIONS
-        for index, query in enumerate(domain.query_keywords)
-    ]
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO domain_catalog (domain_id, label, sort_order)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (domain_id) DO UPDATE SET
-                    label = EXCLUDED.label,
-                    sort_order = EXCLUDED.sort_order,
-                    is_active = TRUE
-                """,
-                domain_rows,
-            )
-            cursor.executemany(
-                """
-                INSERT INTO query_keywords (provider, domain_id, query, sort_order)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (provider, domain_id, query) DO UPDATE SET
-                    sort_order = EXCLUDED.sort_order,
-                    is_active = TRUE,
-                    updated_at = NOW()
-                """,
-                query_rows,
-            )
-
-
 def fetch_domain_catalog() -> list[dict[str, Any]]:
     with get_connection() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                SELECT domain_id AS id, label, is_active AS available
+                SELECT
+                    domain_id AS id,
+                    label,
+                    group_id,
+                    group_label,
+                    group_sort_order,
+                    is_active AS available
                 FROM domain_catalog
                 WHERE is_active = TRUE
-                ORDER BY sort_order ASC, domain_id ASC
+                ORDER BY group_sort_order ASC, sort_order ASC, domain_id ASC
                 """
             )
             return list(cursor.fetchall())
@@ -710,42 +590,6 @@ def delete_query_keyword(*, item_id: int, actor: str) -> None:
         after=None,
         actor=actor,
     )
-
-
-def _seed_compound_nouns_from_file() -> None:
-    dict_path = Path(__file__).resolve().parents[1] / "core" / "korean_user_dict.txt"
-    if not dict_path.exists():
-        return
-    words = [
-        line.strip()
-        for line in dict_path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
-    if not words:
-        return
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO compound_noun_dict (word, domain, source)
-                VALUES (%s, 'all', 'manual')
-                ON CONFLICT (word, domain) DO NOTHING
-                """,
-                [(word,) for word in words],
-            )
-
-
-def _seed_stopwords() -> None:
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO stopword_dict (word, domain, language)
-                VALUES (%s, 'all', 'ko')
-                ON CONFLICT (word, domain, language) DO NOTHING
-                """,
-                [(word,) for word in _STOPWORD_SEED],
-            )
 
 
 def upsert_from_staging_news_raw() -> None:

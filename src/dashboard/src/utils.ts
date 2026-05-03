@@ -1,18 +1,22 @@
 import type {
   DashboardOverviewResponse,
+  DomainOption,
   KeywordSummary,
   OverviewCachePayload,
   SourceId,
   TrendBucketId,
 } from "./data";
 import {
-  DOMAIN_COLORS,
+  DOMAIN_ALL_COLOR,
+  DOMAIN_COLOR_PALETTE,
   MIN_TREND_WINDOW_MS,
   MAX_TREND_WINDOW_MS,
   TREND_BUCKET_OPTIONS,
   TREND_FETCH_OVERSCAN_BUCKETS,
 } from "./constants";
 import { fmtAgo } from "./ui";
+
+export type DomainColorMap = Record<string, string>;
 
 export function fmtKST(ms: number, withSeconds = false): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -24,13 +28,24 @@ export function fmtKST(ms: number, withSeconds = false): string {
   return `${date} ${time} KST`;
 }
 
-export function getDomainColor(domainId: string, available: boolean): string {
-  if (!available) return "var(--text-4)";
-  return DOMAIN_COLORS[domainId] ?? "var(--accent)";
+export function buildDomainColorMap(domains: Pick<DomainOption, "id">[]): DomainColorMap {
+  const map: DomainColorMap = { all: DOMAIN_ALL_COLOR };
+  let idx = 0;
+  for (const d of domains) {
+    if (!d?.id || d.id === "all" || map[d.id]) continue;
+    map[d.id] = DOMAIN_COLOR_PALETTE[idx % DOMAIN_COLOR_PALETTE.length];
+    idx += 1;
+  }
+  return map;
 }
 
-export function getTopKeywordBarColor(domainId: string): string {
-  return DOMAIN_COLORS[domainId] ?? DOMAIN_COLORS.all;
+export function getDomainColor(domainId: string, available: boolean, colorMap: DomainColorMap): string {
+  if (!available) return "var(--text-4)";
+  return colorMap[domainId] ?? "var(--accent)";
+}
+
+export function getTopKeywordBarColor(domainId: string, colorMap: DomainColorMap): string {
+  return colorMap[domainId] ?? colorMap.all ?? DOMAIN_ALL_COLOR;
 }
 
 export function rankKeywords(items: KeywordSummary[], sortBy: "mentions" | "growth"): KeywordSummary[] {
@@ -60,15 +75,16 @@ export function getTrendbucketMinutes(bucketId: TrendBucketId): number {
 }
 
 export function clampTrendWindow(startMs: number, endMs: number, nowMs: number): [number, number] {
-  let start = startMs;
-  let end = endMs;
-  const duration = Math.min(MAX_TREND_WINDOW_MS, Math.max(MIN_TREND_WINDOW_MS, end - start));
-  if (end > nowMs) {
-    end = nowMs;
-    start = end - duration;
-  }
-  if (end - start < duration) {
-    start = end - duration;
+  // end 는 미래일 수 없다.
+  let end = Math.min(endMs, nowMs);
+  let start = Math.min(startMs, end);
+
+  // span 을 [MIN, MAX] 로 양방향 제한. (이전 구현은 MAX 초과 시 줄이지 못했음)
+  const span = end - start;
+  if (span > MAX_TREND_WINDOW_MS) {
+    start = end - MAX_TREND_WINDOW_MS;
+  } else if (span < MIN_TREND_WINDOW_MS) {
+    start = end - MIN_TREND_WINDOW_MS;
   }
   return [start, end];
 }
@@ -164,7 +180,7 @@ export function deriveOverviewFromCache(
   const derivedKeywords: KeywordSummary[] = [];
   const spikeEvents: DashboardOverviewResponse["spikes"]["events"] = [];
   const spikeKeywordSet = new Set<string>();
-  const defaultEventSource = source === "global" ? "global" : "naver";
+  const defaultEventSource = source === "all" ? "naver" : source;
   const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucketMin * 60_000)));
 
   for (const keyword of cache.candidateKeywords) {
