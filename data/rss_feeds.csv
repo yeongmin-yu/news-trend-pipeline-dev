@@ -3,8 +3,7 @@ publisher,feed_name,domain,url,is_active
 연합뉴스,경제,economy,https://www.yna.co.kr/rss/economy.xml,true
 연합뉴스,지역·사회,society,https://www.yna.co.kr/rss/society.xml,true
 연합뉴스,국제,global,https://www.yna.co.kr/rss/international.xml,true
-연합뉴스,IT·과학,tech_science,https://www.yna.co.kr/rss/science.xml,true
 연합뉴스,문화,culture_life,https://www.yna.co.kr/rss/culture.xml,true
-연합뉴스,생활,culture_life,https://www.yna.co.kr/rss/lifestyle.xml,true
 연합뉴스,연예,culture_life,https://www.yna.co.kr/rss/entertainment.xml,true
 연합뉴스,스포츠,sports,https://www.yna.co.kr/rss/sports.xml,true
+연합뉴스,산업,industry,https://www.yna.co.kr/rss/industry.xml,true
