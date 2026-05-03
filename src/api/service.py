@@ -99,25 +99,39 @@ def _provider_filter(source: str) -> str | None:
 
 def _publisher_source_options() -> list[dict[str, str]]:
     try:
-        with open(settings.rss_feed_catalog_path, encoding="utf-8-sig", newline="") as file:
-            rows = list(csv.DictReader(file))
-    except OSError:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT DISTINCT provider
+                    FROM news_raw
+                    WHERE provider IS NOT NULL
+                      AND provider <> 'naver'
+                    ORDER BY provider
+                """)
+                rows = cursor.fetchall()
+    except Exception:
         return []
 
-    publishers = sorted(
-        {
-            (row.get("publisher") or "").strip()
-            for row in rows
-            if (row.get("is_active") or "").strip().lower() in {"1", "true", "yes", "y"}
-            and (row.get("publisher") or "").strip()
-        }
-    )
-    palette = ["#f59e0b", "#60a5fa", "#f472b6", "#22c55e", "#c084fc", "#38bdf8", "#fb7185", "#94a3b8"]
-    return [
-        {"id": publisher, "label": publisher, "color": palette[index % len(palette)]}
-        for index, publisher in enumerate(publishers)
+    existing_ids = {item["id"] for item in SOURCES}
+
+    palette = [
+        "#f59e0b", "#60a5fa", "#f472b6", "#22c55e",
+        "#c084fc", "#38bdf8", "#fb7185", "#94a3b8"
     ]
 
+    options = []
+    for i, row in enumerate(rows):
+        provider = str(row[0]).strip()
+        if not provider or provider in existing_ids:
+            continue
+
+        options.append({
+            "id": provider,
+            "label": provider,
+            "color": palette[i % len(palette)]
+        })
+
+    return options
 
 def _domain_filter(domain: str) -> list[str]:
     normalized = (domain or "all").strip() or "all"
