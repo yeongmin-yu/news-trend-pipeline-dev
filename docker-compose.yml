@@ -278,7 +278,7 @@ services:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores 1 --memory 2G --webui-port 8081 spark://spark-master:7077"
+      --cores 2 --memory 2G --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8081:8081"
     volumes:
@@ -294,7 +294,7 @@ services:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores 1 --memory 2G --webui-port 8081 spark://spark-master:7077"
+      --cores 2 --memory 2G --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8082:8081"
     volumes:
@@ -338,6 +338,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SPARK_MASTER: spark://spark-master:7077
       SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+      SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
       SPARK_DRIVER_HOST: ${SPARK_DRIVER_HOST:-spark-streaming}
       SPARK_DRIVER_BIND_ADDRESS: ${SPARK_DRIVER_BIND_ADDRESS:-0.0.0.0}
       SPARK_DRIVER_PORT: ${SPARK_DRIVER_PORT:-7078}

@@ -21,13 +21,6 @@
 동아일보,문화연예,culture_life,https://rss.donga.com/culture.xml,true,https://rss.donga.com/,동아일보 공식 RSS
 동아일보,스포츠,sports,https://rss.donga.com/sports.xml,true,https://rss.donga.com/,동아일보 공식 RSS
 동아일보,사설칼럼,politics,https://rss.donga.com/editorials.xml,true,https://rss.donga.com/,동아일보 공식 RSS
-한겨레,전체,politics,https://www.hani.co.kr/rss/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,정치,politics,https://www.hani.co.kr/rss/politics/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,경제,economy,https://www.hani.co.kr/rss/economy/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,사회,society,https://www.hani.co.kr/rss/society/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,국제,society,https://www.hani.co.kr/rss/international/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,문화,culture_life,https://www.hani.co.kr/rss/culture/,true,https://www.hani.co.kr/rss/,한겨레 RSS
-한겨레,스포츠,sports,https://www.hani.co.kr/rss/sports/,true,https://www.hani.co.kr/rss/,한겨레 RSS
 경향신문,전체,politics,https://www.khan.co.kr/rss/rssdata/total_news.xml,true,https://www.khan.co.kr/help/help_rss.html,경향신문 공식 RSS
 경향신문,정치,politics,https://www.khan.co.kr/rss/rssdata/politic_news.xml,true,https://www.khan.co.kr/help/help_rss.html,경향신문 공식 RSS
 경향신문,경제,economy,https://www.khan.co.kr/rss/rssdata/economy_news.xml,true,https://www.khan.co.kr/help/help_rss.html,경향신문 공식 RSS

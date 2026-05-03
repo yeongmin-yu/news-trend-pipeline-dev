@@ -101,7 +101,7 @@ class Settings:
         os.getenv("SPARK_CHECKPOINT_DIR"),
         BASE_DIR / "runtime" / "checkpoints",
     )
-    spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "2")
+    spark_shuffle_partitions: str = os.getenv("SPARK_SHUFFLE_PARTITIONS", "8")
     spark_starting_offsets: str = os.getenv("SPARK_STARTING_OFFSETS", "latest")
     spark_driver_host: str = os.getenv("SPARK_DRIVER_HOST", "")
     spark_driver_bind_address: str = os.getenv("SPARK_DRIVER_BIND_ADDRESS", "0.0.0.0")
@@ -113,7 +113,7 @@ class Settings:
     keyword_window_duration: str = os.getenv("KEYWORD_WINDOW_DURATION", "10 minutes")
     # 기사당 상위 N 키워드로 페어를 만든다. C(N,2) 로 폭증하므로 5(=10pair) 가 기본.
     # 8 로 두면 기사당 28pair 라 keyword_relations upsert 가 분 단위로 늘어남.
-    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "5"))
+    relation_keyword_limit: int = int(os.getenv("RELATION_KEYWORD_LIMIT", "4"))
 
     # API 단에서 허용하는 시간 범위 상한 (일수). 프론트와 동일하게 1개월(31일) 기본.
     # keyword_relations / keyword_trends 가 월별 파티션이라 그 이상은 다중 파티션

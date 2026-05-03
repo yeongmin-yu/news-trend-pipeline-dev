@@ -30,7 +30,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--bootstrap-servers",
-        default=settings.kafka_bootstrap_servers,
+        default='localhost:9092',
         help="Kafka 부트스트랩 서버.",
     )
     parser.add_argument(
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         consumer = KafkaConsumer(
             args.topic,
-            bootstrap_servers=args.bootstrap_servers,
+            bootstrap_servers="args.bootstrap_servers",
             auto_offset_reset="earliest",
             enable_auto_commit=False,
             consumer_timeout_ms=10000,
