@@ -17,6 +17,7 @@ import requests
 
 from core.config import settings
 from core.logger import get_logger
+from core.schemas import NormalizedNewsArticle
 
 
 logger = get_logger(__name__)
@@ -530,6 +531,12 @@ class RssNewsClient(BaseNewsClient):
         return [element for element in root.iter() if cls._local_name(element.tag) == "entry"]
 
     def _normalize_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        publisher = (feed.get("publisher") or "").strip().lower()
+        if publisher in {"연합뉴스", "yna", "yonhap", "yonhapnews"} or "yna.co.kr" in (feed.get("url") or ""):
+            return self._normalize_yonhap_entry(entry, feed)
+        return self._normalize_generic_entry(entry, feed)
+
+    def _normalize_generic_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
         title = strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)"
         summary = strip_html_tags(self._first_text(entry, ("description", "summary", "content", "encoded")))
         url = self._first_link(entry)
@@ -537,17 +544,59 @@ class RssNewsClient(BaseNewsClient):
             self._first_text(entry, ("pubDate", "published", "updated", "date"))
         )
         publisher = (feed.get("publisher") or "").strip() or urlparse(url).netloc
-        return {
-            "provider": publisher,
-            "domain": (feed.get("domain") or "general").strip(),
-            "source": publisher,
+        return self._to_normalized_article(
+            provider=publisher,
+            domain=(feed.get("domain") or "general").strip(),
+            source=publisher,
+            title=title,
+            summary=summary,
+            url=url,
+            published_at=published_at,
+            query=(feed.get("feed_name") or "").strip(),
+        )
+
+    def _normalize_yonhap_entry(self, entry: ET.Element, feed: Mapping[str, str]) -> dict[str, Any]:
+        url = self._first_link(entry)
+        publisher = (feed.get("publisher") or "연합뉴스").strip() or "연합뉴스"
+        return self._to_normalized_article(
+            provider=publisher,
+            domain=(feed.get("domain") or "politics").strip(),
+            source=publisher,
+            title=strip_html_tags(self._first_text(entry, ("title",))) or "(untitled)",
+            summary=strip_html_tags(
+                self._first_text(entry, ("description", "content", "encoded", "summary"))
+            ),
+            url=url,
+            published_at=self._normalize_pub_date(
+                self._first_text(entry, ("pubDate", "date", "published", "updated"))
+            ),
+            query=(feed.get("feed_name") or "yonhap_rss").strip(),
+        )
+
+    @staticmethod
+    def _to_normalized_article(
+        *,
+        provider: str,
+        domain: str,
+        source: str,
+        title: str,
+        summary: str | None,
+        url: str,
+        published_at: str | None,
+        query: str,
+    ) -> dict[str, Any]:
+        payload = {
+            "provider": provider,
+            "domain": domain,
+            "source": source,
             "title": title,
             "summary": summary,
             "url": url,
             "published_at": published_at,
             "ingested_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "_query": (feed.get("feed_name") or "").strip(),
+            "_query": query,
         }
+        return NormalizedNewsArticle.from_dict(payload).to_dict(include_internal=True)
 
     @classmethod
     def _first_text(cls, entry: ET.Element, names: Iterable[str]) -> str | None:
