@@ -47,13 +47,19 @@ def extract_tokens(text: str | None, domain: str | None = None) -> list[str]:
     return tokenize(text, domain or "all")
 
 
+def _with_pg_batch_rewrite(jdbc_url: str) -> str:
+    if "reWriteBatchedInserts=" in jdbc_url:
+        return jdbc_url
+    separator = "&" if "?" in jdbc_url else "?"
+    return f"{jdbc_url}{separator}reWriteBatchedInserts=true"
+
+
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
-    # batchsize 는 Spark JDBC writer 옵션, reWriteBatchedInserts 는 PG JDBC URL/property 옵션.
-    # 둘 다 있어야 multi-VALUES INSERT 로 묶여 전송된다.
-    (
-        df.write.option("batchsize", "5000")
-        .option("reWriteBatchedInserts", "true")
-        .jdbc(url=jdbc_url, table=table, mode="append", properties=jdbc_props)
+    df.write.jdbc(
+        url=_with_pg_batch_rewrite(jdbc_url),
+        table=table,
+        mode="append",
+        properties={**jdbc_props, "batchsize": "5000"},
     )
 
 
@@ -109,8 +115,6 @@ def run_streaming_job() -> None:
         "user": settings.postgres_user,
         "password": settings.postgres_password,
         "driver": "org.postgresql.Driver",
-        # PG JDBC: 여러 INSERT 를 multi-VALUES 로 묶어 round-trip 을 줄인다.
-        "reWriteBatchedInserts": "true",
     }
 
     raw_stream = (
