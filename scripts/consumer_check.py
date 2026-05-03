@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         consumer = KafkaConsumer(
             args.topic,
-            bootstrap_servers="args.bootstrap_servers",
+            bootstrap_servers=args.bootstrap_servers,
             auto_offset_reset="earliest",
             enable_auto_commit=False,
             consumer_timeout_ms=10000,
