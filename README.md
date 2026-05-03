@@ -109,10 +109,11 @@ flowchart LR
 ```text
 news-trend-pipeline-v2/
 ├─ airflow/
-│  └─ dags/                  # news_ingest_dag, auto_replay_dag, compound_noun_extraction, keyword_event_detection
+│  └─ dags/                  # news_ingest_dag, auto_replay_dag, compound_noun_extraction,
+│                             # keyword_event_detection, stopword_recommender
 ├─ docs/
 │  ├─ design/                # 최종 구현 기준 설계 문서
-│  └─ develop/               # 설계 변경 이력 / 운영 메모
+│  └─ develop/               # 설계 변경 이력 / 운영 메모 / Q5_SERVING.md
 ├─ infra/                    # Airflow, Spark, API Dockerfile과 설정
 ├─ runtime/
 │  ├─ checkpoints/           # Spark checkpoint
@@ -124,12 +125,29 @@ news-trend-pipeline-v2/
 │  └─ run_processing.py
 ├─ src/
 │  ├─ analytics/             # compound extractor, stopword recommender, event detector
-│  ├─ api/                   # FastAPI app, schema, service
+│  ├─ api/
+│  │  ├─ app.py              # FastAPI 앱 생성, CORS, 라우터 등록
+│  │  ├─ schemas.py          # Pydantic 요청/응답 모델
+│  │  ├─ service.py          # services/ 하위 모듈 파사드 (하위 호환)
+│  │  └─ routers/            # 엔드포인트별 APIRouter 모듈
+│  │     ├─ meta.py          # GET /health, GET /api/v1/meta/filters
+│  │     ├─ dashboard.py     # GET /api/v1/dashboard/* (10개 엔드포인트)
+│  │     ├─ dictionary.py    # /api/v1/dictionary/* 복합명사·불용어 관리 (14개)
+│  │     └─ admin.py         # /api/v1/admin/* 검색어 관리·트리거 (7개)
+│  ├─ services/              # 비즈니스 로직 레이어
+│  │  ├─ _utils.py           # 공통 상수·에러 클래스·범위 계산 유틸
+│  │  ├─ dashboard.py        # 대시보드 집계·조회 로직
+│  │  ├─ dictionary.py       # 복합명사·불용어 사전 관리 로직
+│  │  └─ admin.py            # 검색어·메트릭·DAG 트리거 로직
 │  ├─ core/                  # config, schema, domain definition
 │  ├─ dashboard/             # React + Vite dashboard
 │  ├─ ingestion/             # API client, producer, replay
 │  ├─ processing/            # Spark job, preprocessing
-│  └─ storage/               # models.sql, db.py
+│  └─ storage/               # DB 접근 레이어
+│     ├─ db.py               # psycopg2 연결·fetch_domain_catalog·하위 모듈 파사드
+│     ├─ dict_db.py          # 복합명사·불용어 사전 관련 쿼리
+│     ├─ news_db.py          # 뉴스·키워드·트렌드·이벤트 관련 쿼리
+│     └─ admin_db.py         # 검색어·수집 메트릭 관련 쿼리
 ├─ tests/
 ├─ docker-compose.yml
 ├─ README.md
@@ -223,24 +241,43 @@ python -m ingestion.replay
 
 ## 제공 API 범위
 
-현재 FastAPI는 다음 범위를 제공합니다.
+현재 FastAPI는 총 31개 엔드포인트를 제공합니다.
 
-- 대시보드 필터, KPI, 상위 키워드, 트렌드, 급상승 이벤트, 연관어, 기사 목록
-- 시스템 상태 조회
-- 사전 조회/등록/삭제/도메인 변경
-- 복합명사 후보 승인/반려
-- 불용어 후보 승인/반려
-- 검색어 관리와 수집 메트릭 조회
-- 관리자용 추천/자동승인 트리거
-
-기본 health check:
-
-```text
-GET /health
-GET /api/v1/meta/filters
-GET /api/v1/dashboard/overview-window
-GET /api/v1/dashboard/system
-```
+| 그룹 | 엔드포인트 | 설명 |
+| --- | --- | --- |
+| **Meta** | `GET /health` | 헬스체크 |
+| | `GET /api/v1/meta/filters` | 대시보드 필터 옵션(도메인·기간·정렬) |
+| **Dashboard** | `GET /api/v1/dashboard/kpis` | KPI 집계 (기사 수·키워드 수·이벤트 수 등) |
+| | `GET /api/v1/dashboard/keywords` | 상위 키워드 목록 |
+| | `GET /api/v1/dashboard/overview-window` | 시간 창 기반 개요 집계 |
+| | `GET /api/v1/dashboard/trend` | 키워드 트렌드 시계열 |
+| | `GET /api/v1/dashboard/trend-window` | 시간 창 기반 트렌드 시계열 |
+| | `GET /api/v1/dashboard/spikes` | 급상승 이벤트 목록 |
+| | `GET /api/v1/dashboard/related` | 연관 키워드 목록 |
+| | `GET /api/v1/dashboard/theme-distribution` | 도메인별 테마 분포 |
+| | `GET /api/v1/dashboard/articles` | 기사 목록 |
+| | `GET /api/v1/dashboard/system` | 시스템 상태 |
+| **Dictionary** | `GET /api/v1/dictionary/compound-nouns` | 복합명사 목록 |
+| | `POST /api/v1/dictionary/compound-nouns` | 복합명사 등록 |
+| | `PATCH /api/v1/dictionary/compound-nouns/{id}/domain` | 복합명사 도메인 변경 |
+| | `DELETE /api/v1/dictionary/compound-nouns/{id}` | 복합명사 삭제 |
+| | `GET /api/v1/dictionary/compound-candidates` | 복합명사 후보 목록 |
+| | `POST /api/v1/dictionary/compound-candidates/{id}/review` | 복합명사 후보 승인/반려 |
+| | `GET /api/v1/dictionary/stopwords` | 불용어 목록 |
+| | `POST /api/v1/dictionary/stopwords` | 불용어 등록 |
+| | `PATCH /api/v1/dictionary/stopwords/{id}/domain` | 불용어 도메인 변경 |
+| | `DELETE /api/v1/dictionary/stopwords/{id}` | 불용어 삭제 |
+| | `GET /api/v1/dictionary/stopword-candidates` | 불용어 후보 목록 |
+| | `POST /api/v1/dictionary/stopword-candidates/{id}/approve` | 불용어 후보 승인 |
+| | `POST /api/v1/dictionary/stopword-candidates/{id}/reject` | 불용어 후보 반려 |
+| **Admin** | `GET /api/v1/admin/query-keywords` | 검색어 목록 |
+| | `POST /api/v1/admin/query-keywords` | 검색어 등록 |
+| | `PUT /api/v1/admin/query-keywords/{id}` | 검색어 수정 |
+| | `DELETE /api/v1/admin/query-keywords/{id}` | 검색어 삭제 |
+| | `GET /api/v1/admin/collection-metrics` | 수집 메트릭 조회 |
+| | `POST /api/v1/admin/run-compound-auto-approve` | 복합명사 자동 승인 트리거 |
+| | `POST /api/v1/admin/run-stopword-recommender` | 불용어 추천 트리거 |
+| | `POST /api/v1/admin/compound-keyword-backfill` | 키워드 백필 DAG 트리거 |
 
 ## 문서
 
