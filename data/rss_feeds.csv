@@ -1,2 +1,10 @@
 publisher,feed_name,domain,url,is_active
-연합뉴스,전체,politics,https://www.yna.co.kr/rss/politics.xml,true
+연합뉴스,politics,정치,https://www.yna.co.kr/rss/politics.xml,true
+연합뉴스,economy,경제,https://www.yna.co.kr/rss/economy.xml,true
+연합뉴스,society,지역·사회,https://www.yna.co.kr/rss/society.xml,true
+연합뉴스,global,국제,https://www.yna.co.kr/rss/international.xml,true
+연합뉴스,tech_science,IT·과학,https://www.yna.co.kr/rss/science.xml,true
+연합뉴스,culture_life,문화,https://www.yna.co.kr/rss/culture.xml,true
+연합뉴스,culture_life,생활,https://www.yna.co.kr/rss/lifestyle.xml,true
+연합뉴스,culture_life,연예,https://www.yna.co.kr/rss/entertainment.xml,true
+연합뉴스,sports,스포츠,https://www.yna.co.kr/rss/sports.xml,true

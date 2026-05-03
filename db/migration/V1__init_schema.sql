@@ -415,10 +415,11 @@ INSERT INTO domain_catalog (domain_id, label, group_id, group_label, group_sort_
 VALUES
     ('politics',     '정치·정책',         'politics', '정치·정책',         1, 1, TRUE),
     ('economy',      '경제·금융·부동산',  'economy',  '경제·금융·부동산',  2, 1, TRUE),
-    ('society',      '국제·지역·사회',    'society',  '국제·지역·사회',    3, 1, TRUE),
+    ('society',      '지역·사회',    'society',  '지역·사회',    3, 1, TRUE),
     ('tech_science', 'IT·과학·테크',      'tech',     'IT·과학·테크',      4, 1, TRUE),
     ('culture_life', '엔터·문화·생활',    'culture',  '엔터·문화·생활',    5, 1, TRUE),
-    ('sports',       '스포츠',            'sports',   '스포츠',            6, 1, TRUE)
+    ('sports',       '스포츠',            'sports',   '스포츠',            6, 1, TRUE),
+    ('global', '국제·세계', 'news', '뉴스', 7, 1, TRUE),
 ON CONFLICT (domain_id) DO NOTHING;
 
 INSERT INTO query_keywords (provider, domain_id, query, sort_order, is_active) VALUES
