@@ -59,13 +59,8 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["PostgreSQL<br/>news_raw / keyword_trends / keyword_events"] --> B["Inference Service"]
-    B --> C["Model"]
-    C --> D["Inference Result"]
-    D --> E["PostgreSQL<br/>model_predictions"]
-
-    E --> F["FastAPI<br/>Serving API"]
-    A --> F
+    A["PostgreSQL<br/>news_raw / keyword_trends / keyword_events"] --> F["FastAPI<br/>Serving API"]
+    
     F --> G["Dashboard / Client"]
 ```
 
