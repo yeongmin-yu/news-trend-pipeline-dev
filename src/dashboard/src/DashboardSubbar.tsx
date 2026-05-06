@@ -39,14 +39,16 @@ export function DashboardSubbar({
   return (
     <div className="subbar">
       <span className="subbar-label">SOURCE</span>
-      <div className="field source-select">
-        <select value={source} onChange={(event) => setSource(event.target.value)}>
-          {activeFilters.sources.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.label}
-            </option>
-          ))}
-        </select>
+      <div className="source-buttons">
+        {activeFilters.sources.map((item) => (
+          <button
+            key={item.id}
+            className={source === item.id ? "is-active" : ""}
+            onClick={() => setSource(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
       <span className="divider" />
       <span className="subbar-label" title="조회 범위는 최대 30일로 제한됩니다.">DATE</span>
