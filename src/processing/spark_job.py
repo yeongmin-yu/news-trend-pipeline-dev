@@ -55,11 +55,15 @@ def _with_pg_batch_rewrite(jdbc_url: str) -> str:
 
 
 def _jdbc_write(df, table: str, jdbc_url: str, jdbc_props: dict) -> None:
-    df.write.jdbc(
+    writer_df = df
+    if settings.spark_jdbc_num_partitions > 0:
+        writer_df = df.repartition(settings.spark_jdbc_num_partitions)
+
+    writer_df.write.jdbc(
         url=_with_pg_batch_rewrite(jdbc_url),
         table=table,
         mode="append",
-        properties={**jdbc_props, "batchsize": "5000"},
+        properties={**jdbc_props, "batchsize": str(settings.spark_jdbc_batch_size)},
     )
 
 
@@ -123,7 +127,7 @@ def run_streaming_job() -> None:
         )
     raw_stream = stream_reader.load()
 
-    parsed = (
+    parsed_base = (
         raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
         .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
         .select("data.*")
@@ -146,9 +150,11 @@ def run_streaming_job() -> None:
                 """
             ),
         )
-        .withColumn("tokens", tokenize_udf(col("article_text"), col("domain")))
         .dropna(subset=["event_time", "url"])
     )
+    if settings.spark_preprocess_partitions > 0:
+        parsed_base = parsed_base.repartition(settings.spark_preprocess_partitions)
+    parsed = parsed_base.withColumn("tokens", tokenize_udf(col("article_text"), col("domain")))
 
     def write_to_sinks(batch_df, batch_id: int) -> None:
         if batch_df.isEmpty():

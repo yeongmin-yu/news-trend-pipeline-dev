@@ -616,10 +616,17 @@ class RssNewsClient(BaseNewsClient):
     def _normalize_pub_date(value: str | None) -> str | None:
         if not value:
             return None
+        candidate = value.strip()
+        # parsedate_to_datetime 은 RFC 2822 형식의 `+0900` 만 인식하고 ISO 식 `+09:00` 은
+        # 조용히 timezone 을 버린다 (매일경제 RSS 가 이 패턴). 콜론을 미리 제거해 둔다.
+        candidate = re.sub(r"([+-]\d{2}):(\d{2})$", r"\1\2", candidate)
         try:
-            parsed = parsedate_to_datetime(value)
+            parsed = parsedate_to_datetime(candidate)
         except (TypeError, ValueError):
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            try:
+                parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            except ValueError:
+                return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()

@@ -37,3 +37,4 @@ src/dashboard/*.tsbuildinfo
 .claude/worktrees/
 .claude/*
 src/dashboard/.claude/*
+runtime/
