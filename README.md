@@ -239,7 +239,8 @@ docker compose up --build -d
 6. FastAPI와 React Dashboard 시작
 
 ### 3. 실행 상태 확인
-
+각 컨테이너 로그
+ex. 
 ```powershell
 docker compose ps
 docker compose logs --no-log-prefix --tail=200 spark-streaming
