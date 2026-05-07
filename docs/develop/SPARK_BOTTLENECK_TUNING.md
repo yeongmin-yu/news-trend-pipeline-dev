@@ -117,7 +117,7 @@ SPARK_MAX_OFFSETS_PER_TRIGGER=150
 토큰화 UDF를 실행하기 전에 repartition을 추가했다.
 
 ```env
-SPARK_PREPROCESS_PARTITIONS=8
+SPARK_PREPROCESS_PARTITIONS=4
 ```
 
 의미:
@@ -177,7 +177,7 @@ SPARK_WORKER_CORES=1
 SPARK_WORKER_MEMORY=2G
 SPARK_SHUFFLE_PARTITIONS=8
 SPARK_MAX_OFFSETS_PER_TRIGGER=150
-SPARK_PREPROCESS_PARTITIONS=8
+SPARK_PREPROCESS_PARTITIONS=4
 SPARK_JDBC_BATCH_SIZE=2000
 SPARK_JDBC_NUM_PARTITIONS=2
 RELATION_KEYWORD_LIMIT=2
@@ -259,7 +259,7 @@ SPARK_JDBC_NUM_PARTITIONS=1
 
 ```env
 SPARK_MAX_OFFSETS_PER_TRIGGER=300
-SPARK_PREPROCESS_PARTITIONS=8
+SPARK_PREPROCESS_PARTITIONS=4
 SPARK_JDBC_BATCH_SIZE=3000
 SPARK_JDBC_NUM_PARTITIONS=2
 ```
@@ -277,3 +277,183 @@ SPARK_JDBC_NUM_PARTITIONS=2
 3. PostgreSQL write도 한 번에 너무 크게 보내지 않는다.
 4. 문제가 있는 checkpoint는 백업하고 새 checkpoint로 재시작한다.
 5. 로컬 환경에서는 최대 처리량보다 안정적인 지속 처리를 우선한다.
+
+## 10. 추가 진단: batch 603 장기 실행
+
+2026-05-07에 Spark job이 오래 끝나지 않는 상황을 추가로 확인했다.
+
+현상:
+
+- Spark UI 기준 `batch = 603` job이 오랫동안 `RUNNING` 상태로 남아 있었다.
+- 처음 확인했을 때 executor 목록에는 driver만 있고 worker executor가 없었다.
+- Spark master 로그에는 worker heartbeat timeout과 executor lost가 기록되어 있었다.
+- 이후 streaming 컨테이너를 재시작하면 executor는 다시 붙었지만, 같은 batch 603에서 Python worker crash가 반복됐다.
+
+확인된 로그 패턴:
+
+```text
+Lost executor ... Remote RPC client disassociated
+Python worker exited unexpectedly (crashed)
+java.io.EOFException
+java.net.SocketException: Connection reset
+```
+
+batch 603의 Kafka offset 범위는 크지 않았다.
+
+```text
+partition 0: 128813 -> 128843  (30 messages)
+partition 1: 127640 -> 127668  (28 messages)
+total: 약 58 messages
+```
+
+즉 이 문제는 큰 backlog 때문이라기보다, 작은 batch 안에서 Spark Python UDF 실행이 불안정해진 문제에 가깝다.
+
+같은 58건을 Spark 이미지 안에서 단독 Python script로 `tokenize()`에 넣었을 때는 모두 성공했다. 따라서 특정 기사 하나가 tokenizer를 즉시 죽인다고 보기는 어렵다. 더 가능성 높은 원인은 Spark executor 안에서 Python worker가 반복 실행되는 과정, Kiwi 사전 로딩, Python worker 재시도, Docker Desktop 자원 압박이 겹친 것이다.
+
+추가로 코드 구조상 비효율도 있었다.
+
+기존 구조:
+
+```text
+Kafka read
+-> parse
+-> tokens 컬럼 생성
+-> foreachBatch
+   -> stg_news_raw 저장
+   -> keyword/trend/relation 저장
+```
+
+이 구조에서는 원문 저장(`stg_news_raw`)에는 토큰이 필요 없는데도, Spark lineage 상 토큰화 UDF가 함께 끌려올 수 있었다.
+
+개선 구조:
+
+```text
+Kafka read
+-> parse
+-> foreachBatch
+   -> stg_news_raw 저장
+   -> 그 다음에만 tokens 컬럼 생성
+   -> article_keywords persist
+   -> keyword/trend/relation 저장
+   -> article_keywords unpersist
+```
+
+수정 후 확인된 효과:
+
+```text
+write_stg_news_raw before: 104.34s
+write_stg_news_raw after :   2.83s
+```
+
+즉 원문 저장 단계가 토큰화 lineage에 끌려 느려지는 문제는 개선됐다. 다만 `write_stg_keywords` 단계에서 Python worker crash가 계속 발생했으므로, batch 603 자체는 여전히 위험한 checkpoint batch로 남아 있다.
+
+현재 판단:
+
+- `write_stg_news_raw` 병목은 코드 구조 개선으로 완화됐다.
+- 남은 병목은 Spark Python UDF 토큰화 실행 안정성이다.
+- batch 603을 계속 재시도하면 Docker Desktop이 다시 500 응답을 낼 수 있다.
+- 실시간 처리 복구가 우선이면 checkpoint를 백업하고 새 checkpoint로 시작하는 것이 현실적이다.
+
+## 11. Checkpoint 설명
+
+Spark Structured Streaming의 checkpoint는 단순한 임시 파일이 아니다. 스트리밍 잡이 어디까지 처리했는지 기억하는 복구 상태다.
+
+이 프로젝트의 checkpoint 위치:
+
+```env
+SPARK_CHECKPOINT_DIR=./runtime/checkpoints
+```
+
+checkpoint 안에는 주로 다음 정보가 들어간다.
+
+| 디렉터리/파일 | 의미 |
+|---|---|
+| `offsets/` | batch별 Kafka offset. 각 batch가 어디까지 읽었는지 기록 |
+| `commits/` | batch 처리 완료 여부 |
+| `sources/` | Kafka source 관련 metadata |
+| `metadata` | streaming query 식별 정보 |
+
+예를 들어 batch 603의 offset이 다음과 같다면:
+
+```text
+{"news_topic":{"1":127668,"0":128843}}
+```
+
+Spark는 batch 603에서 Kafka `news_topic`의 partition 1은 offset 127668까지, partition 0은 offset 128843까지 읽는 작업을 하려 했다는 뜻이다.
+
+중요한 점은 다음이다.
+
+> batch가 실패하면 Spark는 다음 재시작 때 같은 batch를 다시 시도한다.
+
+그래서 batch 603이 Python worker crash로 끝나지 못하면, streaming 컨테이너를 재시작해도 Spark는 batch 604로 넘어가지 않고 batch 603을 다시 실행한다. 이 동작은 데이터 유실을 막기 위한 정상적인 복구 방식이다.
+
+하지만 로컬 개발 환경에서는 이 특성이 문제를 만들 수 있다.
+
+- 실패하는 batch가 계속 재시도됨
+- 같은 Python worker crash가 반복됨
+- executor가 lost 됨
+- Docker Desktop 전체가 다시 불안정해짐
+
+이럴 때 checkpoint를 백업하고 새 checkpoint로 시작하면 Spark는 이전 실패 batch를 더 이상 재시도하지 않는다. 대신 그 batch의 Kafka 메시지는 Spark 처리 관점에서는 건너뛴다.
+
+따라서 checkpoint 초기화는 데이터 정합성과 운영 복구 사이의 선택이다.
+
+## 12. 파티셔닝을 바꾸면 checkpoint를 리셋해야 하나?
+
+항상 리셋해야 하는 것은 아니다.
+
+하지만 다음 경우에는 checkpoint 백업 후 새로 시작하는 것이 안전하다.
+
+1. 기존 checkpoint가 실패 batch를 계속 재시도하는 경우
+2. streaming query의 구조를 크게 바꾼 경우
+3. source, sink, schema, stateful 연산 구조가 바뀐 경우
+4. Spark가 checkpoint 안의 과거 설정을 계속 적용하는 경우
+5. `spark.sql.shuffle.partitions` 같은 실행 설정 변경이 실제 실행에 반영되지 않는 경우
+
+이번 프로젝트에서 실제로 관찰한 현상:
+
+```text
+WARN OffsetSeqMetadata:
+Updating the value of conf 'spark.sql.shuffle.partitions'
+in current session from '8' to '2'.
+```
+
+이 메시지는 새 실행 설정은 8인데, checkpoint에 남아 있던 이전 batch metadata 때문에 Spark가 현재 세션 값을 다시 2로 맞췄다는 뜻이다.
+
+즉 `.env`나 `docker-compose.yml`에서 partition 값을 바꿔도, 기존 checkpoint를 이어서 실행하면 Spark가 과거 설정을 따라갈 수 있다.
+
+정리하면:
+
+| 변경 내용 | checkpoint 리셋 필요성 |
+|---|---|
+| `SPARK_MAX_OFFSETS_PER_TRIGGER` 변경 | 보통 불필요. 다음 batch부터 적용 가능 |
+| `SPARK_JDBC_BATCH_SIZE` 변경 | 보통 불필요. foreachBatch 내부 write 설정 |
+| `SPARK_JDBC_NUM_PARTITIONS` 변경 | 보통 불필요. 단, 실패 batch가 있으면 재시도 영향 있음 |
+| `SPARK_PREPROCESS_PARTITIONS` 변경 | 보통 불필요. 단, 같은 실패 batch를 계속 물고 있으면 새 checkpoint 권장 |
+| `SPARK_SHUFFLE_PARTITIONS` 변경 | 기존 checkpoint가 과거 값을 복원할 수 있어 새 checkpoint 권장 |
+| Kafka topic, source, checkpoint path 변경 | 새 checkpoint 필요 |
+| output sink 구조 변경 | 새 checkpoint 권장 |
+| streaming aggregation/state 구조 변경 | 새 checkpoint 필요 가능성 큼 |
+
+운영 관점 권장:
+
+- 단순 튜닝값 변경이면 먼저 기존 checkpoint로 재시작해본다.
+- 로그에 과거 설정 복원 경고가 나오거나 같은 batch가 계속 실패하면 checkpoint를 백업한다.
+- 백업 후 `runtime/checkpoints`를 비우고 새 checkpoint로 시작한다.
+- 데이터 유실이 걱정되면 백업된 checkpoint의 offset 구간을 별도 Python batch로 재처리한다.
+
+안전한 checkpoint 백업 방식:
+
+```powershell
+docker stop news-trend-develop-spark-streaming-1
+
+$backup = ".\runtime\checkpoints-backup-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+New-Item -ItemType Directory -Path $backup -Force | Out-Null
+Get-ChildItem .\runtime\checkpoints -Force |
+  Where-Object { $_.Name -ne ".gitkeep" } |
+  Move-Item -Destination $backup
+
+docker compose up -d spark-streaming
+```
+
+핵심은 checkpoint를 바로 삭제하지 않고 백업해두는 것이다. 그래야 나중에 어떤 Kafka offset batch가 문제였는지 추적하거나 별도 재처리할 수 있다.

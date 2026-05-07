@@ -16,6 +16,7 @@ from pyspark.sql.functions import (
     window,
 )
 from pyspark.sql.functions import row_number
+from pyspark import StorageLevel
 from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
@@ -127,7 +128,7 @@ def run_streaming_job() -> None:
         )
     raw_stream = stream_reader.load()
 
-    parsed_base = (
+    parsed = (
         raw_stream.selectExpr("CAST(value AS STRING) AS json_string")
         .select(from_json(col("json_string"), ARTICLE_SCHEMA).alias("data"))
         .select("data.*")
@@ -152,9 +153,6 @@ def run_streaming_job() -> None:
         )
         .dropna(subset=["event_time", "url"])
     )
-    if settings.spark_preprocess_partitions > 0:
-        parsed_base = parsed_base.repartition(settings.spark_preprocess_partitions)
-    parsed = parsed_base.withColumn("tokens", tokenize_udf(col("article_text"), col("domain")))
 
     def write_to_sinks(batch_df, batch_id: int) -> None:
         if batch_df.isEmpty():
@@ -174,118 +172,127 @@ def run_streaming_job() -> None:
         upsert_from_staging_news_raw()
         _log_batch_step(batch_id, "upsert_news_raw", step_started_at)
 
+        tokenized_batch = batch_df
+        if settings.spark_preprocess_partitions > 0:
+            tokenized_batch = tokenized_batch.repartition(settings.spark_preprocess_partitions)
+        tokenized_batch = tokenized_batch.withColumn("tokens", tokenize_udf(col("article_text"), col("domain")))
+
         step_started_at = monotonic()
         article_keywords = (
-            batch_df.select("provider", "domain", "url", "event_time", explode(col("tokens")).alias("keyword"))
+            tokenized_batch.select("provider", "domain", "url", "event_time", explode(col("tokens")).alias("keyword"))
             .filter(col("keyword").isNotNull())
             .filter(expr("length(keyword) >= 2"))
             .groupBy("provider", "domain", "url", "event_time", "keyword")
             .agg(spark_count("*").alias("keyword_count"))
+            .persist(StorageLevel.MEMORY_AND_DISK)
         )
-        _log_batch_step(batch_id, "build_article_keywords", step_started_at)
+        try:
+            _log_batch_step(batch_id, "build_article_keywords", step_started_at)
 
-        step_started_at = monotonic()
-        _jdbc_write(
-            article_keywords.withColumn("processed_at", current_timestamp())
-            .selectExpr(
-                "provider as article_provider",
-                "domain as article_domain",
-                "url as article_url",
-                "keyword",
-                "keyword_count",
-                "processed_at",
-            ),
-            "stg_keywords", jdbc_url, jdbc_props,
-        )
-        _log_batch_step(batch_id, "write_stg_keywords", step_started_at)
-        step_started_at = monotonic()
-        upsert_from_staging_keywords()
-        _log_batch_step(batch_id, "upsert_keywords", step_started_at)
+            step_started_at = monotonic()
+            _jdbc_write(
+                article_keywords.withColumn("processed_at", current_timestamp())
+                .selectExpr(
+                    "provider as article_provider",
+                    "domain as article_domain",
+                    "url as article_url",
+                    "keyword",
+                    "keyword_count",
+                    "processed_at",
+                ),
+                "stg_keywords", jdbc_url, jdbc_props,
+            )
+            _log_batch_step(batch_id, "write_stg_keywords", step_started_at)
+            step_started_at = monotonic()
+            upsert_from_staging_keywords()
+            _log_batch_step(batch_id, "upsert_keywords", step_started_at)
 
-        step_started_at = monotonic()
-        keyword_trends = (
-            article_keywords.groupBy(
-                col("provider"),
-                col("domain"),
-                window(col("event_time"), settings.keyword_window_duration),
-                col("keyword"),
+            step_started_at = monotonic()
+            keyword_trends = (
+                article_keywords.groupBy(
+                    col("provider"),
+                    col("domain"),
+                    window(col("event_time"), settings.keyword_window_duration),
+                    col("keyword"),
+                )
+                .agg(expr("sum(keyword_count) as keyword_count"))
+                .withColumn("processed_at", current_timestamp())
+                .selectExpr(
+                    "provider",
+                    "domain",
+                    "window.start as window_start",
+                    "window.end as window_end",
+                    "keyword",
+                    "keyword_count",
+                    "processed_at",
+                )
             )
-            .agg(expr("sum(keyword_count) as keyword_count"))
-            .withColumn("processed_at", current_timestamp())
-            .selectExpr(
-                "provider",
-                "domain",
-                "window.start as window_start",
-                "window.end as window_end",
-                "keyword",
-                "keyword_count",
-                "processed_at",
-            )
-        )
-        _log_batch_step(batch_id, "build_keyword_trends", step_started_at)
-        step_started_at = monotonic()
-        _jdbc_write(keyword_trends, "stg_keyword_trends", jdbc_url, jdbc_props)
-        _log_batch_step(batch_id, "write_stg_keyword_trends", step_started_at)
-        step_started_at = monotonic()
-        upsert_from_staging_keyword_trends()
-        _log_batch_step(batch_id, "upsert_keyword_trends", step_started_at)
+            _log_batch_step(batch_id, "build_keyword_trends", step_started_at)
+            step_started_at = monotonic()
+            _jdbc_write(keyword_trends, "stg_keyword_trends", jdbc_url, jdbc_props)
+            _log_batch_step(batch_id, "write_stg_keyword_trends", step_started_at)
+            step_started_at = monotonic()
+            upsert_from_staging_keyword_trends()
+            _log_batch_step(batch_id, "upsert_keyword_trends", step_started_at)
 
-        step_started_at = monotonic()
-        article_window = Window.partitionBy("provider", "domain", "url", "event_time").orderBy(
-            col("keyword_count").desc(),
-            col("keyword").asc(),
-        )
-        representative_keywords = (
-            article_keywords.withColumn("keyword_rank", row_number().over(article_window))
-            .filter(col("keyword_rank") <= settings.relation_keyword_limit)
-        )
-        left = representative_keywords.alias("left")
-        right = representative_keywords.alias("right")
-        relation_pairs = (
-            left.join(
-                right,
-                (col("left.provider") == col("right.provider"))
-                & (col("left.domain") == col("right.domain"))
-                & (col("left.url") == col("right.url"))
-                & (col("left.event_time") == col("right.event_time"))
-                & (col("left.keyword_rank") < col("right.keyword_rank")),
+            step_started_at = monotonic()
+            article_window = Window.partitionBy("provider", "domain", "url", "event_time").orderBy(
+                col("keyword_count").desc(),
+                col("keyword").asc(),
             )
-            .select(
-                col("left.provider").alias("provider"),
-                col("left.domain").alias("domain"),
-                col("left.event_time").alias("event_time"),
-                col("left.keyword").alias("keyword_a"),
-                col("right.keyword").alias("keyword_b"),
+            representative_keywords = (
+                article_keywords.withColumn("keyword_rank", row_number().over(article_window))
+                .filter(col("keyword_rank") <= settings.relation_keyword_limit)
             )
-        )
-        relation_trends = (
-            relation_pairs.groupBy(
-                col("provider"),
-                col("domain"),
-                window(col("event_time"), settings.keyword_window_duration),
-                "keyword_a",
-                "keyword_b",
+            left = representative_keywords.alias("left")
+            right = representative_keywords.alias("right")
+            relation_pairs = (
+                left.join(
+                    right,
+                    (col("left.provider") == col("right.provider"))
+                    & (col("left.domain") == col("right.domain"))
+                    & (col("left.url") == col("right.url"))
+                    & (col("left.event_time") == col("right.event_time"))
+                    & (col("left.keyword_rank") < col("right.keyword_rank")),
+                )
+                .select(
+                    col("left.provider").alias("provider"),
+                    col("left.domain").alias("domain"),
+                    col("left.event_time").alias("event_time"),
+                    col("left.keyword").alias("keyword_a"),
+                    col("right.keyword").alias("keyword_b"),
+                )
             )
-            .agg(spark_count("*").alias("cooccurrence_count"))
-            .withColumn("processed_at", current_timestamp())
-            .selectExpr(
-                "provider",
-                "domain",
-                "window.start as window_start",
-                "window.end as window_end",
-                "keyword_a",
-                "keyword_b",
-                "cooccurrence_count",
-                "processed_at",
+            relation_trends = (
+                relation_pairs.groupBy(
+                    col("provider"),
+                    col("domain"),
+                    window(col("event_time"), settings.keyword_window_duration),
+                    "keyword_a",
+                    "keyword_b",
+                )
+                .agg(spark_count("*").alias("cooccurrence_count"))
+                .withColumn("processed_at", current_timestamp())
+                .selectExpr(
+                    "provider",
+                    "domain",
+                    "window.start as window_start",
+                    "window.end as window_end",
+                    "keyword_a",
+                    "keyword_b",
+                    "cooccurrence_count",
+                    "processed_at",
+                )
             )
-        )
-        _log_batch_step(batch_id, "build_keyword_relations", step_started_at)
-        step_started_at = monotonic()
-        _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
-        _log_batch_step(batch_id, "write_stg_keyword_relations", step_started_at)
-        step_started_at = monotonic()
-        upsert_from_staging_keyword_relations()
-        _log_batch_step(batch_id, "upsert_keyword_relations", step_started_at)
+            _log_batch_step(batch_id, "build_keyword_relations", step_started_at)
+            step_started_at = monotonic()
+            _jdbc_write(relation_trends, "stg_keyword_relations", jdbc_url, jdbc_props)
+            _log_batch_step(batch_id, "write_stg_keyword_relations", step_started_at)
+            step_started_at = monotonic()
+            upsert_from_staging_keyword_relations()
+            _log_batch_step(batch_id, "upsert_keyword_relations", step_started_at)
+        finally:
+            article_keywords.unpersist()
         logger.info(
             "Spark batch finished: batch_id=%s elapsed=%.2fs",
             batch_id,
