@@ -194,5 +194,5 @@ FastAPI는 저장된 `keyword_events`를 우선 사용한다. 단, 대시보드 
 ## 11. 현재 구현 기준 메모
 
 - STEP4의 최종 구현 설명은 `keyword_trends -> keyword_events` 분석 흐름만 다룬다.
-- 이벤트 임계치와 score 공식의 튜닝 과정은 `docs/develop/STEP4_ANALYTICS_history.md`에 기록한다.
+- 이벤트 임계치와 score 공식의 튜닝 과정은 `docs/develop/PIPELINE_DEVELOPMENT_HISTORY.md`에 기록한다.
 - `keyword_relations` 기반 고급 이벤트 해석, 알림/배너 연동, 도메인별 threshold 분리는 아직 별도 고도화 영역이다.
