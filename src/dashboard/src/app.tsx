@@ -13,9 +13,7 @@ import {
   type OverviewRawPayload,
   type TrendRawPayload
 } from "./data";
-import { SpikeHeatmap, TopKeywords, TrendLine } from "./charts";
-import { DictionaryApiModal } from "./dictionary-modal";
-import { QueryKeywordModal } from "./query-keyword-modal";
+import { SpikeHeatmap, TopKeywords, TrendLine, type HeatmapEvent } from "./charts";
 import { EmptyState, fmtNum, fmtPct, Icon, LoadingState } from "./ui";
 import { useAsyncData, type AsyncState } from "./hooks";
 import {
@@ -45,10 +43,13 @@ import {
   rankKeywords,
 } from "./utils";
 import { KpiCard } from "./KpiCard";
-import { DashboardHeader } from "./DashboardHeader";
+import { DashboardHeader, type ActiveTab } from "./DashboardHeader";
 import { DashboardSubbar } from "./DashboardSubbar";
 import { DashboardSidebar } from "./DashboardSidebar";
 import { DashboardRightRail } from "./DashboardRightRail";
+import { PipelinePage } from "./PipelinePage";
+import { DictionaryPage } from "./DictionaryPage";
+import { KeywordPage } from "./KeywordPage";
 
 const ENABLE_TREND_PREFETCH = false;
 const MAX_TREND_CELLS_PER_REQUEST = 12000;
@@ -74,6 +75,7 @@ function getTrendRequestStats(
 
 export default function App() {
 
+  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [source, setSource] = useState<SourceId>("all");
   const [rangePreset, setRangePreset] = useState<RangeId | null>("1h");
@@ -102,8 +104,6 @@ export default function App() {
   const [now, setNow] = useState(() => Date.now());
   const [dataRefreshNonce, setDataRefreshNonce] = useState(0);
   const [stopwordMessage, setStopwordMessage] = useState<string | null>(null);
-  const [dictionaryOpen, setDictionaryOpen] = useState(false);
-  const [queryKeywordOpen, setQueryKeywordOpen] = useState(false);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("ntp_watchlist") ?? "[]");
@@ -455,11 +455,6 @@ const [overviewRaw, setOverviewRaw] = useState<AsyncState<OverviewRawPayload>>({
   };
   const keywords: AsyncState<DashboardOverviewResponse["keywords"]> = {
     data: activeOverview?.keywords ?? null,
-    loading: overview.loading,
-    error: overview.error,
-  };
-  const spikes: AsyncState<DashboardOverviewResponse["spikes"]> = {
-    data: activeOverview?.spikes ?? null,
     loading: overview.loading,
     error: overview.error,
   };
@@ -881,36 +876,82 @@ useEffect(() => {
     () => (trend.data?.series ?? []).filter((s) => checkedTrendKeywords.includes(s.name)),
     [trend.data, checkedTrendKeywords],
   );
-  const filteredSpikeEvents = useMemo(
-    () =>
-      (spikes.data?.events ?? []).filter(
-        (event) => event.currentMentions >= spikeMinMentions && event.growth >= spikeMinGrowth,
-      ),
-    [spikes.data, spikeMinMentions, spikeMinGrowth],
-  );
   const spikeHeatmapKeywords = useMemo(() => {
-    const spikeKeywords = rankedKeywords
+    const spikeKeywords = displayKeywords
       .filter((item) => isSpikeKeyword(item, spikeMinMentions, spikeMinGrowth))
       .slice(0, 8)
       .map((item) => item.keyword);
     if (spikeKeywords.length) return spikeKeywords;
     return rankedKeywords.slice(0, 8).map((item) => item.keyword);
-  }, [rankedKeywords, spikeMinMentions, spikeMinGrowth]);
+  }, [displayKeywords, rankedKeywords, spikeMinMentions, spikeMinGrowth]);
+
+  const trendHeatmapBucketMin = trend.data?.range.bucketMin ?? getTrendbucketMinutes(effectiveTrendBucket);
+  const trendHeatmapBucketCount = Math.max(
+    1,
+    Math.ceil((trendWindow.endMs - trendWindow.startMs) / (trendHeatmapBucketMin * 60_000)),
+  );
+
+  const spikeHeatmapEvents = useMemo<HeatmapEvent[]>(() => {
+    if (!trend.data || !spikeHeatmapKeywords.length) return [];
+    const keywordSet = new Set(spikeHeatmapKeywords);
+    const perKeyword = new Map<string, number[]>();
+    for (const keyword of spikeHeatmapKeywords) {
+      perKeyword.set(keyword, new Array(trendHeatmapBucketCount).fill(0));
+    }
+    const bucketMs = trendHeatmapBucketMin * 60_000;
+    for (const series of trend.data.series) {
+      if (!keywordSet.has(series.name)) continue;
+      const values = perKeyword.get(series.name);
+      if (!values) continue;
+      for (const point of series.points) {
+        const bucket = Math.floor((new Date(point.timestamp).getTime() - trendWindow.startMs) / bucketMs);
+        if (bucket < 0 || bucket >= trendHeatmapBucketCount) continue;
+        values[bucket] = Math.max(values[bucket], point.value);
+      }
+    }
+
+    const events: HeatmapEvent[] = [];
+    for (const [keyword, mentionsByBucket] of perKeyword.entries()) {
+      let previous = 0;
+      mentionsByBucket.forEach((mentions, bucket) => {
+        const growth = previous <= 0 ? (mentions > 0 ? 1 : 0) : (mentions - previous) / previous;
+        if (mentions >= spikeMinMentions && growth >= spikeMinGrowth) {
+          events.push({
+            bucket,
+            keyword,
+            intensity: Math.min(1, Math.max(0.12, growth)),
+            currentMentions: mentions,
+            prevMentions: previous,
+            growth,
+          });
+        }
+        previous = mentions;
+      });
+    }
+    return events.sort((a, b) => b.intensity - a.intensity || b.currentMentions - a.currentMentions);
+  }, [
+    trend.data,
+    spikeHeatmapKeywords,
+    spikeMinGrowth,
+    spikeMinMentions,
+    trendHeatmapBucketCount,
+    trendHeatmapBucketMin,
+    trendWindow.startMs,
+  ]);
 
   const spikeRows = useMemo(() => {
-    const filteredEvents = filteredSpikeEvents.filter((e) => selectedBucket == null || e.bucket === selectedBucket);
-    const eventKeywords = new Set(filteredEvents.map((e) => e.keyword));
-    const rows =
+    const eventKeywords =
       selectedBucket == null
-        ? displayKeywords.filter((k) => k.spike)
-        : displayKeywords.filter((k) => eventKeywords.has(k.keyword));
+        ? null
+        : new Set(spikeHeatmapEvents.filter((event) => event.bucket === selectedBucket).map((event) => event.keyword));
+    const rows = displayKeywords.filter((k) => k.spike && (eventKeywords == null || eventKeywords.has(k.keyword)));
     return rows
       .slice()
       .sort((a, b) =>
         spikeSort === "growth" ? b.growth - a.growth : (b.eventScore ?? 0) - (a.eventScore ?? 0),
       )
       .slice(0, 12);
-  }, [displayKeywords, filteredSpikeEvents, selectedBucket, spikeSort]);
+  }, [displayKeywords, selectedBucket, spikeHeatmapEvents, spikeSort]);
 
   const themeBarItems = useMemo(() => {
     const items = themeDistribution.data?.items ?? [];
@@ -1160,15 +1201,19 @@ console.debug("[overview] prefetch overview decision", {
   }
 
   return (
-    <div className="app" data-right-closed={selectedKeyword ? "false" : "true"}>
+    <div
+      className="app"
+      data-right-closed={activeTab !== "dashboard" || !selectedKeyword ? "true" : "false"}
+      data-active-tab={activeTab}
+    >
       <DashboardHeader
         now={now}
         autoRefresh={autoRefresh}
         setAutoRefresh={setAutoRefresh}
         theme={theme}
         setTheme={setTheme}
-        setDictionaryOpen={setDictionaryOpen}
-        setQueryKeywordOpen={setQueryKeywordOpen}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
       />
       {stopwordMessage ? <div className="toast">{stopwordMessage}</div> : null}
 
@@ -1209,6 +1254,14 @@ console.debug("[overview] prefetch overview decision", {
 
       {/* Main */}
       <div className="main">
+        {activeTab === "pipeline" ? (
+          <PipelinePage />
+        ) : activeTab === "dict" ? (
+          <DictionaryPage />
+        ) : activeTab === "keyword" ? (
+          <KeywordPage />
+        ) : (
+          <>
         {/* KPI row */}
         <div className="grid row-kpi">
           <KpiCard
@@ -1369,32 +1422,29 @@ console.debug("[overview] prefetch overview decision", {
               <div className="panel-title">
                 <Icon.Flame size={12} />
                 급상승 키워드 타임라인
-                <span className="tag mono">히트맵 · 강도</span>
+                <span className="tag mono">프론트 계산</span>
               </div>
               <div className="panel-tools">
                 {selectedBucket != null && (
                   <button className="panel-tool" onClick={() => setSelectedBucket(null)}>
-                    clear selection
+                    선택 해제
                   </button>
                 )}
               </div>
             </div>
             <div className="panel-body scroll" style={{ padding: "8px 12px" }}>
-              {spikes.loading ? (
-                <LoadingState label="급상승 이벤트를 계산하는 중..." />
-              ) : (
-                <SpikeHeatmap
-                  keywords={spikeHeatmapKeywords}
-                  events={filteredSpikeEvents}
-                  buckets={spikes.data?.range.buckets ?? activeRange.buckets}
-                  bucketMin={spikes.data?.range.bucketMin ?? activeRange.bucketMin}
-                  selectedBucket={selectedBucket}
-                  onSelectBucket={setSelectedBucket}
-                  selectedKeyword={selectedKeyword}
-                  onSelectKeyword={setSelectedKeyword}
-                  nowMs={now}
-                />
-              )}
+              <SpikeHeatmap
+                keywords={spikeHeatmapKeywords}
+                events={spikeHeatmapEvents}
+                buckets={trendHeatmapBucketCount}
+                bucketMin={trendHeatmapBucketMin}
+                viewStartMs={trendWindow.startMs}
+                selectedBucket={selectedBucket}
+                onSelectBucket={setSelectedBucket}
+                selectedKeyword={selectedKeyword}
+                onSelectKeyword={setSelectedKeyword}
+                nowMs={now}
+              />
             </div>
           </div>
 
@@ -1471,9 +1521,11 @@ console.debug("[overview] prefetch overview decision", {
             </div>
           </div>
         </div>
+          </>
+        )}
       </div>
 
-      {selectedKeyword && (
+      {activeTab === "dashboard" && selectedKeyword && (
         <DashboardRightRail
           selectedKeyword={selectedKeyword}
           activeKeywordSummary={activeKeywordSummary}
@@ -1499,8 +1551,6 @@ console.debug("[overview] prefetch overview decision", {
         />
       )}
 
-      {dictionaryOpen ? <DictionaryApiModal onClose={() => setDictionaryOpen(false)} /> : null}
-      {queryKeywordOpen ? <QueryKeywordModal onClose={() => setQueryKeywordOpen(false)} /> : null}
     </div>
   );
 }

@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmtNum, fmtPct, Icon } from "./ui";
-import type { KeywordSummary, RelatedKeyword, SpikeEvent, TrendSeries } from "./data";
+import type { KeywordSummary, RelatedKeyword, TrendSeries } from "./data";
+
+export interface HeatmapEvent {
+  bucket: number;
+  keyword: string;
+  intensity: number;
+  currentMentions: number;
+  prevMentions: number;
+  growth: number;
+}
 
 export function TopKeywords({
   keywords,
@@ -459,6 +468,7 @@ export function SpikeHeatmap({
   events,
   buckets,
   bucketMin,
+  viewStartMs,
   selectedBucket,
   onSelectBucket,
   selectedKeyword,
@@ -466,9 +476,10 @@ export function SpikeHeatmap({
   nowMs,
 }: {
   keywords: string[];
-  events: SpikeEvent[];
+  events: HeatmapEvent[];
   buckets: number;
   bucketMin: number;
+  viewStartMs?: number;
   selectedBucket: number | null;
   onSelectBucket: (bucket: number | null) => void;
   selectedKeyword?: string | null;
@@ -482,7 +493,6 @@ export function SpikeHeatmap({
     }
     for (const event of events) {
       if (!value[event.keyword]) continue;
-      // Spread intensity to neighbouring buckets with falloff
       for (let offset = -1; offset <= 1; offset++) {
         const idx = event.bucket + offset;
         if (idx < 0 || idx >= buckets) continue;
@@ -494,6 +504,10 @@ export function SpikeHeatmap({
   }, [events, keywords, buckets]);
 
   const xLabel = (index: number) => {
+    if (viewStartMs != null) {
+      const kst = new Date(viewStartMs + index * bucketMin * 60_000 + 9 * 3_600_000);
+      return `${String(kst.getUTCHours()).padStart(2, "0")}:${String(kst.getUTCMinutes()).padStart(2, "0")}`;
+    }
     const minutesBack = (buckets - 1 - index) * bucketMin;
     if (nowMs != null) {
       const kst = new Date(nowMs - minutesBack * 60_000 + 9 * 3_600_000);
@@ -504,7 +518,7 @@ export function SpikeHeatmap({
     return `-${Math.round(minutesBack / 60)}h`;
   };
 
-  const step = Math.ceil(buckets / 6);
+  const step = Math.max(1, Math.ceil(buckets / 6));
 
   function cellColor(v: number) {
     if (v < 0.05) return "var(--bg-2)";
@@ -516,7 +530,8 @@ export function SpikeHeatmap({
     <div className="heat-grid">
       {keywords.map((keyword) => (
         <div className="heat-row" key={keyword} style={{ ["--cols" as never]: String(buckets) }}>
-          <div
+          <button
+            type="button"
             className="lbl"
             title={keyword}
             style={{
@@ -527,9 +542,10 @@ export function SpikeHeatmap({
             onClick={() => onSelectKeyword?.(keyword)}
           >
             {keyword}
-          </div>
+          </button>
           {matrix[keyword].map((value, index) => (
-            <div
+            <button
+              type="button"
               key={`${keyword}-${index}`}
               className={`heat-cell${selectedBucket === index ? " is-selected" : ""}`}
               style={{ background: cellColor(value) }}

@@ -155,7 +155,6 @@ export function deriveOverviewFromCache(
     const ts = new Date(row.timestamp).getTime();
     return ts >= prevStartMs && ts < startMs;
   });
-  const currentBucketSet = new Set(currentRows.map((row) => row.bucket));
   const currentArticles = currentRows.reduce((sum, row) => sum + row.articleCount, 0);
   const prevArticles = prevRows.reduce((sum, row) => sum + row.articleCount, 0);
   const lastUpdateCandidates = currentRows
@@ -178,10 +177,6 @@ export function deriveOverviewFromCache(
   }
 
   const derivedKeywords: KeywordSummary[] = [];
-  const spikeEvents: DashboardOverviewResponse["spikes"]["events"] = [];
-  const spikeKeywordSet = new Set<string>();
-  const defaultEventSource = source === "all" ? "naver" : source;
-  const bucketCount = Math.max(1, Math.ceil(durationMs / (cache.bucketMin * 60_000)));
 
   for (const keyword of cache.candidateKeywords) {
     const series = keywordMap.get(keyword);
@@ -218,51 +213,15 @@ export function deriveOverviewFromCache(
       eventScore,
       articleCount,
     });
-
-    const orderedBuckets = Array.from(series.mentions.entries()).sort((a, b) => a[0] - b[0]);
-    let previousBucketMentions = 0;
-    for (const [bucket, mentions] of orderedBuckets) {
-      if (mentions <= 0) continue;
-      const bucketGrowth =
-        previousBucketMentions <= 0
-          ? mentions > 0
-            ? 1
-            : 0
-          : (mentions - previousBucketMentions) / previousBucketMentions;
-      if (currentBucketSet.has(bucket) && bucketGrowth >= 0.35 && mentions >= 3) {
-        spikeKeywordSet.add(keyword);
-        spikeEvents.push({
-          bucket: Math.floor(
-            (new Date(articleBuckets[bucket]?.timestamp ?? 0).getTime() - startMs) /
-              (cache.bucketMin * 60_000),
-          ),
-          keyword,
-          intensity: Math.min(1, Math.max(0.12, bucketGrowth)),
-          source: defaultEventSource,
-          currentMentions: mentions,
-          prevMentions: previousBucketMentions,
-          growth: bucketGrowth,
-          score: eventScore,
-        });
-      }
-      previousBucketMentions = mentions;
-    }
   }
 
   derivedKeywords.sort((a, b) => b.mentions - a.mentions || a.keyword.localeCompare(b.keyword));
-  const visibleEvents = spikeEvents
-    .filter((item) => item.bucket >= 0 && item.bucket < bucketCount)
-    .sort((a, b) => b.score - a.score || b.growth - a.growth);
   const growth =
     prevArticles <= 0
       ? currentArticles > 0
         ? 1
         : 0
       : (currentArticles - prevArticles) / prevArticles;
-  const spikeTopKeywords = derivedKeywords
-    .filter((item) => item.spike)
-    .slice(0, 8)
-    .map((item) => item.keyword);
   const lastUpdateMinutesAgo = lastUpdateAt
     ? Math.max(0, Math.floor((nowMs - new Date(lastUpdateAt).getTime()) / 60_000))
     : null;
@@ -271,24 +230,12 @@ export function deriveOverviewFromCache(
     kpis: {
       totalArticles: currentArticles,
       uniqueKeywords: derivedKeywords.filter((item) => item.mentions > 0).length,
-      spikeCount: spikeKeywordSet.size,
+      spikeCount: derivedKeywords.filter((item) => item.spike).length,
       growth,
       lastUpdateRelative: fmtAgo(lastUpdateMinutesAgo),
       lastUpdateAbsolute: fmtAbsoluteKst(lastUpdateAt),
     },
     keywords: derivedKeywords.slice(0, limit),
-    spikes: {
-      topKeywords: spikeTopKeywords.length
-        ? spikeTopKeywords
-        : derivedKeywords.slice(0, 8).map((item) => item.keyword),
-      events: visibleEvents.slice(0, Math.max(limit, 32)),
-      range: {
-        id: "custom",
-        label: `${cache.bucket} custom`,
-        bucketMin: cache.bucketMin,
-        buckets: bucketCount,
-      },
-    },
     cache,
   };
 }

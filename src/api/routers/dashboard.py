@@ -9,7 +9,6 @@ from api.service import (
     get_dashboard_overview,
     get_kpis,
     get_related_keywords,
-    get_spike_events,
     get_system_status,
     get_theme_distribution,
     get_top_keywords,
@@ -125,28 +124,6 @@ def dashboard_trend_window(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/spikes")
-def dashboard_spikes(
-    source: str = Query(default="all"),
-    domain: str = Query(default="all"),
-    range_id: str = Query(default="1h", alias="range"),
-    limit: int = Query(default=32, ge=1, le=100),
-    start_at: datetime | None = Query(default=None, alias="startAt"),
-    end_at: datetime | None = Query(default=None, alias="endAt"),
-    bucket: str | None = Query(default=None),
-) -> dict:
-    """스파이크 이벤트 목록 반환 — 급격히 언급량이 증가한 키워드 이벤트를 강도·점수 순으로 제공한다."""
-    return get_spike_events(
-        source=source,
-        domain=domain,
-        range_id=range_id,
-        limit=limit,
-        start_at=start_at,
-        end_at=end_at,
-        bucket_id=bucket,
-    )
 
 
 @router.get("/related")

@@ -1,14 +1,16 @@
 import { Icon } from "./ui";
 import { fmtKST } from "./utils";
 
+export type ActiveTab = "dashboard" | "pipeline" | "dict" | "keyword";
+
 interface DashboardHeaderProps {
   now: number;
   autoRefresh: boolean;
   setAutoRefresh: (v: boolean) => void;
   theme: "dark" | "light";
   setTheme: (t: "dark" | "light") => void;
-  setDictionaryOpen: (v: boolean) => void;
-  setQueryKeywordOpen: (v: boolean) => void;
+  activeTab: ActiveTab;
+  setActiveTab: (tab: ActiveTab) => void;
 }
 
 export function DashboardHeader({
@@ -17,8 +19,8 @@ export function DashboardHeader({
   setAutoRefresh,
   theme,
   setTheme,
-  setDictionaryOpen,
-  setQueryKeywordOpen,
+  activeTab,
+  setActiveTab,
 }: DashboardHeaderProps) {
   return (
     <div className="header">
@@ -30,29 +32,38 @@ export function DashboardHeader({
         </div>
       </div>
       <div className="header-nav">
-        <div className="nav-item is-active">
+        <div
+          className={`nav-item${activeTab === "dashboard" ? " is-active" : ""}`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setActiveTab("dashboard")}
+        >
           <Icon.Activity />
           대시보드
         </div>
-        <div className="nav-item">
-          <Icon.Flame />
-          이벤트
-        </div>
-        <div className="nav-item">
-          <Icon.Hash />
-          키워드
-        </div>
-        <div className="nav-item">
+        
+        <div
+          className={`nav-item${activeTab === "pipeline" ? " is-active" : ""}`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setActiveTab("pipeline")}
+        >
           <Icon.Activity />
           파이프라인
         </div>
-        <div className="nav-item" style={{ cursor: "pointer" }} onClick={() => setDictionaryOpen(true)}>
+        <div
+          className={`nav-item${activeTab === "dict" ? " is-active" : ""}`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setActiveTab("dict")}
+        >
           <Icon.Settings />
           용어 사전
         </div>
-        <div className="nav-item" style={{ cursor: "pointer" }} onClick={() => setQueryKeywordOpen(true)}>
+        <div
+          className={`nav-item${activeTab === "keyword" ? " is-active" : ""}`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setActiveTab("keyword")}
+        >
           <Icon.Hash />
-          도메인 키워드 관리
+          키워드 관리
         </div>
       </div>
       <div className="header-spacer" />

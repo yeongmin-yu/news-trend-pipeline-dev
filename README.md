@@ -229,13 +229,20 @@ SPARK_JDBC_BATCH_SIZE=2000
 docker compose up --build -d
 ```
 
+기본 실행은 로컬 자원 사용을 줄이기 위해 Spark worker 1개와 실행 중인 streaming job만 올립니다.
+두 번째 worker와 Spark History UI가 필요할 때는 아래처럼 `spark-extra` profile을 함께 켭니다.
+
+```powershell
+docker compose --profile spark-extra up --build -d
+```
+
 초기 실행 시 다음 순서로 서비스가 준비됩니다.
 
 1. PostgreSQL(관계형 데이터베이스) 시작
 2. Flyway(DB 마이그레이션 도구, SQL 스키마 버전 관리) 실행
 3. Kafka topic(메시지를 넣는 논리적 공간) 생성
 4. Airflow 메타 DB 초기화
-5. Spark master/worker/streaming job 시작
+5. Spark master/worker 1개/streaming job 시작
 6. FastAPI와 React Dashboard 시작
 
 ### 3. 실행 상태 확인
@@ -256,7 +263,7 @@ docker compose logs --no-log-prefix --tail=200 spark-streaming
 | Airflow UI | http://localhost:9080 | 작업 스케줄러 화면, 기본 계정 `airflow / airflow` |
 | Spark Master UI | http://localhost:8080 | Spark 클러스터 상태 |
 | Spark Streaming UI | http://localhost:4040 | 실행 중인 Spark job 상태 |
-| Spark History | http://localhost:18080 | 종료된 Spark job 기록 |
+| Spark History | http://localhost:18080 | 종료된 Spark job 기록, `spark-extra` profile 사용 시 |
 | PostgreSQL | localhost:5432 | 기본 계정 `postgres / postgres` |
 | Kafka | localhost:9092 | 내부 메시지 브로커 |
 

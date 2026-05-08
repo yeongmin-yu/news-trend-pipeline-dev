@@ -73,15 +73,6 @@ class TrendSeries(BaseModel):
     points: list[SeriesPoint]
 
 
-class SpikeEvent(BaseModel):
-    bucket: int
-    keyword: str
-    intensity: float
-    source: str
-    growth: float
-    score: int
-
-
 class RelatedKeyword(BaseModel):
     keyword: str
     weight: float

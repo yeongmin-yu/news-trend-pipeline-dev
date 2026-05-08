@@ -15,7 +15,11 @@ x-airflow-common:
     AIRFLOW__CORE__FERNET_KEY: ""
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: ${AIRFLOW__CORE__PARALLELISM:-2}
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: ${AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG:-1}
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: ${AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG:-1}
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: ${AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES:-1}
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
     PYTHONPATH: /opt/news-trend-pipeline/src
@@ -82,6 +86,7 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_HEAP_OPTS: ${ZOOKEEPER_HEAP_OPTS:-"-Xms128m -Xmx256m"}
     ports:
       - "2181:2181"
     networks:
@@ -104,6 +109,7 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:-"-Xms256m -Xmx512m"}
 
     healthcheck:
       test:
@@ -276,12 +282,13 @@ services:
     restart: unless-stopped
     environment:
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-1}
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2G}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-1G}
+      SPARK_DAEMON_MEMORY: ${SPARK_DAEMON_MEMORY:-512m}
     depends_on:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores $${SPARK_WORKER_CORES:-2} --memory $${SPARK_WORKER_MEMORY:-2G} --webui-port 8081 spark://spark-master:7077"
+      --cores $${SPARK_WORKER_CORES:-1} --memory $${SPARK_WORKER_MEMORY:-1G} --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8081:8081"
     volumes:
@@ -292,15 +299,18 @@ services:
 
   spark-worker-2:
     image: news-trend-spark-runtime:latest
+    profiles:
+      - spark-extra
     restart: unless-stopped
     environment:
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-1}
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2G}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-1G}
+      SPARK_DAEMON_MEMORY: ${SPARK_DAEMON_MEMORY:-512m}
     depends_on:
       - spark-master
     command: >
       bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
-      --cores $${SPARK_WORKER_CORES:-2} --memory $${SPARK_WORKER_MEMORY:-2G} --webui-port 8081 spark://spark-master:7077"
+      --cores $${SPARK_WORKER_CORES:-1} --memory $${SPARK_WORKER_MEMORY:-1G} --webui-port 8081 spark://spark-master:7077"
     ports:
       - "8082:8081"
     volumes:
@@ -311,6 +321,8 @@ services:
 
   spark-history:
     image: news-trend-spark-runtime:latest
+    profiles:
+      - spark-extra
     restart: unless-stopped
     command: >
       bash -lc "/opt/spark/sbin/start-history-server.sh;
@@ -344,6 +356,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       SPARK_MASTER: spark://spark-master:7077
       SPARK_CHECKPOINT_DIR: /opt/news-trend-pipeline/runtime/checkpoints
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-768m}
+      SPARK_EXECUTOR_MEMORY: ${SPARK_EXECUTOR_MEMORY:-768m}
       SPARK_SHUFFLE_PARTITIONS: ${SPARK_SHUFFLE_PARTITIONS:-8}
       SPARK_MAX_OFFSETS_PER_TRIGGER: ${SPARK_MAX_OFFSETS_PER_TRIGGER:-150}
       SPARK_PREPROCESS_PARTITIONS: ${SPARK_PREPROCESS_PARTITIONS:-4}
@@ -363,6 +377,8 @@ services:
       bash -lc "mkdir -p /tmp/.ivy2 /opt/news-trend-pipeline/runtime/checkpoints /tmp/spark-events &&
       /opt/spark/bin/spark-submit
       --master spark://spark-master:7077
+      --driver-memory $${SPARK_DRIVER_MEMORY}
+      --executor-memory $${SPARK_EXECUTOR_MEMORY}
       --conf spark.jars.ivy=/tmp/.ivy2
       --conf spark.driver.host=$${SPARK_DRIVER_HOST}
       --conf spark.driver.bindAddress=$${SPARK_DRIVER_BIND_ADDRESS}
@@ -384,8 +400,6 @@ services:
       spark-master:
         condition: service_started
       spark-worker-1:
-        condition: service_started
-      spark-worker-2:
         condition: service_started
     ports:
       - "4040:4040"

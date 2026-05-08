@@ -178,10 +178,7 @@ def _derive_overview_from_cache(
     end_at: datetime,
     limit: int,
 ) -> dict[str, Any]:
-    """캐시 데이터에서 KPI·키워드·스파이크를 계산해 개요 payload를 도출한다."""
-    data_start = _normalize_utc(datetime.fromisoformat(cache["dataStartAt"]))
-    bucket_min = int(cache["bucketMin"])
-    bucket_delta = timedelta(minutes=bucket_min)
+    """캐시 데이터에서 KPI·키워드를 계산해 개요 payload를 도출한다."""
     duration = end_at - start_at
     prev_start = start_at - duration
     article_rows = cache["articleBuckets"]
@@ -218,12 +215,7 @@ def _derive_overview_from_cache(
         default=None,
     )
     article_growth = _safe_growth(current_articles, prev_articles)
-    current_index_set = set(current_indices)
-
     keywords: list[dict[str, Any]] = []
-    spike_events: list[dict[str, Any]] = []
-    spike_keywords: set[str] = set()
-    default_event_source = "rss" if source == "rss" else "naver"
 
     for keyword, series in keyword_map.items():
         current_mentions = sum(series["mentions"][idx] for idx in current_indices)
@@ -245,47 +237,18 @@ def _derive_overview_from_cache(
             }
         )
 
-        previous_bucket_count = 0
-        for bucket_index, mentions in enumerate(series["mentions"]):
-            if mentions <= 0:
-                continue
-            growth_vs_prev = _safe_growth(mentions, previous_bucket_count)
-            if bucket_index in current_index_set and growth_vs_prev >= 0.35 and mentions >= 3:
-                spike_keywords.add(keyword)
-                spike_events.append(
-                    {
-                        "bucket": _bucket_index(data_start + bucket_delta * bucket_index, start_at, bucket_delta),
-                        "keyword": keyword,
-                        "intensity": min(1.0, max(0.12, growth_vs_prev)),
-                        "source": default_event_source,
-                        "currentMentions": mentions,
-                        "prevMentions": previous_bucket_count,
-                        "growth": growth_vs_prev,
-                        "score": event_score,
-                    }
-                )
-            previous_bucket_count = mentions
-
     keywords.sort(key=lambda item: (-int(item["mentions"]), item["keyword"]))
-    max_spike_buckets = max(1, ceil(duration.total_seconds() / bucket_delta.total_seconds()))
-    spike_events = [item for item in spike_events if 0 <= int(item["bucket"]) < max_spike_buckets]
-    spike_events.sort(key=lambda item: (int(item["score"]), float(item["growth"])), reverse=True)
 
     return {
         "kpis": {
             "totalArticles": current_articles,
             "uniqueKeywords": sum(1 for item in keywords if int(item["mentions"]) > 0),
-            "spikeCount": len(spike_keywords),
+            "spikeCount": sum(1 for item in keywords if item["spike"]),
             "growth": article_growth,
             "lastUpdateRelative": _format_relative(last_update),
             "lastUpdateAbsolute": last_update.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if last_update else "데이터 없음",
         },
         "keywords": keywords[:limit],
-        "spikes": {
-            "topKeywords": [item["keyword"] for item in keywords if item["spike"]][:8] or [item["keyword"] for item in keywords[:8]],
-            "events": spike_events[: max(limit, 32)],
-            "range": _window_range_payload(range_spec=None, start_at=start_at, end_at=end_at, bucket_id=cache["bucket"]),
-        },
     }
 
 
@@ -528,91 +491,6 @@ def get_trend_series(
             for i, (name, points) in enumerate(series_lookup.items())
         ],
         "range": {"id": spec.id, "label": spec.label, "bucketMin": spec.bucket_min, "buckets": spec.buckets},
-    }
-
-
-def get_spike_events(
-    source: str,
-    domain: str,
-    range_id: str | None = None,
-    limit: int = 32,
-    *,
-    start_at: datetime | None = None,
-    end_at: datetime | None = None,
-    bucket_id: str | None = None,
-    top_keywords: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """급상승 키워드 스파이크 이벤트 목록 반환."""
-    range_spec, start_at, end_at, _ = _window_bounds(range_id=range_id, start_at=start_at, end_at=end_at)
-    provider = _provider_filter(source)
-    domain_filter = _domain_filter(domain)
-    effective_bucket_id = bucket_id or _pick_auto_bucket_for_window(end_at - start_at)
-    if effective_bucket_id not in TREND_BUCKETS:
-        raise ValueError(f"Unsupported bucket: {effective_bucket_id}")
-    bucket_interval, bucket_min = TREND_BUCKETS[effective_bucket_id]
-    bucket_delta = timedelta(minutes=bucket_min)
-    total_buckets = max(1, ceil((end_at - start_at).total_seconds() / bucket_delta.total_seconds()))
-    if top_keywords is None:
-        top_keywords = get_top_keywords(source=source, domain=domain, range_id=range_id, limit=limit, start_at=start_at, end_at=end_at)
-    top_lookup = {item["keyword"]: item for item in top_keywords}
-    events: list[dict[str, Any]] = []
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    k.keyword,
-                    date_bin(%(bucket_interval)s::interval, n.published_at, %(origin)s::timestamptz) AS bucket_start,
-                    SUM(k.keyword_count) AS keyword_count
-                FROM keywords k
-                JOIN news_raw n ON n.provider = k.article_provider AND n.domain = k.article_domain AND n.url = k.article_url
-                WHERE n.published_at >= %(start_at)s AND n.published_at < %(end_at)s
-                  AND k.keyword = ANY(%(keywords)s)
-                  AND (%(provider)s IS NULL OR n.provider = %(provider)s)
-                  AND (cardinality(%(domain)s::text[]) = 0 OR n.domain = ANY(%(domain)s::text[]))
-                GROUP BY k.keyword, bucket_start
-                ORDER BY k.keyword ASC, bucket_start ASC
-                """,
-                {
-                    "start_at": start_at, "end_at": end_at, "provider": provider, "domain": domain_filter,
-                    "bucket_interval": bucket_interval, "origin": start_at,
-                    "keywords": [item["keyword"] for item in top_keywords] or [""],
-                },
-            )
-            rows = list(cursor.fetchall())
-    per_keyword: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for row in rows:
-        bucket_index = int((row["bucket_start"] - start_at).total_seconds() // bucket_delta.total_seconds())
-        if 0 <= bucket_index < total_buckets:
-            per_keyword[row["keyword"]].append((bucket_index, int(row["keyword_count"] or 0)))
-    for keyword_name, values in per_keyword.items():
-        previous = 0
-        for bucket_index, count in values:
-            if count <= 0:
-                continue
-            growth = _safe_growth(count, previous)
-            if growth >= 0.35 and count >= 3:
-                summary = top_lookup.get(keyword_name)
-                naver_share = float(summary["sourceShareNaver"]) if summary else 0.5
-                events.append(
-                    {
-                        "bucket": bucket_index,
-                        "keyword": keyword_name,
-                        "intensity": min(1.0, max(0.12, growth)),
-                        "source": "naver" if naver_share >= 0.5 else "rss",
-                        "currentMentions": count,
-                        "prevMentions": previous,
-                        "growth": growth,
-                        "score": int(summary["eventScore"]) if summary else 0,
-                    }
-                )
-            previous = count
-    events.sort(key=lambda item: (item["score"], item["growth"]), reverse=True)
-    return {
-        "topKeywords": [item["keyword"] for item in top_keywords if item["spike"]][:8] or [item["keyword"] for item in top_keywords[:8]],
-        "events": events[:limit],
-        "range": _window_range_payload(range_spec=range_spec, start_at=start_at, end_at=end_at, bucket_id=effective_bucket_id),
-        "sampleSeries": [],
     }
 
 

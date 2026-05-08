@@ -84,23 +84,6 @@ export interface TrendResponse {
   range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
 }
 
-export interface SpikeEvent {
-  bucket: number;
-  keyword: string;
-  intensity: number;
-  source: string;
-  currentMentions: number;
-  prevMentions: number;
-  growth: number;
-  score: number;
-}
-
-export interface SpikeResponse {
-  topKeywords?: string[];
-  events: SpikeEvent[];
-  range: RangeOption | { id: string; label: string; bucketMin: number; buckets: number };
-}
-
 export interface OverviewArticleBucket {
   bucket: number;
   timestamp: string;
@@ -135,7 +118,6 @@ export interface OverviewCachePayload {
 export interface DashboardOverviewResponse {
   kpis: KpiSummary;
   keywords: KeywordSummary[];
-  spikes: SpikeResponse;
   cache?: OverviewCachePayload;
 }
 
@@ -328,7 +310,8 @@ export interface QueryKeywordAdminOverview {
   collectionMetrics: CollectionMetricItem[];
 }
 
-const API_BASE = "/api/v1";
+const API_ORIGIN = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+const API_BASE = `${API_ORIGIN}/api/v1`;
 
 function pick<T>(row: RawRecord | null | undefined, camel: string, snake: string, fallback: T): T {
   if (!row) return fallback;
@@ -375,27 +358,6 @@ function normalizeKpis(row: RawRecord): KpiSummary {
   };
 }
 
-function normalizeSpikeEvent(row: RawRecord): SpikeEvent {
-  return {
-    bucket: Number(row.bucket ?? 0),
-    keyword: String(row.keyword ?? ""),
-    intensity: Number(row.intensity ?? 0),
-    source: String(row.source ?? "naver"),
-    currentMentions: Number(row.currentMentions ?? row.current_mentions ?? 0),
-    prevMentions: Number(row.prevMentions ?? row.prev_mentions ?? 0),
-    growth: Number(row.growth ?? 0),
-    score: Number(row.score ?? 0),
-  };
-}
-
-function normalizeSpikeResponse(row: RawRecord): SpikeResponse {
-  return {
-    topKeywords: ((row.topKeywords ?? row.top_keywords) as string[] | undefined) ?? [],
-    events: (((row.events as RawRecord[] | undefined) ?? [])).map(normalizeSpikeEvent),
-    range: normalizeRange((row.range as RawRecord | undefined) ?? {}),
-  };
-}
-
 function normalizeArticleBucket(row: RawRecord): OverviewArticleBucket {
   return {
     bucket: Number(row.bucket ?? 0),
@@ -438,7 +400,6 @@ function normalizeOverview(row: RawRecord): DashboardOverviewResponse {
   return {
     kpis: normalizeKpis((row.kpis as RawRecord | undefined) ?? {}),
     keywords: (((row.keywords as RawRecord[] | undefined) ?? [])).map(normalizeKeyword),
-    spikes: normalizeSpikeResponse((row.spikes as RawRecord | undefined) ?? {}),
     cache: normalizeOverviewCache(row.cache as RawRecord | undefined),
   };
 }
@@ -671,14 +632,6 @@ export const api = {
       `/dashboard/trend-window?source=${source}&domain=${domain}&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}&bucket=${bucket}&keywords=${encodeURIComponent(keywords.join(","))}`,
       undefined,
       normalizeTrend,
-    ),
-  spikes: (source: SourceId, domain: string, range: RangeId, startAt?: string, endAt?: string, bucket?: TrendBucketId) =>
-    request<SpikeResponse>(
-      `/dashboard/spikes?source=${source}&domain=${domain}&range=${range}${
-        startAt && endAt ? `&startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}` : ""
-      }${bucket ? `&bucket=${bucket}` : ""}`,
-      undefined,
-      normalizeSpikeResponse,
     ),
   related: (source: SourceId, domain: string, range: RangeId, keyword: string, startAt?: string, endAt?: string) =>
     request<RelatedKeyword[]>(
