@@ -8,7 +8,7 @@
         ↓
     fetch_articles_for_extraction()   ← news_raw에서 기사 조회
         ↓
-    _extract_candidates()             ← Kiwi 무사전 형태소 분석 + 스팬 인접 조합
+    _extract_candidates()             ← MeCab-ko 형태소 분석 + 스팬 인접 조합
         ↓
     upsert_compound_candidates()      ← 신규 INSERT / pending 기존 누적 UPDATE
 """
@@ -23,30 +23,23 @@ from typing import Any
 
 from core.config import settings
 from core.logger import get_logger
-from processing.preprocessing import KOREAN_TOKEN_PATTERN, KOREAN_NOUN_TAGS
+from processing.preprocessing import KOREAN_TOKEN_PATTERN, get_mecab, iter_noun_tokens
 from storage.db import (
     fetch_articles_for_extraction,
     fetch_compound_nouns,
     upsert_compound_candidates,
 )
 
-try:
-    from kiwipiepy import Kiwi
-except ImportError:  # pragma: no cover
-    Kiwi = None
-
 logger = get_logger(__name__)
 
 
-def _build_raw_kiwi() -> Any | None:
-    """사용자 사전 없이 Kiwi를 초기화한다.
+def _build_raw_mecab() -> Any | None:
+    """MeCab-ko 분석기를 초기화한다.
 
     기존 compound_noun_dict 단어들은 의도적으로 등록하지 않아
     아직 사전에 없는 새 복합명사 후보가 형태소로 분리되도록 한다.
     """
-    if Kiwi is None:
-        return None
-    return Kiwi()
+    return get_mecab("all")
 
 
 def _clean_for_extraction(text: str) -> str:
@@ -85,9 +78,9 @@ def _extract_candidates(
     Returns:
         {domain: {word: (total_count, doc_count)}} — 빈도 조건을 통과한 후보 맵.
     """
-    kiwi = _build_raw_kiwi()
-    if kiwi is None:
-        logger.warning("Kiwi를 사용할 수 없어 복합명사 추출을 건너뜁니다")
+    mecab = _build_raw_mecab()
+    if mecab is None:
+        logger.warning("MeCab-ko를 사용할 수 없어 복합명사 추출을 건너뜁니다")
         return {}
 
     total_counts: dict[str, Counter[str]] = defaultdict(Counter)
@@ -126,12 +119,10 @@ def _extract_candidates(
                 )
             continue
 
-        tokens = kiwi.tokenize(cleaned)
         noun_tokens: list[tuple[str, int, int]] = []
-        for t in tokens:
-            form = unicodedata.normalize("NFC", t.form)
-            if t.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, form):
-                noun_tokens.append((form, t.start, t.start + t.len))
+        for form, _tag, start, end in iter_noun_tokens(cleaned, analyzer=mecab):
+            if re.fullmatch(KOREAN_TOKEN_PATTERN, form):
+                noun_tokens.append((form, start, end))
 
         article_words: set[str] = set()
         n = len(noun_tokens)

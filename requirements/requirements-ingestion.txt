@@ -4,4 +4,4 @@ requests==2.32.4
 filelock>=3.13
 psycopg2-binary==2.9.9
 pyspark==3.5.2
-kiwipiepy>=0.18
+mecab-ko>=1.0.0

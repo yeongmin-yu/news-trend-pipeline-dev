@@ -89,8 +89,9 @@ def _fetch_compound_candidates_for_auto_review(limit: int) -> list[Candidate]:
                 WHERE status = 'needs_review'
                   AND (
                     auto_checked_at IS NULL
-                    OR auto_checked_at < NOW() - INTERVAL '7 days'
+                    OR auto_checked_at < NOW() - INTERVAL '3 days'
                     OR last_seen_at > auto_checked_at
+                    OR auto_decision = 'api_error'
                   )
                 ORDER BY frequency DESC, doc_count DESC, last_seen_at DESC
                 LIMIT %s

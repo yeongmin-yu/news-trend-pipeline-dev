@@ -9,9 +9,9 @@ from functools import lru_cache
 from pathlib import Path
 
 try:
-    from kiwipiepy import Kiwi
+    import mecab_ko as MeCabKo
 except ImportError:  # pragma: no cover
-    Kiwi = None
+    MeCabKo = None
 
 from core.config import settings
 from core.logger import get_logger
@@ -107,7 +107,7 @@ def _clear_dictionary_caches() -> None:
     get_user_dictionary.cache_clear()
     get_user_dictionary_set.cache_clear()
     _get_max_compound_len.cache_clear()
-    get_kiwi.cache_clear()
+    get_mecab.cache_clear()
     _get_stopwords.cache_clear()
 
 
@@ -205,16 +205,54 @@ def _get_max_compound_len(domain: str = "all") -> int:
 
 
 @lru_cache(maxsize=8)
-def get_kiwi(domain: str = "all") -> "Kiwi | None":
-    if Kiwi is None:
+def get_mecab(domain: str = "all") -> object | None:
+    del domain
+    if MeCabKo is None:
         return None
-    kiwi = Kiwi()
-    for word in get_user_dictionary(domain):
-        try:
-            kiwi.add_user_word(word, "NNP", USER_WORD_SCORE)
-        except Exception:  # pragma: no cover
+    try:
+        return MeCabKo.Tagger()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("MeCab-ko 초기화 실패. 공백 기반 fallback을 사용합니다: %s", exc)
+        return None
+
+
+def _locate_surface_span(text: str, surface: str, cursor: int) -> tuple[int, int]:
+    start = text.find(surface, cursor)
+    if start < 0:
+        start = text.find(surface)
+    if start < 0:
+        return cursor, cursor + len(surface)
+    return start, start + len(surface)
+
+
+def iter_noun_tokens(text: str, *, analyzer: object | None = None) -> list[tuple[str, str, int, int]]:
+    if analyzer is None:
+        analyzer = get_mecab()
+    if analyzer is None:
+        return []
+
+    parsed = analyzer.parse(text)
+    noun_tokens: list[tuple[str, str, int, int]] = []
+    cursor = 0
+    for raw_line in str(parsed).splitlines():
+        line = raw_line.strip()
+        if not line or line == "EOS":
             continue
-    return kiwi
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            parts = line.split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        surface, feature = parts
+        tag = feature.split(",", 1)[0]
+        normalized = unicodedata.normalize("NFC", surface)
+        start, end = _locate_surface_span(text, surface, cursor)
+        cursor = end
+        if tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized):
+            noun_tokens.append((normalized, tag, start, end))
+        elif re.fullmatch(ENGLISH_TOKEN_PATTERN, normalized):
+            noun_tokens.append((normalized, tag, start, end))
+    return noun_tokens
 
 
 @lru_cache(maxsize=8)
@@ -296,18 +334,13 @@ def tokenize(text: str | None, domain: str = "all") -> list[str]:
     _refresh_dictionary_caches_if_needed()
     cleaned = clean_text(text)
     stopwords = _get_stopwords(domain)
-    kiwi = get_kiwi(domain)
-    if kiwi is not None:
+    mecab = get_mecab(domain)
+    if mecab is not None:
         raw_nouns: list[str] = []
         raw_spans: list[tuple[int, int]] = []
-        for token in kiwi.tokenize(cleaned):
-            normalized = unicodedata.normalize("NFC", token.form)
-            if (
-                (token.tag in KOREAN_NOUN_TAGS and re.fullmatch(KOREAN_TOKEN_PATTERN, normalized))
-                or re.fullmatch(ENGLISH_TOKEN_PATTERN, normalized)
-            ):
-                raw_nouns.append(normalized)
-                raw_spans.append((token.start, token.start + token.len))
+        for normalized, _tag, start, end in iter_noun_tokens(cleaned, analyzer=mecab):
+            raw_nouns.append(normalized)
+            raw_spans.append((start, end))
         merged = merge_compound_nouns(raw_nouns, get_user_dictionary_set(domain), spans=raw_spans, text=cleaned)
         nouns = [token for token in merged if len(token) > 1 and token not in stopwords]
         if nouns:
