@@ -195,7 +195,6 @@ export interface CompoundCandidateItem {
   status: string;
   reviewedAt: string | null;
   reviewedBy: string | null;
-  autoScore?: number | null;
   autoDecision?: string | null;
   autoCheckedAt?: string | null;
   autoEvidence?: Record<string, unknown> | null;
@@ -487,7 +486,6 @@ function normalizeCandidate(row: RawRecord): CompoundCandidateItem {
     status: String(row.status ?? "needs_review"),
     reviewedAt: (row.reviewedAt ?? row.reviewed_at ?? null) as string | null,
     reviewedBy: (row.reviewedBy ?? row.reviewed_by ?? null) as string | null,
-    autoScore: row.autoScore != null || row.auto_score != null ? Number(row.autoScore ?? row.auto_score) : null,
     autoDecision: (row.autoDecision ?? row.auto_decision ?? null) as string | null,
     autoCheckedAt: (row.autoCheckedAt ?? row.auto_checked_at ?? null) as string | null,
     autoEvidence: (row.autoEvidence ?? row.auto_evidence ?? null) as Record<string, unknown> | null,

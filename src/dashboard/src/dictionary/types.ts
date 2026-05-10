@@ -26,6 +26,8 @@ export const AUTO_DECISION_LABEL: Record<string, string> = {
   needs_manual_review: "수동검토",
   low_confidence: "낮은신뢰",
   api_error: "API오류",
+  no_search_results: "검색결과없음",
+  no_exact_match: "정확일치없음",
 };
 
 export const AUTO_DECISION_CHIP: Record<string, string> = {
@@ -33,6 +35,8 @@ export const AUTO_DECISION_CHIP: Record<string, string> = {
   needs_manual_review: "warn",
   low_confidence: "muted",
   api_error: "down",
+  no_search_results: "down",
+  no_exact_match: "down",
 };
 
 export const SW_CANDIDATE_STATUS_LABEL: Record<string, string> = {

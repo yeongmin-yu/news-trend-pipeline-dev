@@ -405,7 +405,140 @@ if not contiguous:
 
 ---
 
-## 10. 사전 라이프사이클
+## 10. 복합명사 자동 승인
+
+**파일**: [`analytics/compound_auto_reviewer.py`](../src/analytics/compound_auto_reviewer.py)  
+**DAG**: [`airflow/dags/compound_candidate_auto_review_dag.py`](../airflow/dags/compound_candidate_auto_review_dag.py)
+
+복합명사 후보 자동 승인은 `compound_noun_candidates` 중 `status = 'needs_review'`인 항목을 대상으로 외부 검색 근거를 확인한 뒤, 신뢰할 수 있는 후보만 자동 승인하고 명확히 근거가 부족한 후보는 자동 반려한다.
+
+자동 승인 로직의 목적은 두 가지다.
+
+1. 관리자가 검토해야 할 후보 수를 줄인다.
+2. 외부 검색 결과로 실체가 확인되는 복합명사만 `compound_noun_dict`에 자동 반영한다.
+
+### 처리 대상
+
+`run_auto_review()`는 다음 조건을 만족하는 후보만 가져온다.
+
+```sql
+SELECT id, word, domain, frequency, doc_count, last_seen_at
+FROM compound_noun_candidates
+WHERE status = 'needs_review'
+  AND (
+    auto_checked_at IS NULL
+    OR auto_checked_at < NOW() - INTERVAL '3 days'
+    OR last_seen_at > auto_checked_at
+    OR auto_decision = 'api_error'
+  )
+ORDER BY frequency DESC, doc_count DESC, last_seen_at DESC
+LIMIT :limit
+```
+
+이미 `approved` 또는 `rejected`된 후보는 자동 재검토 대상이 아니다. 검색 API 오류로 판정이 보류된 후보(`api_error`)는 다음 실행에서 다시 시도할 수 있다.
+
+### 외부 근거 수집
+
+현재 자동 검토는 Naver Web Search API를 사용한다.
+
+```text
+candidate.word
+    -> Naver Web Search API
+    -> 검색 결과 title/description 정제
+    -> 공백 제거 + HTML 제거 + 소문자화
+    -> 후보어와 exact compact match 여부 판단
+```
+
+`exact compact match`는 검색 결과의 제목 또는 설명을 정제한 값이 후보어와 완전히 일치하는 경우만 인정한다. 예를 들어 후보가 `인공지능반도체`라면, 단순히 제목 안에 `인공지능반도체`가 포함되어 있는 것만으로는 자동 승인 근거가 되지 않는다.
+
+### 자동 판정 규칙
+
+현재 정책은 보수적으로 동작한다.
+
+```text
+1. Naver API 오류
+   -> status 유지: needs_review
+   -> auto_decision: api_error
+
+2. 검색 결과 없음
+   -> status: rejected
+   -> auto_decision: no_search_results
+
+3. 검색 결과 있음 + exact compact match 없음
+   -> status: rejected
+   -> auto_decision: no_exact_match
+
+4. 검색 결과 있음 + exact compact match 있음
+   -> frequency/doc_count/frequency_per_doc 조건 평가
+      - frequency >= 5
+      - doc_count >= 3
+      - frequency_per_doc <= 8
+   -> 조건 통과: approved + compound_noun_dict INSERT
+   -> 조건 미달: needs_review 유지
+```
+
+핵심은 **검색 결과 유무와 exact compact match가 1차 게이트**라는 점이다. 이 게이트를 통과하지 못하면 빈도가 높아도 자동 반려한다.
+
+### 빈도와 문서 수의 역할
+
+검색 결과가 없거나 exact compact match가 없으면 즉시 반려된다. 따라서 자동 승인 단계에서 중요한 내부 지표는 점수가 아니라 **충분히 여러 기사에서 반복 관측되었는지**다.
+
+| 지표 | 역할 |
+|------|------|
+| `frequency` | 전체 출현 횟수. 너무 적게 등장한 후보의 자동 승인을 막는다. |
+| `doc_count` | 등장한 기사 수. 한 기사 안에서만 반복된 단어를 걸러낸다. |
+| `frequency_per_doc` | 기사당 반복률. 특정 기사 하나에서 과도하게 반복된 후보를 낮게 본다. |
+
+따라서 현재 구조에서 자동 승인 판단의 우선순위는 다음과 같다.
+
+```text
+외부 검색 결과 > exact compact match > 빈도/문서수 조건
+```
+
+`auto_score`는 과거 자동 검토 정책의 호환 컬럼으로 남아 있지만, 현재 자동 승인/반려 판단에는 사용하지 않는다. 운영 판단은 `auto_decision`과 `auto_evidence`를 기준으로 보면 충분하다.
+
+### 저장되는 자동 검토 정보
+
+자동 검토 결과는 후보 row에 함께 저장된다.
+
+| 컬럼 | 내용 |
+|------|------|
+| `auto_score` | 과거 정책 호환용 컬럼. 현재 판단에는 사용하지 않으며 새 자동 검토에서는 `NULL`일 수 있다. |
+| `auto_evidence` | 검색 결과 요약, 매칭 필드, 검토 정책 |
+| `auto_checked_at` | 자동 검토 시각 |
+| `auto_decision` | `high_confidence`, `no_search_results`, `no_exact_match`, `needs_manual_review`, `low_confidence`, `api_error` |
+| `reviewed_at` | 자동 승인/반려가 실제 상태 변경을 한 시각 |
+| `reviewed_by` | 자동 처리 주체. 현재 `auto-reviewer` |
+
+자동 승인 시에는 `compound_noun_dict`에 다음 형태로 반영된다.
+
+```sql
+INSERT INTO compound_noun_dict (word, domain, source)
+VALUES (:word, :domain, 'auto-approved')
+ON CONFLICT (word, domain) DO NOTHING
+```
+
+자동 반려 시에는 `compound_noun_dict`에 넣지 않고 후보 상태만 `rejected`로 바꾼다.
+
+### 운영상 의미
+
+이 정책은 자동 승인보다 자동 반려가 더 강한 구조다. 검색 결과가 없거나 exact compact match가 없는 후보는 관리자가 볼 필요가 낮다고 보고 자동으로 제거한다. 반대로 exact compact match가 있는 후보라도 빈도와 문서 수가 부족하면 바로 승인하지 않고 `needs_review`로 남긴다.
+
+운영자가 확인해야 할 대상은 주로 다음 후보들이다.
+
+- `api_error`: 외부 검색 API 문제로 판단하지 못한 후보
+- `needs_manual_review`: 검색 근거는 있으나 자동 승인 조건이 부족한 후보
+- `low_confidence`: 검색 근거는 있으나 단어 형식이나 최소 품질 조건이 낮은 후보
+
+---
+
+## 11. 불용어 후보 자동 추천
+
+불용어 후보 자동 추천은 `stopword_recommender.py`에서 최근 키워드 집계를 분석해 너무 넓게 반복되는 단어를 `stopword_candidates`에 누적하는 별도 흐름이다. 복합명사 자동 승인과 달리 외부 검색 API를 사용하지 않고, 빈도·도메인 폭·반복률·공출현 폭 같은 내부 통계 신호를 사용한다.
+
+---
+
+## 12. 사전 라이프사이클
 
 복합명사 사전 항목 하나가 거치는 전체 흐름이다.
 
@@ -415,16 +548,23 @@ if not contiguous:
     └─ Kiwi 무사전 분석 → 스팬 인접 명사 조합
     └─ compound_noun_candidates 에 upsert
                 │
-                ▼  status = 'pending'
+                ▼  status = 'needs_review'
+    [자동 검토] compound_candidate_auto_review_dag
+        ├─ 검색 결과 없음 → candidates status = 'rejected'
+        ├─ exact compact match 없음 → candidates status = 'rejected'
+        └─ exact compact match + 빈도 조건 통과
+            └─ compound_noun_dict INSERT (source='auto-approved')
+               + candidates status = 'approved'
+                │
     [추후 Web/API] 관리자 검토 화면
-        ├─ 승인 → compound_noun_dict INSERT (source='auto')
+        ├─ 승인 → compound_noun_dict INSERT (source='manual')
         │              + candidates status = 'approved'
         └─ 거부 → candidates status = 'rejected'
                 │              (이후 재추출 시 빈도 누적 안 됨)
                 ▼  compound_noun_dict에 반영됨
     [다음 Spark 잡 재시작 시]
         └─ get_user_dictionary() → DB 재조회 → lru_cache 갱신
-        └─ get_kiwi() → 새 단어 add_user_word 등록
+        └─ tokenize() → 새 사전 기준으로 복합명사 병합
         └─ 이후 기사부터 새 복합명사로 토큰화됨
 ```
 
@@ -432,18 +572,20 @@ if not contiguous:
 
 ```
 [자동 추출]
-    pending ──── 관리자 승인 ──── approved
+    needs_review ──── 자동/관리자 승인 ──── approved
+        │
+        ├────── 자동 반려 ──── rejected
         │
         └────── 관리자 거부 ──── rejected
 ```
 
 - `approved` 단어는 `compound_noun_dict`에 복사 후 전처리에 반영된다.
 - `rejected` 단어는 이후 추출에서 다시 `pending`으로 삽입되지 않는다 (upsert의 WHERE 조건으로 보호).
-- `pending` 단어는 매일 배치가 돌 때 `frequency`와 `doc_count`가 누적된다. 빈도가 높을수록 승인 우선순위가 높다.
+- `needs_review` 단어는 매일 배치가 돌 때 `frequency`와 `doc_count`가 누적된다. 빈도가 높을수록 검토 우선순위가 높다.
 
 ---
 
-## 11. 라이브러리 소개
+## 13. 라이브러리 소개
 
 ### kiwipiepy (Kiwi)
 
@@ -475,7 +617,7 @@ Token(
 
 ---
 
-## 12. Fallback 전략
+## 14. Fallback 전략
 
 DB·라이브러리 가용성에 따라 3단계 fallback이 작동한다.
 
@@ -511,7 +653,7 @@ Kiwi 사용 가능 → 형태소 분석 + 복합명사 병합
 
 ---
 
-## 13. Spark에서의 전처리 연결
+## 15. Spark에서의 전처리 연결
 
 `spark_job.py`에서 `tokenize()`를 Spark UDF로 등록해 DataFrame 컬럼에 적용한다.
 
@@ -533,7 +675,7 @@ parsed = (
 
 ---
 
-## 14. 연관 키워드 집계 방식
+## 16. 연관 키워드 집계 방식
 
 전처리 문서에서 토큰화까지만 설명하면 `keyword_relations`가 어떻게 만들어지는지 흐름이 끊길 수 있다. 현재 구현에서 연관 키워드는 **같은 기사 안에서 함께 등장한 상위 키워드 쌍을 시간 윈도우별로 누적 집계**하는 방식으로 생성된다.
 
@@ -726,7 +868,7 @@ DB에서는 아래 unique 기준으로 누적 저장된다.
 
 ---
 
-## 15. 현재 한계 및 개선 방향
+## 17. 현재 한계 및 개선 방향
 
 ### 단기 개선
 

@@ -5,7 +5,7 @@
     - needs_review 후보만 평가한다.
     - Naver Web Search API 결과에서 공백 제거 후 후보 단어와 완전 일치하는 항목을 외부 근거로 사용한다.
     - high_confidence 후보만 approved 처리하고 compound_noun_dict에 반영한다.
-    - 승인 여부와 관계없이 auto_score/auto_evidence/auto_checked_at/auto_decision을 저장한다.
+    - 승인 여부와 관계없이 auto_evidence/auto_checked_at/auto_decision을 저장한다.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ logger = get_logger(__name__)
 
 NAVER_WEBKR_URL = "https://openapi.naver.com/v1/search/webkr.json"
 DEFAULT_LIMIT = 2000
-DEFAULT_THRESHOLD = 85
 NAVER_DISPLAY = 10
 NAVER_TIMEOUT_SECONDS = 3.0
 
@@ -37,6 +36,8 @@ DECISION_HIGH_CONFIDENCE = "high_confidence"
 DECISION_NEEDS_MANUAL_REVIEW = "needs_manual_review"
 DECISION_LOW_CONFIDENCE = "low_confidence"
 DECISION_API_ERROR = "api_error"
+DECISION_NO_SEARCH_RESULTS = "no_search_results"
+DECISION_NO_EXACT_MATCH = "no_exact_match"
 
 _KOREAN_RE = re.compile(r"[가-힣]")
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -187,13 +188,13 @@ def _call_naver_webkr(word: str) -> dict[str, Any]:
                     "description_compact": compact_description,
                 }
             )
-            if compact_word and compact_word in compact_title:
+            if compact_word and compact_word == compact_title:
                 matched_title = title
                 matched_description = description
                 matched_link = link
                 matched_field = "title"
                 break
-            if compact_word and compact_word in compact_description:
+            if compact_word and compact_word == compact_description:
                 matched_title = title
                 matched_description = description
                 matched_link = link
@@ -253,62 +254,31 @@ def build_candidate_evidence(candidate: Candidate) -> dict[str, Any]:
     }
 
 
-def score_candidate(candidate: Candidate, evidence: dict[str, Any]) -> tuple[int, dict[str, int]]:
-    stats = evidence["stats"]
-    webkr = evidence["naver_webkr"]
-
-    frequency_score = min(int(stats["frequency"]), 20)
-    doc_count_score = min(int(stats["doc_count"]) * 4, 20)
-    recent_score = 5 if candidate.last_seen_at else 0
-
-    external_score = 0
-    if int(webkr["total"] or 0) > 0:
-        external_score += min(int(webkr["total"]), 10)
-    if webkr["has_exact_compact_match"]:
-        external_score += 30
-    external_score = min(external_score, 40)
-
-    penalty = 0
-    if len(candidate.word.strip()) <= 1:
-        penalty -= 20
-    if len(candidate.word.strip()) == 2:
-        penalty -= 5
-    if float(stats["frequency_per_doc"]) > 8:
-        penalty -= 15
-    if candidate.word.strip() in GENERIC_STOPWORDS:
-        penalty -= 20
-    if not _KOREAN_RE.search(candidate.word):
-        penalty -= 10
-
-    total = max(0, min(100, frequency_score + doc_count_score + recent_score + external_score + penalty))
-    return total, {
-        "frequency": frequency_score,
-        "doc_count": doc_count_score,
-        "recent_activity": recent_score,
-        "external_evidence": external_score,
-        "penalty": penalty,
-    }
-
-
-def decide_candidate(candidate: Candidate, evidence: dict[str, Any], score: int, threshold: int) -> str:
+def decide_candidate(candidate: Candidate, evidence: dict[str, Any]) -> str:
     stats = evidence["stats"]
     webkr = evidence["naver_webkr"]
 
     if not webkr["ok"]:
         return DECISION_API_ERROR
-    if score >= threshold and candidate.doc_count >= 3 and candidate.frequency >= 5 and webkr[
-        "has_exact_compact_match"
-    ] and float(stats["frequency_per_doc"]) <= 8:
-        return DECISION_HIGH_CONFIDENCE
-    if score < 50:
+    if int(webkr["total"] or 0) <= 0:
+        return DECISION_NO_SEARCH_RESULTS
+    if not webkr["has_exact_compact_match"]:
+        return DECISION_NO_EXACT_MATCH
+    if len(candidate.word.strip()) <= 1:
         return DECISION_LOW_CONFIDENCE
+    if candidate.word.strip() in GENERIC_STOPWORDS:
+        return DECISION_LOW_CONFIDENCE
+    if not _KOREAN_RE.search(candidate.word):
+        return DECISION_LOW_CONFIDENCE
+    if candidate.doc_count >= 3 and candidate.frequency >= 5 and float(stats["frequency_per_doc"]) <= 8:
+        return DECISION_HIGH_CONFIDENCE
     return DECISION_NEEDS_MANUAL_REVIEW
 
 
 def _update_compound_candidate_auto_review(
     *,
     candidate_id: int,
-    score: int,
+    score: int | None,
     evidence: dict[str, Any],
     decision: str,
 ) -> None:
@@ -327,7 +297,7 @@ def _update_compound_candidate_auto_review(
                 (score, Json(evidence), decision, candidate_id),
             )
     logger.info(
-        "auto_review saved | candidate_id=%d | score=%d | decision=%s",
+        "auto_review saved | candidate_id=%d | score=%s | decision=%s",
         candidate_id,
         score,
         decision,
@@ -337,7 +307,7 @@ def _update_compound_candidate_auto_review(
 def _approve_compound_candidate_from_auto_review(
     *,
     candidate: Candidate,
-    score: int,
+    score: int | None,
     evidence: dict[str, Any],
 ) -> bool:
     with get_connection() as conn:
@@ -374,17 +344,56 @@ def _approve_compound_candidate_from_auto_review(
                 (candidate.word, candidate.domain),
             )
             logger.info(
-                "auto_review approved and inserted dict | candidate_id=%d | word=%r | domain=%s | score=%d",
+                "auto_review approved and inserted dict | candidate_id=%d | word=%r | domain=%s",
                 candidate.id,
                 candidate.word,
                 candidate.domain,
-                score,
             )
             return True
 
 
-def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHOLD) -> dict[str, int]:
-    logger.info("auto_review start | limit=%d | threshold=%d", limit, threshold)
+def _reject_compound_candidate_from_auto_review(
+    *,
+    candidate: Candidate,
+    score: int | None,
+    evidence: dict[str, Any],
+    decision: str,
+) -> bool:
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE compound_noun_candidates
+                SET status = 'rejected',
+                    reviewed_at = NOW(),
+                    reviewed_by = %s,
+                    auto_score = %s,
+                    auto_evidence = %s,
+                    auto_checked_at = NOW(),
+                    auto_decision = %s
+                WHERE id = %s
+                  AND status = 'needs_review'
+                """,
+                (REVIEWER, score, Json(evidence), decision, candidate.id),
+            )
+            if cursor.rowcount == 0:
+                logger.info(
+                    "auto_review reject skipped | candidate_id=%d | word=%r | reason=status_changed",
+                    candidate.id,
+                    candidate.word,
+                )
+                return False
+            logger.info(
+                "auto_review rejected | candidate_id=%d | word=%r | decision=%s",
+                candidate.id,
+                candidate.word,
+                decision,
+            )
+            return True
+
+
+def run_auto_review(limit: int = DEFAULT_LIMIT) -> dict[str, int]:
+    logger.info("auto_review start | limit=%d", limit)
     started_at = time.monotonic()
     candidates = _fetch_compound_candidates_for_auto_review(limit)
     if not candidates:
@@ -392,6 +401,7 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
         return {
             "total": 0,
             "auto_approved": 0,
+            "auto_rejected": 0,
             "needs_manual_review": 0,
             "low_confidence": 0,
             "api_error": 0,
@@ -400,6 +410,7 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
     counts = {
         "total": len(candidates),
         "auto_approved": 0,
+        "auto_rejected": 0,
         "needs_manual_review": 0,
         "low_confidence": 0,
         "api_error": 0,
@@ -418,26 +429,22 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
         )
         candidate_started_at = time.monotonic()
         evidence = build_candidate_evidence(candidate)
-        score, breakdown = score_candidate(candidate, evidence)
-        evidence["score_breakdown"] = breakdown
         evidence["review_policy"] = {
-            "threshold": threshold,
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "frequency_min": 5,
             "doc_count_min": 3,
             "frequency_per_doc_max": 8,
             "external_evidence": "naver_webkr_exact_compact_match",
         }
-        decision = decide_candidate(candidate, evidence, score, threshold)
+        decision = decide_candidate(candidate, evidence)
         webkr = evidence["naver_webkr"]
 
         logger.info(
-            "auto_review candidate decision | index=%d/%d | candidate_id=%d | word=%r | score=%d | decision=%s | total=%d | exact_compact_match=%s | matched_field=%s | elapsed_ms=%d",
+            "auto_review candidate decision | index=%d/%d | candidate_id=%d | word=%r | decision=%s | total=%d | exact_compact_match=%s | matched_field=%s | elapsed_ms=%d",
             index,
             len(candidates),
             candidate.id,
             candidate.word,
-            score,
             decision,
             webkr["total"],
             webkr["has_exact_compact_match"],
@@ -448,15 +455,25 @@ def run_auto_review(limit: int = DEFAULT_LIMIT, threshold: int = DEFAULT_THRESHO
         if decision == DECISION_HIGH_CONFIDENCE:
             if _approve_compound_candidate_from_auto_review(
                 candidate=candidate,
-                score=score,
+                score=None,
                 evidence=evidence,
             ):
                 counts["auto_approved"] += 1
             continue
 
+        if decision in {DECISION_NO_SEARCH_RESULTS, DECISION_NO_EXACT_MATCH}:
+            if _reject_compound_candidate_from_auto_review(
+                candidate=candidate,
+                score=None,
+                evidence=evidence,
+                decision=decision,
+            ):
+                counts["auto_rejected"] += 1
+            continue
+
         _update_compound_candidate_auto_review(
             candidate_id=candidate.id,
-            score=score,
+            score=None,
             evidence=evidence,
             decision=decision,
         )

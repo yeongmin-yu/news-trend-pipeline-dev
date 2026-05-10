@@ -74,7 +74,6 @@ def _compound_candidate_to_api(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "reviewedAt": row.get("reviewed_at"),
         "reviewedBy": row.get("reviewed_by"),
-        "autoScore": row.get("auto_score"),
         "autoDecision": row.get("auto_decision"),
         "autoCheckedAt": row.get("auto_checked_at"),
         "autoEvidence": row.get("auto_evidence"),
@@ -224,7 +223,7 @@ def list_candidates_paged(*, page: int = 1, limit: int = 50, q: str = "", status
             cursor.execute(
                 f"""
                 SELECT id, word, domain, frequency, doc_count, first_seen_at, last_seen_at,
-                       status, reviewed_at, reviewed_by, auto_score, auto_decision, auto_checked_at, auto_evidence
+                       status, reviewed_at, reviewed_by, auto_decision, auto_checked_at, auto_evidence
                 FROM compound_noun_candidates
                 WHERE word ILIKE %s{extra_clauses}
                 ORDER BY status ASC, frequency DESC, word ASC

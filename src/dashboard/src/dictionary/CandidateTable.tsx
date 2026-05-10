@@ -47,7 +47,6 @@ export function CandidateTable({ items, domains, busy, loading, onApprove, onRej
           <th className="num">문서 수</th>
           <th>마지막 확인</th>
           <th>상태</th>
-          <th className="num">자동점수</th>
           <th>자동판정</th>
           <th>판단근거</th>
           <th>평가시각</th>
@@ -77,9 +76,6 @@ export function CandidateTable({ items, domains, busy, loading, onApprove, onRej
               <span className={"chip " + (CANDIDATE_STATUS_CHIP[c.status] ?? "muted")} style={{ fontSize: 11 }}>
                 {CANDIDATE_STATUS_LABEL[c.status] ?? c.status}
               </span>
-            </td>
-            <td className="num" style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>
-              {c.autoScore != null ? Math.round(Number(c.autoScore)).toLocaleString() : "—"}
             </td>
             <td>
               {c.autoDecision ? (
